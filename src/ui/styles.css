@@ -218,7 +218,35 @@
     min-width: 200px;
   }
 
-  .pane + .pane { border-left: 2px solid var(--border); }
+  .pane + .pane { border-left: none; }
+
+  /* Resizable splitter handle between panes */
+  .pane-splitter {
+    width: 5px;
+    cursor: col-resize;
+    background: var(--border);
+    flex-shrink: 0;
+    transition: background 0.15s;
+    position: relative;
+  }
+  .pane-splitter:hover,
+  .pane-splitter.dragging {
+    background: var(--accent);
+  }
+  .pane-splitter::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 1px;
+    width: 3px;
+    height: 24px;
+    transform: translateY(-50%);
+    border-left: 1px solid var(--text-subtle);
+    border-right: 1px solid var(--text-subtle);
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .pane-splitter:hover::after { opacity: 0.5; }
 
   .pane-header {
     padding: 5px 10px;
@@ -399,3 +427,23 @@
 
   /* Keyboard focus indicator */
   .log-entry.kb-focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+  /* Recency fade — recent entries are prominent, older ones fade */
+  .log-entry.age-0 { opacity: 1; }
+  .log-entry.age-1 { opacity: 0.85; }
+  .log-entry.age-2 { opacity: 0.6; }
+  .log-entry.age-3 { opacity: 0.4; }
+  .log-entry.age-0 .entry-badge { font-size: 10px; }
+  .log-entry.age-0 .entry-tool { font-size: 13px; }
+  .log-entry.age-0 .entry-summary { font-size: 12px; }
+  .log-entry:hover { opacity: 1 !important; }
+  .log-entry.expanded { opacity: 1 !important; }
+  .log-entry.kb-focus { opacity: 1 !important; }
+
+  /* Tab shortcut hint */
+  .tab-shortcut {
+    font-size: 9px;
+    color: var(--text-subtle);
+    margin-left: 3px;
+    font-family: var(--font-mono);
+  }

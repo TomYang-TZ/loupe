@@ -83,13 +83,19 @@
       panes.set("main", p);
       mainContainer = p.scrollEl;
     } else {
-      // Multi-pane: one per session
+      // Multi-pane: one per session with resizable splitters
       paneContainer.classList.add("multi-pane");
+      let first = true;
       for (const [id, info] of sessions) {
         if (!info.color) info.color = nextSessionColor();
+        if (!first) {
+          const splitter = createSplitter();
+          paneContainer.appendChild(splitter);
+        }
         const p = createPane(id, info.label, info.color);
         paneContainer.appendChild(p.el);
         panes.set(id, p);
+        first = false;
       }
     }
   }
@@ -120,6 +126,46 @@
   function scrollPaneToBottom(entry) {
     const container = getContainerFor(entry);
     if (container) container.scrollTop = container.scrollHeight;
+  }
+
+  // ===== Resizable splitter =====
+  function createSplitter() {
+    const splitter = document.createElement("div");
+    splitter.className = "pane-splitter";
+
+    let startX, prevPane, nextPane, prevWidth, nextWidth;
+
+    splitter.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      splitter.classList.add("dragging");
+      startX = e.clientX;
+      prevPane = splitter.previousElementSibling;
+      nextPane = splitter.nextElementSibling;
+      if (!prevPane || !nextPane) return;
+      prevWidth = prevPane.getBoundingClientRect().width;
+      nextWidth = nextPane.getBoundingClientRect().width;
+
+      const onMove = (e) => {
+        const dx = e.clientX - startX;
+        const newPrev = Math.max(150, prevWidth + dx);
+        const newNext = Math.max(150, nextWidth - dx);
+        prevPane.style.flex = "none";
+        nextPane.style.flex = "none";
+        prevPane.style.width = newPrev + "px";
+        nextPane.style.width = newNext + "px";
+      };
+
+      const onUp = () => {
+        splitter.classList.remove("dragging");
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
+
+    return splitter;
   }
 
   // Init default single pane
@@ -341,6 +387,9 @@
     }
 
     lineCountEl.textContent = lineCounter;
+
+    // Update recency aging every 20 entries (batch for performance)
+    if (lineCounter % 20 === 0) applyRecencyAging();
   }
 
   function relativeTime(ts) {
@@ -546,13 +595,16 @@
     allTab.onclick = () => switchSession("all");
     tabBar.appendChild(allTab);
 
+    let tabIdx = 1;
     for (const [id, info] of sessions) {
       const tab = document.createElement("div");
       tab.className = `session-tab ${activeSession === id ? "active" : ""}`;
       tab.dataset.session = id;
-      tab.innerHTML = `${esc(info.label)} <span class="tab-dot"></span>`;
+      const shortcut = tabIdx <= 9 ? `<span class="tab-shortcut">${tabIdx}</span>` : "";
+      tab.innerHTML = `${esc(info.label)}${shortcut} <span class="tab-dot"></span>`;
       tab.onclick = () => switchSession(id);
       tabBar.appendChild(tab);
+      tabIdx++;
     }
   }
 
@@ -636,6 +688,14 @@
     }
     if (e.key === "e") { filterSelect.value = activeFilter === "error" ? "all" : "error"; setFilter(filterSelect.value); }
     if (e.key === "g") { jumpToBottom(); }
+
+    // 0 = All, 1-9 = session tabs
+    if (e.key === "0") { switchSession("all"); }
+    if (e.key >= "1" && e.key <= "9") {
+      const idx = parseInt(e.key) - 1;
+      const sessionIds = [...sessions.keys()];
+      if (idx < sessionIds.length) switchSession(sessionIds[idx]);
+    }
   });
 
   function focusEntry(visible, idx) {
@@ -645,6 +705,26 @@
       visible[idx].scrollIntoView({ block: "nearest" });
     }
   }
+
+  // ===== Recency aging =====
+  // Recent entries are full opacity + slightly larger; older ones fade
+  function applyRecencyAging() {
+    for (const p of panes.values()) {
+      const els = p.scrollEl.querySelectorAll(".log-entry");
+      const total = els.length;
+      els.forEach((el, i) => {
+        el.classList.remove("age-0", "age-1", "age-2", "age-3");
+        const fromEnd = total - 1 - i;
+        if (fromEnd < 10) el.classList.add("age-0");
+        else if (fromEnd < 25) el.classList.add("age-1");
+        else if (fromEnd < 50) el.classList.add("age-2");
+        else el.classList.add("age-3");
+      });
+    }
+  }
+
+  // Run aging periodically and after new entries
+  setInterval(applyRecencyAging, 3000);
 
   // ===== Lines/sec =====
   setInterval(() => { linesSecEl.textContent = linesThisSecond; linesThisSecond = 0; }, 1000);
