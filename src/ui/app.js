@@ -472,10 +472,10 @@
 
   function ageClass(ts) {
     const age = (Date.now() - ts) / 1000;
-    if (age < 30) return "age-0";
-    if (age < 120) return "age-1";
-    if (age < 300) return "age-2";
-    return "age-3";
+    if (age < 60) return "age-0";       // last minute — fresh
+    if (age < 300) return "age-1";      // 1-5 min
+    if (age < 900) return "age-2";      // 5-15 min
+    return "age-3";                      // >15 min
   }
 
   function renderEntry(entry) {
@@ -948,15 +948,14 @@
       const elRect = el.getBoundingClientRect();
       const elCenter = elRect.top + elRect.height / 2;
 
-      // Distance from bottom of viewport (0 = at bottom, 1 = at top)
-      const ratio = 1 - (elCenter - rect.top) / viewH;
-      // Clamp: entries below viewport = 1, above = 0
+      // How close to the bottom (0 = top of viewport, 1 = bottom)
+      const ratio = (elCenter - rect.top) / viewH;
       const t = Math.max(0, Math.min(1, ratio));
 
-      // Scale: 1.0 at bottom → 0.88 at top (curve for acceleration)
-      const scale = 0.88 + 0.12 * t * t;
-      // Opacity boost: 1.0 at bottom → 0.5 at top (on top of time-based aging)
-      const scrollOpacity = 0.5 + 0.5 * t * t;
+      // Scale: 0.92 at top → 1.0 at bottom
+      const scale = 0.92 + 0.08 * t;
+      // Scroll opacity: 0.7 at top → 1.0 at bottom
+      const scrollOpacity = 0.7 + 0.3 * t;
 
       el.style.transform = `scale(${scale.toFixed(3)})`;
       el.style.setProperty("--scroll-opacity", scrollOpacity.toFixed(2));
