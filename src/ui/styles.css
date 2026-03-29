@@ -10,8 +10,8 @@
   --text: #fafafa;
   --text-muted: #a1a1aa;
   --text-subtle: #71717a;
-  --text-ghost: #52525b;
-  --text-dim: #3f3f46;
+  --text-ghost: #636370;
+  --text-dim: #52525b;
 
   --accent: #8b5cf6;
   --accent-dim: rgba(139, 92, 246, 0.12);
@@ -635,10 +635,10 @@ header {
 .modal-code .json-number { color: #facc15; }
 .modal-code .json-bool { color: var(--accent); }
 .modal-code .json-null { color: var(--text-dim); font-style: italic; }
-.modal-code .json-bracket { color: var(--text-dim); }
-.modal-code .json-toggle { cursor: pointer; user-select: none; color: var(--text-dim); }
+.modal-code .json-bracket { color: var(--text-subtle); }
+.modal-code .json-toggle { cursor: pointer; user-select: none; color: var(--text-subtle); }
 .modal-code .json-toggle:hover { color: var(--text); }
-.modal-code .json-collapsed-indicator { color: var(--text-dim); font-style: italic; font-size: 10px; }
+.modal-code .json-collapsed-indicator { color: var(--text-subtle); font-style: italic; font-size: 10px; }
 
 .trunc-fade { color: var(--text-dim); }
 .trunc-btn {
