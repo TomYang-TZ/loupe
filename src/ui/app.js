@@ -388,8 +388,6 @@
 
     lineCountEl.textContent = lineCounter;
 
-    // Update recency aging every 20 entries (batch for performance)
-    if (lineCounter % 20 === 0) applyRecencyAging();
   }
 
   function relativeTime(ts) {
@@ -411,11 +409,20 @@
     return d.innerHTML;
   }
 
+  function ageClass(ts) {
+    const age = (Date.now() - ts) / 1000;
+    if (age < 30) return "age-0";
+    if (age < 120) return "age-1";
+    if (age < 300) return "age-2";
+    return "age-3";
+  }
+
   function renderEntry(entry) {
     const div = document.createElement("div");
-    div.className = "log-entry";
+    div.className = `log-entry ${ageClass(entry.ts)}`;
     div.dataset.id = entry.id;
     div.dataset.category = entry.category;
+    div.dataset.ts = entry.ts;
     if (entry.sessionId) div.dataset.session = entry.sessionId;
 
     const time = relativeTime(entry.ts);
@@ -787,21 +794,18 @@
     for (const p of panes.values()) {
       const els = p.scrollEl.querySelectorAll(".log-entry");
       els.forEach((el) => {
-        const id = parseInt(el.dataset.id);
-        const entry = entries.find(e => e.id === id);
-        const age = entry ? (now - entry.ts) / 1000 : 9999;
-
-        el.classList.remove("age-0", "age-1", "age-2", "age-3");
-        if (age < 30) el.classList.add("age-0");       // last 30s — bright
-        else if (age < 120) el.classList.add("age-1");  // 30s-2min
-        else if (age < 300) el.classList.add("age-2");  // 2-5min
-        else el.classList.add("age-3");                  // >5min — faded
+        const ts = parseInt(el.dataset.ts) || 0;
+        const newClass = ageClass(ts);
+        // Only touch DOM if class actually changed
+        if (!el.classList.contains(newClass)) {
+          el.classList.remove("age-0", "age-1", "age-2", "age-3");
+          el.classList.add(newClass);
+        }
       });
     }
   }
 
-  // Update aging every second for smooth transitions
-  setInterval(applyRecencyAging, 1000);
+  setInterval(applyRecencyAging, 2000);
 
   // ===== Lines/sec =====
   setInterval(() => { linesSecEl.textContent = linesThisSecond; linesThisSecond = 0; }, 1000);
