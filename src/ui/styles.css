@@ -30,13 +30,11 @@
   --radius: 6px;
 }
 
-html {
-  height: 100%;
-}
-
-body {
-  height: 100%;
+html, body {
   margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-mono);
@@ -46,9 +44,10 @@ body {
 }
 
 #app {
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
-  height: 100%;
   overflow: hidden;
 }
 
@@ -292,12 +291,18 @@ header {
 .grid-label { font-size: 9px; font-family: var(--font-sans); color: var(--text-ghost); min-width: 28px; text-align: center; }
 
 /* ===== Panes ===== */
-.pane-container {
+.pane-wrapper {
   flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane-container {
+  position: absolute;
+  inset: 0;
   display: flex;
   overflow: hidden;
-  min-height: 0;
-  position: relative;
 }
 .pane-container.grid-layout {
   display: grid;
@@ -307,6 +312,7 @@ header {
 }
 
 .pane {
+  flex: 1;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -357,7 +363,20 @@ header {
   overflow-x: hidden;
   padding: 3px 6px;
   min-height: 0;
-  max-height: 100%;
+  position: relative;
+}
+
+/* Fog gradient: older entries at top fade into background */
+.log-scroll::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  display: block;
+  height: 60px;
+  margin-bottom: -60px;
+  background: linear-gradient(to bottom, var(--bg) 0%, transparent 100%);
+  pointer-events: none;
+  z-index: 2;
 }
 .log-scroll::-webkit-scrollbar { width: 4px; }
 .log-scroll::-webkit-scrollbar-track { background: transparent; }
@@ -442,36 +461,8 @@ header {
   font-family: var(--font-mono);
 }
 
-/* ===== Recency ===== */
-.log-entry.age-0 { opacity: 1; border-left-width: 3px; }
-.log-entry.age-0 .entry-summary { color: var(--text-muted); }
-.log-entry.age-0 .entry-time { color: var(--text-ghost); }
-.log-entry.age-0[data-category="tool_use"] .entry-tool { color: var(--text); }
-
-.log-entry.age-1 { opacity: 0.8; border-left-width: 2px; }
-.log-entry.age-1 .entry-tool { color: var(--text-ghost); }
-.log-entry.age-1 .entry-summary { color: var(--text-dim); }
-.log-entry.age-1 .entry-time { color: var(--text-dim); }
-
-.log-entry.age-2 { opacity: 0.6; border-left-width: 2px; }
-.log-entry.age-2 .entry-tool { color: var(--text-dim); }
-.log-entry.age-2 .entry-summary { color: var(--text-dim); }
-.log-entry.age-2 .entry-badge { opacity: 0.6; }
-.log-entry.age-2 .entry-time { color: #27272a; }
-
-.log-entry.age-3 { opacity: 0.4; border-left-width: 1px; }
-.log-entry.age-3 .entry-tool { color: #3f3f46; }
-.log-entry.age-3 .entry-summary { color: #27272a; }
-.log-entry.age-3 .entry-badge { opacity: 0.35; }
-.log-entry.age-3 .entry-time { color: #27272a; }
-
-/* Restore on hover */
-.log-entry:hover { opacity: 1 !important; border-left-width: 3px !important; }
-.log-entry:hover .entry-summary { color: var(--text-muted) !important; }
-.log-entry:hover .entry-badge { opacity: 1 !important; }
-.log-entry:hover .entry-time { color: var(--text-ghost) !important; }
-
-.log-entry.kb-focus { outline: 1px solid var(--accent); outline-offset: -1px; opacity: 1 !important; }
+/* Hover + keyboard focus */
+.log-entry.kb-focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
 /* ===== Detail Modal ===== */
 .modal-overlay {

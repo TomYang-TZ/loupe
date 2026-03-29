@@ -432,20 +432,11 @@ function badgeLabel(cat) {
 
 function esc(str) { const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
 
-function ageClass(ts) {
-  const age = (Date.now() - ts) / 1000;
-  if (age < 60) return "age-0";
-  if (age < 300) return "age-1";
-  if (age < 900) return "age-2";
-  return "age-3";
-}
-
 function renderEntry(entry) {
   const div = document.createElement("div");
-  div.className = `log-entry ${ageClass(entry.ts)}`;
+  div.className = "log-entry";
   div.dataset.id = entry.id;
   div.dataset.category = entry.category;
-  div.dataset.ts = entry.ts;
   if (entry.sessionId) div.dataset.session = entry.sessionId;
 
   div.innerHTML = `
@@ -835,35 +826,6 @@ function focusEntry(visible, idx) {
   if (visible[idx]) { visible[idx].classList.add("kb-focus"); visible[idx].scrollIntoView({ block: "nearest" }); }
 }
 
-// ===== Recency aging =====
-function applyRecencyAging() {
-  for (const p of panes.values()) {
-    const els = p.scrollEl.querySelectorAll(".log-entry");
-    els.forEach((el) => {
-      const ts = parseInt(el.dataset.ts) || 0;
-      const newClass = ageClass(ts);
-      if (!el.classList.contains(newClass)) {
-        el.classList.remove("age-0", "age-1", "age-2", "age-3");
-        el.classList.add(newClass);
-      }
-    });
-  }
-}
-setInterval(applyRecencyAging, 2000);
-
-// ===== Layout: force pane-container to fill remaining height =====
-function fixPaneHeight() {
-  const app = document.getElementById("app");
-  const container = document.getElementById("pane-container");
-  if (!app || !container) return;
-  const appRect = app.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
-  const available = appRect.bottom - containerRect.top;
-  if (available > 0) container.style.height = available + "px";
-}
-window.addEventListener("resize", fixPaneHeight);
-setTimeout(fixPaneHeight, 100);
-setTimeout(fixPaneHeight, 500);
 
 // ===== Init =====
 connect();
