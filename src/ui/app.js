@@ -224,21 +224,25 @@ paneContainer.addEventListener("mousedown", (e) => {
   document.body.style.userSelect = "none";
 
   if (edge.type === "col") {
-    const colWidths = getComputedStyle(paneContainer).gridTemplateColumns.split(" ").map(parseFloat);
+    const leftW = edge.left.el.offsetWidth;
+    const rightW = edge.right.el.offsetWidth;
     const leftIdx = [...panes.values()].indexOf(edge.left);
     const rightIdx = [...panes.values()].indexOf(edge.right);
     const cols = Math.min(gridCols, panes.size);
     const leftCol = leftIdx % cols;
     const rightCol = rightIdx % cols;
     const startX = e.clientX;
+    const colWidths = getComputedStyle(paneContainer).gridTemplateColumns.split(" ").map(parseFloat);
 
     document.body.style.cursor = "col-resize";
     function onMove(ev) {
       const delta = ev.clientX - startX;
       const nw = [...colWidths];
-      nw[leftCol] = Math.max(80, colWidths[leftCol] + delta);
-      nw[rightCol] = Math.max(80, colWidths[rightCol] - delta);
+      nw[leftCol] = Math.max(80, leftW + delta);
+      nw[rightCol] = Math.max(80, rightW - delta);
       paneContainer.style.gridTemplateColumns = nw.map(w => w + "px").join(" ");
+      edge.left.scrollEl.scrollTop = edge.left.scrollEl.scrollHeight;
+      edge.right.scrollEl.scrollTop = edge.right.scrollEl.scrollHeight;
     }
     function onUp() {
       paneContainer._resizing = false;
@@ -250,7 +254,8 @@ paneContainer.addEventListener("mousedown", (e) => {
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   } else {
-    const rowHeights = getComputedStyle(paneContainer).gridTemplateRows.split(" ").map(parseFloat);
+    const aboveH = edge.above.el.offsetHeight;
+    const belowH = edge.below.el.offsetHeight;
     const aboveIdx = [...panes.values()].indexOf(edge.above);
     const belowIdx = [...panes.values()].indexOf(edge.below);
     const cols = Math.min(gridCols, panes.size);
@@ -258,13 +263,19 @@ paneContainer.addEventListener("mousedown", (e) => {
     const belowRow = Math.floor(belowIdx / cols);
     const startY = e.clientY;
 
+    // Initialize grid-template-rows from actual computed sizes if not set yet
+    const rowHeights = getComputedStyle(paneContainer).gridTemplateRows.split(" ").map(parseFloat);
+
     document.body.style.cursor = "row-resize";
     function onMove(ev) {
       const delta = ev.clientY - startY;
       const nh = [...rowHeights];
-      nh[aboveRow] = Math.max(60, rowHeights[aboveRow] + delta);
-      nh[belowRow] = Math.max(60, rowHeights[belowRow] - delta);
+      nh[aboveRow] = Math.max(60, aboveH + delta);
+      nh[belowRow] = Math.max(60, belowH - delta);
       paneContainer.style.gridTemplateRows = nh.map(h => h + "px").join(" ");
+      // Keep content flush with separator
+      edge.above.scrollEl.scrollTop = edge.above.scrollEl.scrollHeight;
+      edge.below.scrollEl.scrollTop = edge.below.scrollEl.scrollHeight;
     }
     function onUp() {
       paneContainer._resizing = false;
@@ -308,9 +319,25 @@ function rebuildPanes() {
       panes.set(id, p);
     }
 
-    const cols = Math.min(gridCols, sessionOrder.length);
+    const paneList = [...panes.values()];
+    const cols = Math.min(gridCols, paneList.length);
+    const rows = Math.ceil(paneList.length / cols);
     paneContainer.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     paneContainer.style.removeProperty("grid-template-rows");
+
+    // Make panes that are last in their column span remaining rows
+    if (rows > 1) {
+      const lastRowCount = paneList.length % cols || cols;
+      for (let i = 0; i < paneList.length; i++) {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        const panesInThisCol = col < lastRowCount ? rows : rows - 1;
+        const isLastInCol = row === panesInThisCol - 1;
+        if (isLastInCol && panesInThisCol < rows) {
+          paneList[i].el.style.gridRow = `span ${rows - panesInThisCol + 1}`;
+        }
+      }
+    }
   }
 
   // Apply saved zoom
