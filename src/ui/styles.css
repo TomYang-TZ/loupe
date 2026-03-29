@@ -118,6 +118,32 @@
   .session-tab.tab-dragging { opacity: 0.4; }
   .session-tab.tab-drop-target { border-bottom-color: var(--accent); background: var(--accent-dim); }
 
+  .session-tab.tab-stale { opacity: 0.5; }
+  .session-tab.tab-stale:hover { opacity: 0.8; }
+
+  .tab-stale-label {
+    font-size: 8px;
+    color: var(--text-subtle);
+    margin-left: 3px;
+    font-family: var(--font-mono);
+  }
+
+  .tab-close {
+    display: none;
+    margin-left: 4px;
+    padding: 0 3px;
+    font-size: 12px;
+    color: var(--text-subtle);
+    background: none;
+    border: none;
+    cursor: pointer;
+    line-height: 1;
+    border-radius: 2px;
+    vertical-align: middle;
+  }
+  .tab-close:hover { color: var(--red); background: var(--red-bg); }
+  .session-tab:hover .tab-close { display: inline; }
+
   .tab-split-btn {
     margin-left: auto;
     padding: 4px 8px;
@@ -341,7 +367,7 @@
   }
 
   .entry-summary {
-    font-size: 11px;
+    font-size: 10px;
     color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -456,7 +482,7 @@
   }
   .log-entry.age-0 .entry-badge { font-size: 10px; }
   .log-entry.age-0 .entry-tool { font-size: 13px; color: #f0f6fc; }
-  .log-entry.age-0 .entry-summary { font-size: 12px; color: #b1bac4; }
+  .log-entry.age-0 .entry-summary { font-size: 10px; color: #b1bac4; }
   .log-entry.age-0 .entry-time { color: #7d8590; }
 
   .log-entry.age-1 {

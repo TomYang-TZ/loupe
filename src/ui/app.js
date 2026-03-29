@@ -10,7 +10,7 @@
   let linesThisSecond = 0;
   let selectedIdx = -1;
   let firstEventTs = null;
-  const sessions = new Map(); // session_id -> { label, count }
+  const sessions = new Map(); // session_id -> { label, count, color, lastEventTs }
 
   // DOM
   const paneContainer = document.getElementById("pane-container");
@@ -356,12 +356,14 @@
     // Track sessions
     let newSession = false;
     if (sessionId && !sessions.has(sessionId)) {
-      sessions.set(sessionId, { label: sessionLabel || sessionId.slice(0, 8), count: 0, color: nextSessionColor() });
+      sessions.set(sessionId, { label: sessionLabel || sessionId.slice(0, 8), count: 0, color: nextSessionColor(), lastEventTs: msg.ts });
       newSession = true;
       rebuildTabs();
     }
     if (sessionId && sessions.has(sessionId)) {
-      sessions.get(sessionId).count++;
+      const sInfo = sessions.get(sessionId);
+      sInfo.count++;
+      sInfo.lastEventTs = msg.ts;
       if (activeSession !== "all" && activeSession !== sessionId) {
         const tab = tabBar.querySelector(`[data-session="${sessionId}"] .tab-dot`);
         if (tab) tab.classList.add("has-activity");
@@ -631,16 +633,30 @@
     tabBar.appendChild(allTab);
 
     let tabIdx = 1;
+    const now = Date.now();
     for (const id of sessionOrder) {
       const info = sessions.get(id);
       if (!info) continue;
+      const staleMinutes = info.lastEventTs ? Math.floor((now - info.lastEventTs) / 60000) : 0;
+      const isStale = staleMinutes >= 2;
+
       const tab = document.createElement("div");
-      tab.className = `session-tab ${activeSession === id ? "active" : ""}`;
+      tab.className = `session-tab ${activeSession === id ? "active" : ""} ${isStale ? "tab-stale" : ""}`;
       tab.dataset.session = id;
       tab.draggable = true;
       const shortcut = tabIdx <= 9 ? `<span class="tab-shortcut">${tabIdx}</span>` : "";
-      tab.innerHTML = `${esc(info.label)}${shortcut} <span class="tab-dot"></span>`;
-      tab.onclick = () => switchSession(id);
+      const staleLabel = isStale ? `<span class="tab-stale-label">${staleMinutes}m</span>` : "";
+      tab.innerHTML = `${esc(info.label)}${shortcut}${staleLabel}<span class="tab-dot"></span><button class="tab-close" title="Remove session">&times;</button>`;
+      tab.onclick = (e) => {
+        if (e.target.classList.contains("tab-close")) return;
+        switchSession(id);
+      };
+
+      // Close button
+      tab.querySelector(".tab-close").onclick = (e) => {
+        e.stopPropagation();
+        removeSession(id);
+      };
 
       // Drag handlers
       tab.addEventListener("dragstart", (e) => {
@@ -688,6 +704,23 @@
     rebuildTabs();
     rebuildView();
   }
+
+  function removeSession(id) {
+    // Remove session and its entries
+    sessions.delete(id);
+    sessionOrder = sessionOrder.filter(s => s !== id);
+    // Remove entries belonging to this session
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].sessionId === id) entries.splice(i, 1);
+    }
+    // If we were viewing this session, switch to All
+    if (activeSession === id) activeSession = "all";
+    rebuildTabs();
+    rebuildView();
+  }
+
+  // Periodically refresh tab stale indicators
+  setInterval(rebuildTabs, 30000);
 
   // Scroll all panes to bottom
   function scrollAllToBottom() {
