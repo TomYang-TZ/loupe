@@ -83,10 +83,13 @@
       panes.set("main", p);
       mainContainer = p.scrollEl;
     } else {
-      // Multi-pane: one per session with resizable splitters
+      // Multi-pane: one per session with resizable splitters, in tab order
+      syncSessionOrder();
       paneContainer.classList.add("multi-pane");
       let first = true;
-      for (const [id, info] of sessions) {
+      for (const id of sessionOrder) {
+        const info = sessions.get(id);
+        if (!info) continue;
         if (!info.color) info.color = nextSessionColor();
         if (!first) {
           const splitter = createSplitter();
@@ -603,9 +606,23 @@
     searchCount.textContent = searchQuery ? `${matchCount}` : "";
   }
 
-  // ===== Session Tabs =====
+  // ===== Session Tabs (with drag reorder) =====
+  // Maintain ordered session list (Map insertion order by default, but drag can reorder)
+  let sessionOrder = []; // array of session IDs in display order
+
+  function syncSessionOrder() {
+    // Add any new sessions not yet in the order
+    for (const id of sessions.keys()) {
+      if (!sessionOrder.includes(id)) sessionOrder.push(id);
+    }
+    // Remove any that no longer exist
+    sessionOrder = sessionOrder.filter(id => sessions.has(id));
+  }
+
   function rebuildTabs() {
+    syncSessionOrder();
     tabBar.innerHTML = "";
+
     const allTab = document.createElement("div");
     allTab.className = `session-tab ${activeSession === "all" ? "active" : ""}`;
     allTab.dataset.session = "all";
@@ -614,13 +631,51 @@
     tabBar.appendChild(allTab);
 
     let tabIdx = 1;
-    for (const [id, info] of sessions) {
+    for (const id of sessionOrder) {
+      const info = sessions.get(id);
+      if (!info) continue;
       const tab = document.createElement("div");
       tab.className = `session-tab ${activeSession === id ? "active" : ""}`;
       tab.dataset.session = id;
+      tab.draggable = true;
       const shortcut = tabIdx <= 9 ? `<span class="tab-shortcut">${tabIdx}</span>` : "";
       tab.innerHTML = `${esc(info.label)}${shortcut} <span class="tab-dot"></span>`;
       tab.onclick = () => switchSession(id);
+
+      // Drag handlers
+      tab.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", id);
+        tab.classList.add("tab-dragging");
+        e.dataTransfer.effectAllowed = "move";
+      });
+      tab.addEventListener("dragend", () => {
+        tab.classList.remove("tab-dragging");
+        tabBar.querySelectorAll(".tab-drop-target").forEach(el => el.classList.remove("tab-drop-target"));
+      });
+      tab.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        tab.classList.add("tab-drop-target");
+      });
+      tab.addEventListener("dragleave", () => {
+        tab.classList.remove("tab-drop-target");
+      });
+      tab.addEventListener("drop", (e) => {
+        e.preventDefault();
+        tab.classList.remove("tab-drop-target");
+        const draggedId = e.dataTransfer.getData("text/plain");
+        if (draggedId === id) return;
+        // Reorder: move draggedId before this tab
+        const fromIdx = sessionOrder.indexOf(draggedId);
+        const toIdx = sessionOrder.indexOf(id);
+        if (fromIdx === -1 || toIdx === -1) return;
+        sessionOrder.splice(fromIdx, 1);
+        sessionOrder.splice(toIdx, 0, draggedId);
+        rebuildTabs();
+        // If in All view, rebuild panes to match new order
+        if (activeSession === "all") rebuildView();
+      });
+
       tabBar.appendChild(tab);
       tabIdx++;
     }
@@ -676,7 +731,8 @@
 
   // ===== Session cycling =====
   function getSessionList() {
-    return ["all", ...sessions.keys()];
+    syncSessionOrder();
+    return ["all", ...sessionOrder];
   }
 
   function cycleSession(direction) {
