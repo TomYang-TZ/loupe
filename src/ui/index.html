@@ -27,14 +27,10 @@
       <input type="text" id="search-input" placeholder="Search..." />
       <span class="search-count" id="search-count"></span>
     </div>
-    <select class="filter-select" id="filter-select" onchange="setFilter(this.value)">
-      <option value="all">All types</option>
-      <option value="tool_use">Tool Use</option>
-      <option value="tool_result">Result</option>
-      <option value="error">Error</option>
-      <option value="thinking">Thinking</option>
-      <option value="text">Text</option>
-    </select>
+    <div class="filter-dropdown" id="filter-dropdown">
+      <div class="filter-trigger" id="filter-trigger">All types</div>
+      <div class="filter-menu" id="filter-menu"></div>
+    </div>
     <div class="toolbar-sep"></div>
     <div class="toolbar-right">
       <span class="grid-controls" id="grid-controls" style="display:none">

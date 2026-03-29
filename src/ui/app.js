@@ -3,7 +3,8 @@
 // ===== State =====
 const entries = [];
 let lineCounter = 0;
-let activeFilter = "all";
+// Multi-select filter: set of HIDDEN types (everything shown by default)
+const hiddenTypes = new Set();
 let activeSession = "all";
 let searchQuery = "";
 let autoScroll = true;
@@ -21,7 +22,9 @@ const lineCountEl = document.getElementById("line-count");
 const connDot = document.getElementById("conn-dot");
 const connStatus = document.getElementById("conn-status");
 const tabBar = document.getElementById("tab-bar");
-const filterSelect = document.getElementById("filter-select");
+const filterTrigger = document.getElementById("filter-trigger");
+const filterMenu = document.getElementById("filter-menu");
+const filterDropdown = document.getElementById("filter-dropdown");
 const scanline = document.getElementById("scanline");
 const modalOverlay = document.getElementById("modal-overlay");
 const modalPanel = document.getElementById("modal-panel");
@@ -584,7 +587,7 @@ function spanOf(text, cls) { const s = document.createElement("span"); s.classNa
 
 // ===== Filtering =====
 function matchesAll(entry) { return matchesFilter(entry) && matchesSession(entry) && matchesSearch(entry); }
-function matchesFilter(entry) { return activeFilter === "all" || entry.category === activeFilter; }
+function matchesFilter(entry) { return !hiddenTypes.has(entry.category); }
 function matchesSession(entry) { return activeSession === "all" || entry.sessionId === activeSession; }
 function matchesSearch(entry) {
   if (!searchQuery) return true;
@@ -599,7 +602,50 @@ function applySearch(text) {
   return escaped.replace(new RegExp(`(${q})`, "gi"), "<mark>$1</mark>");
 }
 
-window.setFilter = (type) => { activeFilter = type; rebuildView(); };
+// ===== Multi-select filter dropdown =====
+const FILTER_TYPES = [
+  { key: "tool_use", label: "Tool Use", color: "#3b82f6" },
+  { key: "tool_result", label: "Result", color: "#4ade80" },
+  { key: "error", label: "Error", color: "#ef4444" },
+  { key: "thinking", label: "Thinking", color: "#8b5cf6" },
+  { key: "text", label: "Text", color: "#71717a" },
+];
+
+function buildFilterMenu() {
+  filterMenu.innerHTML = "";
+  for (const ft of FILTER_TYPES) {
+    const item = document.createElement("div");
+    item.className = "filter-item";
+    item.dataset.type = ft.key;
+    const checked = !hiddenTypes.has(ft.key);
+    item.innerHTML = `<span class="filter-check">${checked ? "\u2713" : ""}</span><span class="filter-color" style="background:${ft.color}"></span>${ft.label}`;
+    item.onclick = (e) => {
+      e.stopPropagation();
+      if (hiddenTypes.has(ft.key)) hiddenTypes.delete(ft.key);
+      else hiddenTypes.add(ft.key);
+      buildFilterMenu();
+      updateFilterLabel();
+      rebuildView();
+    };
+    filterMenu.appendChild(item);
+  }
+}
+
+function updateFilterLabel() {
+  if (hiddenTypes.size === 0) filterTrigger.textContent = "All types";
+  else if (hiddenTypes.size === FILTER_TYPES.length) filterTrigger.textContent = "None";
+  else {
+    const shown = FILTER_TYPES.filter(ft => !hiddenTypes.has(ft.key));
+    filterTrigger.textContent = shown.map(ft => ft.label).join(", ");
+  }
+}
+
+filterTrigger.onclick = () => filterMenu.classList.toggle("open");
+document.addEventListener("click", (e) => {
+  if (!filterDropdown.contains(e.target)) filterMenu.classList.remove("open");
+});
+
+buildFilterMenu();
 searchInput.addEventListener("input", (e) => { searchQuery = e.target.value; rebuildView(); });
 
 function rebuildView() {
@@ -815,7 +861,17 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); if (!visible.length) return; selectedIdx = Math.min(selectedIdx + 1, visible.length - 1); focusEntry(visible, selectedIdx); }
   if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); if (!visible.length) return; selectedIdx = Math.max(selectedIdx - 1, 0); focusEntry(visible, selectedIdx); }
   if (e.key === "Enter") { e.preventDefault(); if (selectedIdx >= 0 && visible[selectedIdx]) openModal(parseInt(visible[selectedIdx].dataset.id)); }
-  if (e.key === "e") { filterSelect.value = activeFilter === "error" ? "all" : "error"; setFilter(filterSelect.value); }
+  if (e.key === "e") {
+    // Toggle: show only errors vs show all
+    if (hiddenTypes.size === 0) {
+      FILTER_TYPES.forEach(ft => { if (ft.key !== "error") hiddenTypes.add(ft.key); });
+    } else {
+      hiddenTypes.clear();
+    }
+    buildFilterMenu();
+    updateFilterLabel();
+    rebuildView();
+  }
   if (e.key === "g") { jumpToBottom(); }
   if (e.key === "0") { switchSession("all"); }
   if (e.key >= "1" && e.key <= "9") { const idx = parseInt(e.key) - 1; const ids = [...sessions.keys()]; if (idx < ids.length) switchSession(ids[idx]); }
