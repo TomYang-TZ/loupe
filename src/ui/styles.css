@@ -282,8 +282,8 @@ header {
 .grid-label { font-size: 9px; font-family: var(--font-sans); color: var(--text-ghost); min-width: 28px; text-align: center; }
 
 /* ===== Panes ===== */
-.pane-container { flex: 1; display: flex; overflow: hidden; }
-.pane-container.grid-layout { display: grid; gap: 1px; background: var(--border-light); }
+.pane-container { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+.pane-container.grid-layout { display: grid; gap: 1px; background: var(--border-light); grid-auto-rows: 1fr; }
 
 .pane {
   flex: 1;
