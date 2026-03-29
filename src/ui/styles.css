@@ -104,6 +104,7 @@
   }
   .session-tab:hover { color: var(--text); background: var(--bg-surface); }
   .session-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .session-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
   .session-tab .tab-dot {
     width: 5px; height: 5px; border-radius: 50%;
@@ -207,7 +208,8 @@
     background-repeat: no-repeat;
     background-position: right 6px center;
   }
-  .filter-select:focus { border-color: var(--accent); }
+  .filter-select:focus { border-color: var(--accent); outline: none; }
+  .filter-select:focus-visible { box-shadow: 0 0 0 2px var(--accent-dim); }
 
   .toolbar-sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
 
@@ -229,9 +231,10 @@
     border: 1px solid var(--border);
     background: var(--bg-card);
     color: var(--text-muted);
-    transition: all 0.15s;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
   }
   .btn:hover { background: var(--bg-surface); color: var(--text); }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .btn.active { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
 
   /* ===== Pane Container ===== */
@@ -256,34 +259,6 @@
     min-height: 0;
     background: var(--bg);
   }
-
-  /* Resizable splitter handle between panes */
-  .pane-splitter {
-    width: 5px;
-    cursor: col-resize;
-    background: var(--border);
-    flex-shrink: 0;
-    transition: background 0.15s;
-    position: relative;
-  }
-  .pane-splitter:hover,
-  .pane-splitter.dragging {
-    background: var(--accent);
-  }
-  .pane-splitter::after {
-    content: "";
-    position: absolute;
-    top: 50%;
-    left: 1px;
-    width: 3px;
-    height: 24px;
-    transform: translateY(-50%);
-    border-left: 1px solid var(--text-subtle);
-    border-right: 1px solid var(--text-subtle);
-    opacity: 0;
-    transition: opacity 0.15s;
-  }
-  .pane-splitter:hover::after { opacity: 0.5; }
 
   .pane-header {
     padding: 5px 10px;
@@ -524,43 +499,30 @@
   /* Keyboard focus indicator */
   .log-entry.kb-focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
-  /* Time-based recency opacity */
-  .log-entry.age-0 { opacity: 1; }
-  .log-entry.age-1 { opacity: 0.85; }
-  .log-entry.age-2 { opacity: 0.65; }
-  .log-entry.age-3 { opacity: 0.45; }
+  /* Time-based recency (age-0: <1min, age-1: 1-5min, age-2: 5-15min, age-3: >15min) */
+  .log-entry { transition: opacity 0.8s ease, border-left-width 0.3s ease, background 0.3s ease; }
 
-  /* Recency — dramatic time-based contrast */
-  /* age-0: <30s — vivid, full presence */
-  .log-entry.age-0 {
-    background: rgba(22, 27, 34, 0.5);
-    border-left-width: 3px;
-  }
+  /* age-0: fresh — full presence */
+  .log-entry.age-0 { opacity: 1; background: rgba(22, 27, 34, 0.5); border-left-width: 3px; }
   .log-entry.age-0 .entry-summary { color: #c9d1d9; }
   .log-entry.age-0 .entry-time { color: #8b949e; }
   .log-entry.age-0[data-category="tool_use"] .entry-tool { color: #f0f6fc; }
 
-  /* age-1: 30s-2min — settling */
-  .log-entry.age-1 {
-    border-left-width: 2px;
-  }
+  /* age-1: settling */
+  .log-entry.age-1 { opacity: 0.85; border-left-width: 2px; }
   .log-entry.age-1 .entry-tool { color: #9eaab6; }
   .log-entry.age-1 .entry-summary { color: #6e7681; }
   .log-entry.age-1 .entry-time { color: #484f58; }
 
-  /* age-2: 2-5min — fading */
-  .log-entry.age-2 {
-    border-left-width: 2px;
-  }
+  /* age-2: fading */
+  .log-entry.age-2 { opacity: 0.65; border-left-width: 2px; }
   .log-entry.age-2 .entry-tool { color: #6e7681; }
   .log-entry.age-2 .entry-summary { color: #484f58; }
   .log-entry.age-2 .entry-badge { opacity: 0.5; }
   .log-entry.age-2 .entry-time { color: #30363d; }
 
-  /* age-3: >5min — ghost */
-  .log-entry.age-3 {
-    border-left-width: 1px;
-  }
+  /* age-3: background */
+  .log-entry.age-3 { opacity: 0.45; border-left-width: 1px; }
   .log-entry.age-3 .entry-tool { color: #484f58; }
   .log-entry.age-3 .entry-summary { color: #30363d; }
   .log-entry.age-3 .entry-badge { opacity: 0.3; }
@@ -664,3 +626,12 @@
   }
 
   .help-row span { margin-left: auto; }
+
+  /* ===== Reduced Motion ===== */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
