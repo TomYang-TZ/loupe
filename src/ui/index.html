@@ -9,15 +9,16 @@
 <body>
 <div id="app">
   <header>
-    <div class="logo">Lou<span>pe</span></div>
+    <div class="logo">loupe<span class="logo-cursor">_</span></div>
     <div class="stats">
       <span><span class="conn-dot connecting" id="conn-dot"></span><span id="conn-status">connecting</span></span>
       <span><span class="stat-val" id="line-count">0</span> events</span>
     </div>
+    <div class="scanline" id="scanline"><div class="scanline-bar"></div></div>
   </header>
 
   <div class="tab-bar" id="tab-bar">
-    <div class="session-tab active" data-session="all">All Sessions</div>
+    <div class="session-tab active" data-session="all">All</div>
   </div>
 
   <div class="toolbar">
@@ -41,18 +42,28 @@
         <span class="grid-label" id="grid-label">4 col</span>
         <button class="btn btn-sm" onclick="setGridCols(gridCols+1)" title="More columns">+</button>
       </span>
-      <div class="toolbar-sep"></div>
-      <button class="btn" onclick="collapseAll()" title="Collapse all cards">Fold</button>
-      <button class="btn" onclick="expandAll()" title="Expand all cards">Unfold</button>
-      <button class="btn" onclick="clearLogs()" title="Clear all entries">Clear</button>
+      <div class="toolbar-sep" id="grid-sep" style="display:none"></div>
+      <button class="btn" onclick="collapseAll()" title="Fold all">Fold</button>
+      <button class="btn" onclick="clearLogs()" title="Clear all">Clear</button>
     </div>
   </div>
 
-  <div class="pane-container" id="pane-container">
-    <!-- Panes are managed by JS -->
-  </div>
+  <div class="pane-container" id="pane-container"></div>
 
   <button id="scroll-fab" onclick="jumpToBottom()">&#8595;</button>
+</div>
+
+<!-- Detail Modal -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal-panel" id="modal-panel">
+    <div class="modal-header">
+      <span class="modal-badge" id="modal-badge"></span>
+      <span class="modal-tool" id="modal-tool"></span>
+      <span class="modal-time" id="modal-time"></span>
+      <button class="modal-close" id="modal-close">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
 </div>
 
 <script src="app.js"></script>
