@@ -667,26 +667,90 @@
     lineCountEl.textContent = "0";
   };
 
+  // ===== Session cycling =====
+  function getSessionList() {
+    return ["all", ...sessions.keys()];
+  }
+
+  function cycleSession(direction) {
+    const list = getSessionList();
+    if (list.length <= 1) return;
+    const currentIdx = list.indexOf(activeSession);
+    const nextIdx = (currentIdx + direction + list.length) % list.length;
+    switchSession(list[nextIdx]);
+  }
+
+  // ===== Help overlay =====
+  let helpVisible = false;
+  function toggleHelp() {
+    helpVisible = !helpVisible;
+    let overlay = document.getElementById("help-overlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.id = "help-overlay";
+      overlay.innerHTML = `
+        <div class="help-panel">
+          <div class="help-title">Keyboard Shortcuts</div>
+          <div class="help-grid">
+            <div class="help-section">
+              <div class="help-section-title">Navigation</div>
+              <div class="help-row"><kbd>j</kbd> <kbd>k</kbd> <span>Move up / down</span></div>
+              <div class="help-row"><kbd>Enter</kbd> <span>Expand / collapse entry</span></div>
+              <div class="help-row"><kbd>g</kbd> <span>Jump to bottom</span></div>
+              <div class="help-row"><kbd>/</kbd> <span>Focus search</span></div>
+              <div class="help-row"><kbd>Esc</kbd> <span>Clear search</span></div>
+            </div>
+            <div class="help-section">
+              <div class="help-section-title">Sessions</div>
+              <div class="help-row"><kbd>\u2318</kbd><kbd>\u2325</kbd><kbd>\u2190</kbd><kbd>\u2192</kbd> <span>Prev / next session</span></div>
+              <div class="help-row"><kbd>0</kbd> <span>All sessions</span></div>
+              <div class="help-row"><kbd>1</kbd>-<kbd>9</kbd> <span>Jump to session</span></div>
+            </div>
+            <div class="help-section">
+              <div class="help-section-title">Actions</div>
+              <div class="help-row"><kbd>e</kbd> <span>Toggle error filter</span></div>
+              <div class="help-row"><kbd>?</kbd> <span>Toggle this help</span></div>
+            </div>
+          </div>
+        </div>
+      `;
+      overlay.addEventListener("click", (ev) => { if (ev.target === overlay) toggleHelp(); });
+      document.body.appendChild(overlay);
+    }
+    overlay.style.display = helpVisible ? "flex" : "none";
+  }
+
   // ===== Keyboard =====
   document.addEventListener("keydown", (e) => {
+    // Cmd+Option+Arrow: cycle sessions (works even in search)
+    if ((e.metaKey && e.altKey) || (e.ctrlKey && e.altKey)) {
+      if (e.key === "ArrowLeft") { e.preventDefault(); cycleSession(-1); return; }
+      if (e.key === "ArrowRight") { e.preventDefault(); cycleSession(1); return; }
+    }
+
     const inSearch = document.activeElement === searchInput;
 
+    if (e.key === "?" && !inSearch) { toggleHelp(); return; }
+    if (e.key === "Escape") {
+      if (helpVisible) { toggleHelp(); return; }
+      searchInput.blur(); searchInput.value = ""; searchQuery = ""; rebuildView(); return;
+    }
     if (e.key === "/" && !inSearch) { e.preventDefault(); searchInput.focus(); return; }
-    if (e.key === "Escape") { searchInput.blur(); searchInput.value = ""; searchQuery = ""; rebuildView(); return; }
     if (inSearch) return;
 
     const firstPane = panes.values().next().value;
     if (!firstPane) return;
     const visible = [...firstPane.scrollEl.querySelectorAll(".log-entry")];
-    if (!visible.length) return;
 
     if (e.key === "j" || e.key === "ArrowDown") {
       e.preventDefault();
+      if (!visible.length) return;
       selectedIdx = Math.min(selectedIdx + 1, visible.length - 1);
       focusEntry(visible, selectedIdx);
     }
     if (e.key === "k" || e.key === "ArrowUp") {
       e.preventDefault();
+      if (!visible.length) return;
       selectedIdx = Math.max(selectedIdx - 1, 0);
       focusEntry(visible, selectedIdx);
     }
@@ -717,25 +781,27 @@
     }
   }
 
-  // ===== Recency aging =====
-  // Recent entries are full opacity + slightly larger; older ones fade
+  // ===== Recency aging (time-based) =====
   function applyRecencyAging() {
+    const now = Date.now();
     for (const p of panes.values()) {
       const els = p.scrollEl.querySelectorAll(".log-entry");
-      const total = els.length;
-      els.forEach((el, i) => {
+      els.forEach((el) => {
+        const id = parseInt(el.dataset.id);
+        const entry = entries.find(e => e.id === id);
+        const age = entry ? (now - entry.ts) / 1000 : 9999;
+
         el.classList.remove("age-0", "age-1", "age-2", "age-3");
-        const fromEnd = total - 1 - i;
-        if (fromEnd < 10) el.classList.add("age-0");
-        else if (fromEnd < 25) el.classList.add("age-1");
-        else if (fromEnd < 50) el.classList.add("age-2");
-        else el.classList.add("age-3");
+        if (age < 30) el.classList.add("age-0");       // last 30s — bright
+        else if (age < 120) el.classList.add("age-1");  // 30s-2min
+        else if (age < 300) el.classList.add("age-2");  // 2-5min
+        else el.classList.add("age-3");                  // >5min — faded
       });
     }
   }
 
-  // Run aging periodically and after new entries
-  setInterval(applyRecencyAging, 3000);
+  // Update aging every second for smooth transitions
+  setInterval(applyRecencyAging, 1000);
 
   // ===== Lines/sec =====
   setInterval(() => { linesSecEl.textContent = linesThisSecond; linesThisSecond = 0; }, 1000);
