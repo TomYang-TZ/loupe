@@ -851,5 +851,19 @@ function applyRecencyAging() {
 }
 setInterval(applyRecencyAging, 2000);
 
+// ===== Layout: force pane-container to fill remaining height =====
+function fixPaneHeight() {
+  const app = document.getElementById("app");
+  const container = document.getElementById("pane-container");
+  if (!app || !container) return;
+  const appRect = app.getBoundingClientRect();
+  const containerRect = container.getBoundingClientRect();
+  const available = appRect.bottom - containerRect.top;
+  if (available > 0) container.style.height = available + "px";
+}
+window.addEventListener("resize", fixPaneHeight);
+setTimeout(fixPaneHeight, 100);
+setTimeout(fixPaneHeight, 500);
+
 // ===== Init =====
 connect();
