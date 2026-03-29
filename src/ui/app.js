@@ -440,6 +440,7 @@
         const el = renderEntry(entry);
         container.appendChild(el);
         entry.el = el;
+        applyBubbleRecency();
         if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
       }
     }
@@ -659,6 +660,7 @@
     }
 
     searchCount.textContent = searchQuery ? `${matchCount}` : "";
+    applyBubbleRecency();
   }
 
   // ===== Session Tabs (with drag reorder) =====
@@ -928,6 +930,26 @@
     if (visible[idx]) {
       visible[idx].classList.add("kb-focus");
       visible[idx].scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  // ===== Bubble recency (position-based size) =====
+  const BUBBLE_CLASSES = ["bubble-0", "bubble-1", "bubble-2", "bubble-3", "bubble-4"];
+  const BUBBLE_DEPTH = BUBBLE_CLASSES.length;
+
+  function applyBubbleRecency() {
+    for (const p of panes.values()) {
+      const els = p.scrollEl.querySelectorAll(".log-entry");
+      const total = els.length;
+      els.forEach((el, i) => {
+        const fromEnd = total - 1 - i;
+        const oldBubble = BUBBLE_CLASSES.find(c => el.classList.contains(c));
+        const newBubble = fromEnd < BUBBLE_DEPTH ? BUBBLE_CLASSES[fromEnd] : null;
+        if (oldBubble !== newBubble) {
+          if (oldBubble) el.classList.remove(oldBubble);
+          if (newBubble) el.classList.add(newBubble);
+        }
+      });
     }
   }
 
