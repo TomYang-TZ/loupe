@@ -10,7 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     var retryTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        port = ProcessInfo.processInfo.environment["LOGSTREAM_PORT"] ?? "8390"
+        port = ProcessInfo.processInfo.environment["LOUPE_PORT"] ?? "8390"
 
         // Position window on the right side of the screen
         let screen = NSScreen.main!.visibleFrame
@@ -28,7 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             defer: false
         )
 
-        window.title = "logstream"
+        window.title = "Loupe"
         window.titlebarAppearsTransparent = true
         window.appearance = NSAppearance(named: .darkAqua)
         window.backgroundColor = NSColor(red: 13.0/255, green: 17.0/255, blue: 23.0/255, alpha: 1.0)

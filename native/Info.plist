@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>logstream-app</string>
+    <string>loupe</string>
     <key>CFBundleIdentifier</key>
-    <string>com.logstream.viewer</string>
+    <string>com.loupe.viewer</string>
     <key>CFBundleName</key>
-    <string>Logstream</string>
+    <string>Loupe</string>
     <key>CFBundleDisplayName</key>
-    <string>logstream</string>
+    <string>Loupe</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>

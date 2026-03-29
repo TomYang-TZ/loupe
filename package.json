@@ -1,9 +1,9 @@
 {
-  "name": "logstream",
+  "name": "loupe",
   "version": "1.0.0",
   "private": true,
-  "description": "Real-time log viewer",
-  "main": "server.js",
+  "description": "Real-time log viewer for Claude Code sessions",
+  "main": "src/server/index.js",
   "dependencies": {
     "ws": "^8.18.0"
   }

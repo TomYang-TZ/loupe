@@ -1,33 +1,29 @@
 #!/bin/bash
-# Claude Code hook — logs tool events and auto-starts logstream
-# Receives JSON on stdin from Claude Code hooks (PreToolUse / PostToolUse)
+# Loupe — Claude Code hook
+# Logs tool events and auto-starts the viewer on first invocation
 
 set -e
 
-LOGSTREAM_DIR="$HOME/pal/logstream"
+LOUPE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$HOME/.claude/logs"
-LOG_FILE="$LOG_DIR/logstream.jsonl"
-PID_FILE="$LOG_DIR/logstream.pid"
+LOG_FILE="$LOG_DIR/loupe.jsonl"
+PID_FILE="$LOG_DIR/loupe.pid"
 PORT=8390
 
 mkdir -p "$LOG_DIR"
 
-# Determine event type from first argument or env
 EVENT_TYPE="${1:-tool_event}"
 
-# Read stdin (hook input JSON)
 INPUT=""
 if [ ! -t 0 ]; then
     INPUT=$(cat)
 fi
 
-# Append event to log file with metadata
 if [ -n "$INPUT" ]; then
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
     echo "{\"_logstream_type\":\"$EVENT_TYPE\",\"_ts\":\"$TIMESTAMP\",\"data\":$INPUT}" >> "$LOG_FILE"
 fi
 
-# Check if server is already running
 server_running() {
     if [ -f "$PID_FILE" ]; then
         local pid
@@ -43,34 +39,31 @@ server_running() {
     return 1
 }
 
-# Start logstream server + native app if not running
 if ! server_running; then
     touch "$LOG_FILE"
 
-    # Ensure dependencies are installed
-    if [ ! -d "$LOGSTREAM_DIR/node_modules/ws" ]; then
-        cd "$LOGSTREAM_DIR" && npm install --production > /dev/null 2>&1
+    if [ ! -d "$LOUPE_DIR/node_modules/ws" ]; then
+        cd "$LOUPE_DIR" && npm install --production > /dev/null 2>&1
     fi
 
     # Start server
-    nohup node "$LOGSTREAM_DIR/src/server/index.js" "$LOG_FILE" --json --port "$PORT" \
-        > "$LOG_DIR/logstream-server.log" 2>&1 &
+    nohup node "$LOUPE_DIR/src/server/index.js" "$LOG_FILE" --json --port "$PORT" \
+        > "$LOG_DIR/loupe-server.log" 2>&1 &
     SERVER_PID=$!
     echo "$SERVER_PID" > "$PID_FILE"
 
     # Start thinking watcher
-    nohup node "$LOGSTREAM_DIR/src/server/watcher.js" "$LOG_FILE" \
-        > "$LOG_DIR/logstream-thinker.log" 2>&1 &
-    echo "$!" > "$LOG_DIR/logstream-thinker.pid"
+    nohup node "$LOUPE_DIR/src/server/watcher.js" "$LOG_FILE" \
+        > "$LOG_DIR/loupe-thinker.log" 2>&1 &
+    echo "$!" > "$LOG_DIR/loupe-thinker.pid"
 
-    # Wait for server to be ready
     sleep 0.5
 
     # Launch native app
-    APP_BUNDLE="$LOGSTREAM_DIR/Logstream.app"
+    APP_BUNDLE="$LOUPE_DIR/Loupe.app"
     if [ -d "$APP_BUNDLE" ]; then
-        LOGSTREAM_PORT="$PORT" LOGSTREAM_SERVER_PID="$SERVER_PID" \
-            nohup "$APP_BUNDLE/Contents/MacOS/logstream-app" > /dev/null 2>&1 &
+        LOUPE_PORT="$PORT" LOUPE_SERVER_PID="$SERVER_PID" \
+            nohup "$APP_BUNDLE/Contents/MacOS/loupe" > /dev/null 2>&1 &
     fi
 fi
 

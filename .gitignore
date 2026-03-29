@@ -1,4 +1,6 @@
 node_modules/
+Loupe.app/
 Logstream.app/
+native/loupe
 native/logstream-app
 *.log
