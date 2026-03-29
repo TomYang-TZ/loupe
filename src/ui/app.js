@@ -149,6 +149,8 @@ function createPane(sessionId, label, color) {
   scroll.addEventListener("scroll", () => {
     const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 50;
     paneObj.autoScroll = atBottom;
+    // Only show fade when content overflows AND user has scrolled down
+    scroll.classList.toggle("has-overflow", scroll.scrollTop > 20);
   });
 
   return paneObj;
@@ -421,12 +423,8 @@ function handleLine(msg) {
   lineCountEl.textContent = lineCounter;
 }
 
-function relativeTime(ts) {
-  if (!firstEventTs) return "";
-  const diff = (ts - firstEventTs) / 1000;
-  if (diff < 0.1) return "0s";
-  if (diff < 60) return `+${diff.toFixed(1)}s`;
-  return `+${Math.floor(diff / 60)}m${Math.floor(diff % 60)}s`;
+function formatTime(ts) {
+  return new Date(ts).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function badgeLabel(cat) {
@@ -447,7 +445,7 @@ function renderEntry(entry) {
       <span class="entry-badge cat-${entry.category}">${badgeLabel(entry.category)}</span>
       ${entry.title ? `<span class="entry-tool">${esc(entry.title)}</span>` : ""}
       <span class="entry-summary">${esc(entry.summary)}</span>
-      <span class="entry-time">${relativeTime(entry.ts)}</span>
+      <span class="entry-time">${formatTime(entry.ts)}</span>
     </div>
   `;
 
@@ -466,7 +464,7 @@ function openModal(id) {
   modalBadge.className = `modal-badge cat-${entry.category}`;
   modalBadge.textContent = badgeLabel(entry.category);
   modalTool.textContent = entry.title || "";
-  modalTime.textContent = relativeTime(entry.ts);
+  modalTime.textContent = formatTime(entry.ts);
 
   modalBody.innerHTML = "";
 
@@ -618,8 +616,12 @@ function buildFilterMenu() {
     item.className = "filter-item";
     item.dataset.type = ft.key;
     const checked = !hiddenTypes.has(ft.key);
-    item.innerHTML = `<span class="filter-check">${checked ? "\u2713" : ""}</span><span class="filter-color" style="background:${ft.color}"></span>${ft.label}`;
-    item.onclick = (e) => {
+
+    // Checkbox: toggles this type on/off
+    const check = document.createElement("span");
+    check.className = `filter-check ${checked ? "checked" : ""}`;
+    check.textContent = checked ? "\u2713" : "";
+    check.onclick = (e) => {
       e.stopPropagation();
       if (hiddenTypes.has(ft.key)) hiddenTypes.delete(ft.key);
       else hiddenTypes.add(ft.key);
@@ -627,8 +629,45 @@ function buildFilterMenu() {
       updateFilterLabel();
       rebuildView();
     };
+
+    const color = document.createElement("span");
+    color.className = "filter-color";
+    color.style.background = ft.color;
+
+    // Label: click to show ONLY this type
+    const label = document.createElement("span");
+    label.className = "filter-label";
+    label.textContent = ft.label;
+    label.onclick = (e) => {
+      e.stopPropagation();
+      hiddenTypes.clear();
+      FILTER_TYPES.forEach(t => { if (t.key !== ft.key) hiddenTypes.add(t.key); });
+      buildFilterMenu();
+      updateFilterLabel();
+      rebuildView();
+    };
+
+    item.appendChild(check);
+    item.appendChild(color);
+    item.appendChild(label);
     filterMenu.appendChild(item);
   }
+
+  // "Show all" option at bottom
+  const showAll = document.createElement("div");
+  showAll.className = "filter-item";
+  showAll.style.borderTop = "1px solid var(--border)";
+  showAll.style.marginTop = "2px";
+  showAll.style.paddingTop = "6px";
+  showAll.innerHTML = '<span class="filter-check" style="visibility:hidden"></span><span class="filter-label">Show all</span>';
+  showAll.onclick = (e) => {
+    e.stopPropagation();
+    hiddenTypes.clear();
+    buildFilterMenu();
+    updateFilterLabel();
+    rebuildView();
+  };
+  filterMenu.appendChild(showAll);
 }
 
 function updateFilterLabel() {

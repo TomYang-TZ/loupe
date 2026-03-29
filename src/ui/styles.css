@@ -310,9 +310,25 @@ header {
 
 .filter-check {
   width: 14px;
-  font-size: 11px;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
   color: var(--accent);
+  flex-shrink: 0;
+  cursor: pointer;
 }
+.filter-check.checked { background: var(--accent-dim); border-color: var(--accent); }
+.filter-check:hover { border-color: var(--text-ghost); }
+
+.filter-label {
+  cursor: pointer;
+  flex: 1;
+}
+.filter-label:hover { color: var(--text); }
 
 .filter-color {
   width: 8px;
@@ -352,18 +368,11 @@ header {
 .grid-label { font-size: 9px; font-family: var(--font-sans); color: var(--text-ghost); min-width: 28px; text-align: center; }
 
 /* ===== Panes ===== */
-.pane-wrapper {
-  flex: 1;
-  position: relative;
-  min-height: 0;
-  overflow: hidden;
-}
-
 .pane-container {
-  position: absolute;
-  inset: 0;
+  flex: 1;
   display: flex;
   overflow: hidden;
+  min-height: 0;
 }
 .pane-container.grid-layout {
   display: grid;
@@ -424,7 +433,9 @@ header {
   overflow-x: hidden;
   padding: 3px 6px;
   min-height: 0;
-  /* Fade top edge — masks content pixels directly, no layout impact */
+}
+/* Only fade when content overflows */
+.log-scroll.has-overflow {
   -webkit-mask-image: linear-gradient(to bottom, transparent 0px, black 100px);
   mask-image: linear-gradient(to bottom, transparent 0px, black 100px);
 }
