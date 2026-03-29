@@ -37,6 +37,12 @@
     </select>
     <div class="toolbar-sep"></div>
     <div class="toolbar-right">
+      <span class="grid-controls" id="grid-controls" style="display:none">
+        <button class="btn btn-sm" onclick="setGridCols(gridCols-1)" title="Fewer columns">-</button>
+        <span class="grid-label" id="grid-label">4 col</span>
+        <button class="btn btn-sm" onclick="setGridCols(gridCols+1)" title="More columns">+</button>
+      </span>
+      <div class="toolbar-sep"></div>
       <button class="btn" onclick="collapseAll()" title="Collapse all cards">Fold</button>
       <button class="btn" onclick="expandAll()" title="Expand all cards">Unfold</button>
       <button class="btn" onclick="clearLogs()" title="Clear all entries">Clear</button>

@@ -40,6 +40,15 @@
     return div;
   }
 
+  function formatInactive(ts) {
+    if (!ts) return "";
+    const sec = Math.floor((Date.now() - ts) / 1000);
+    if (sec < 30) return "";
+    if (sec < 60) return `${sec}s idle`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m idle`;
+    return `${Math.floor(sec / 3600)}h idle`;
+  }
+
   function createPane(sessionId, label, color) {
     const pane = document.createElement("div");
     pane.className = "pane";
@@ -47,11 +56,33 @@
 
     const header = document.createElement("div");
     header.className = "pane-header";
+
     const dot = document.createElement("span");
     dot.className = "pane-session-dot";
     dot.style.background = color || "var(--accent)";
     header.appendChild(dot);
-    header.appendChild(document.createTextNode(label));
+
+    const titleSpan = document.createElement("span");
+    titleSpan.textContent = label;
+    header.appendChild(titleSpan);
+
+    const idleSpan = document.createElement("span");
+    idleSpan.className = "pane-idle";
+    header.appendChild(idleSpan);
+
+    const spacer = document.createElement("span");
+    spacer.style.flex = "1";
+    header.appendChild(spacer);
+
+    if (sessionId !== "main") {
+      const closeBtn = document.createElement("button");
+      closeBtn.className = "pane-close-btn";
+      closeBtn.innerHTML = "&times;";
+      closeBtn.title = "Remove session";
+      closeBtn.onclick = (e) => { e.stopPropagation(); removeSession(sessionId); };
+      header.appendChild(closeBtn);
+    }
+
     pane.appendChild(header);
 
     const scroll = document.createElement("div");
@@ -59,17 +90,63 @@
     scroll.appendChild(makeEmptyState());
     pane.appendChild(scroll);
 
-    const paneObj = { id: sessionId, el: pane, scrollEl: scroll, autoScroll: true, color };
+    const paneObj = { id: sessionId, el: pane, scrollEl: scroll, autoScroll: true, color, idleSpan };
 
     scroll.addEventListener("scroll", () => {
       const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 50;
       paneObj.autoScroll = atBottom;
     });
 
+    // Pane drag reorder (header is the drag handle)
+    if (sessionId !== "main") {
+      header.draggable = true;
+      header.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", sessionId);
+        e.dataTransfer.effectAllowed = "move";
+        pane.classList.add("pane-dragging");
+      });
+      header.addEventListener("dragend", () => {
+        pane.classList.remove("pane-dragging");
+        paneContainer.querySelectorAll(".pane-drop-target").forEach(el => el.classList.remove("pane-drop-target"));
+      });
+      pane.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        pane.classList.add("pane-drop-target");
+      });
+      pane.addEventListener("dragleave", () => pane.classList.remove("pane-drop-target"));
+      pane.addEventListener("drop", (e) => {
+        e.preventDefault();
+        pane.classList.remove("pane-drop-target");
+        const draggedId = e.dataTransfer.getData("text/plain");
+        if (draggedId === sessionId || !draggedId) return;
+        const fromIdx = sessionOrder.indexOf(draggedId);
+        const toIdx = sessionOrder.indexOf(sessionId);
+        if (fromIdx === -1 || toIdx === -1) return;
+        sessionOrder.splice(fromIdx, 1);
+        sessionOrder.splice(toIdx, 0, draggedId);
+        rebuildTabs();
+        rebuildView();
+      });
+    }
+
     return paneObj;
   }
 
+  // Update idle labels in pane headers
+  function updatePaneIdleLabels() {
+    for (const [id, p] of panes) {
+      if (!p.idleSpan) continue;
+      const info = sessions.get(id);
+      p.idleSpan.textContent = info ? formatInactive(info.lastEventTs) : "";
+    }
+  }
+  setInterval(updatePaneIdleLabels, 5000);
+
   // Build the pane layout based on current mode
+  // Grid layout: default 4 columns, user can change
+  let gridCols = 4;
+
   function rebuildPanes() {
     paneContainer.innerHTML = "";
     panes.clear();
@@ -78,28 +155,44 @@
     if (activeSession !== "all" || sessions.size <= 1) {
       // Single pane mode
       paneContainer.classList.remove("multi-pane");
+      paneContainer.classList.remove("grid-layout");
+      paneContainer.style.removeProperty("grid-template-columns");
       const p = createPane("main", "All", "var(--accent)");
       paneContainer.appendChild(p.el);
       panes.set("main", p);
       mainContainer = p.scrollEl;
     } else {
-      // Multi-pane: one per session with resizable splitters, in tab order
+      // Grid layout: NxM
       syncSessionOrder();
       paneContainer.classList.add("multi-pane");
-      let first = true;
+      paneContainer.classList.add("grid-layout");
+      const cols = Math.min(gridCols, sessionOrder.length);
+      paneContainer.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
       for (const id of sessionOrder) {
         const info = sessions.get(id);
         if (!info) continue;
         if (!info.color) info.color = nextSessionColor();
-        if (!first) {
-          const splitter = createSplitter();
-          paneContainer.appendChild(splitter);
-        }
         const p = createPane(id, info.label, info.color);
         paneContainer.appendChild(p.el);
         panes.set(id, p);
-        first = false;
       }
+    }
+  }
+
+  // Grid column controls
+  const gridControls = document.getElementById("grid-controls");
+  const gridLabel = document.getElementById("grid-label");
+
+  window.setGridCols = (n) => {
+    gridCols = Math.max(1, Math.min(8, n));
+    if (gridLabel) gridLabel.textContent = `${gridCols} col`;
+    if (activeSession === "all" && sessions.size > 1) rebuildView();
+  };
+
+  function updateGridControlsVisibility() {
+    if (gridControls) {
+      gridControls.style.display = (activeSession === "all" && sessions.size > 1) ? "" : "none";
     }
   }
 
@@ -129,46 +222,6 @@
   function scrollPaneToBottom(entry) {
     const container = getContainerFor(entry);
     if (container) container.scrollTop = container.scrollHeight;
-  }
-
-  // ===== Resizable splitter =====
-  function createSplitter() {
-    const splitter = document.createElement("div");
-    splitter.className = "pane-splitter";
-
-    let startX, prevPane, nextPane, prevWidth, nextWidth;
-
-    splitter.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      splitter.classList.add("dragging");
-      startX = e.clientX;
-      prevPane = splitter.previousElementSibling;
-      nextPane = splitter.nextElementSibling;
-      if (!prevPane || !nextPane) return;
-      prevWidth = prevPane.getBoundingClientRect().width;
-      nextWidth = nextPane.getBoundingClientRect().width;
-
-      const onMove = (e) => {
-        const dx = e.clientX - startX;
-        const newPrev = Math.max(150, prevWidth + dx);
-        const newNext = Math.max(150, nextWidth - dx);
-        prevPane.style.flex = "none";
-        nextPane.style.flex = "none";
-        prevPane.style.width = newPrev + "px";
-        nextPane.style.width = newNext + "px";
-      };
-
-      const onUp = () => {
-        splitter.classList.remove("dragging");
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      };
-
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    });
-
-    return splitter;
   }
 
   // Init default single pane
@@ -703,6 +756,7 @@
     if (dot) dot.classList.remove("has-activity");
     rebuildTabs();
     rebuildView();
+    updateGridControlsVisibility();
   }
 
   function removeSession(id) {
