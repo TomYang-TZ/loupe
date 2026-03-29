@@ -228,25 +228,23 @@
   .pane + .pane { border-left: 2px solid var(--border); }
 
   .pane-header {
-    padding: 4px 10px;
+    padding: 5px 10px;
     font-size: 10px;
     font-family: var(--font-sans);
-    color: var(--text-subtle);
+    font-weight: 600;
+    color: var(--text-muted);
     background: var(--bg-card);
     border-bottom: 1px solid var(--border-light);
     display: none;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
   }
-  .split-active .pane-header { display: flex; align-items: center; justify-content: space-between; }
+  .pane-container.multi-pane .pane-header { display: flex; align-items: center; gap: 6px; }
 
-  .pane-close {
-    cursor: pointer;
-    color: var(--text-subtle);
-    font-size: 12px;
-    border: none;
-    background: none;
-    padding: 0 4px;
+  .pane-session-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    flex-shrink: 0;
   }
-  .pane-close:hover { color: var(--red); }
 
   /* ===== Log Container ===== */
   .log-scroll {
@@ -448,16 +446,7 @@
   </div>
 
   <div class="pane-container" id="pane-container">
-    <div class="pane" id="pane-main">
-      <div class="pane-header"><span id="pane-main-label">All Sessions</span><button class="pane-close" onclick="closeSplit()">&times;</button></div>
-      <div class="log-scroll" id="log-container">
-        <div class="empty-state" id="empty-state">
-          <div class="empty-icon">&gt;_</div>
-          <div class="empty-text">Waiting for log data...</div>
-          <div class="empty-hint">Events appear here as Claude calls tools</div>
-        </div>
-      </div>
-    </div>
+    <!-- Panes are managed by JS -->
   </div>
 
   <button id="scroll-fab" onclick="jumpToBottom()">&#8595;</button>
@@ -478,8 +467,7 @@
   const sessions = new Map(); // session_id -> { label, count }
 
   // DOM
-  const container = document.getElementById("log-container");
-  const emptyState = document.getElementById("empty-state");
+  const paneContainer = document.getElementById("pane-container");
   const scrollFab = document.getElementById("scroll-fab");
   const searchInput = document.getElementById("search-input");
   const searchCount = document.getElementById("search-count");
@@ -489,6 +477,107 @@
   const connStatus = document.getElementById("conn-status");
   const tabBar = document.getElementById("tab-bar");
   const filterSelect = document.getElementById("filter-select");
+
+  // Pane management
+  // Each pane: { id, el, scrollEl, autoScroll }
+  const panes = new Map();
+  let mainContainer = null; // single-pane mode container
+
+  const SESSION_COLORS = ["#58a6ff", "#d2a8ff", "#7ee787", "#ff7b72", "#e3b341", "#79c0ff", "#f0883e", "#a5d6ff"];
+  let colorIdx = 0;
+  function nextSessionColor() { return SESSION_COLORS[colorIdx++ % SESSION_COLORS.length]; }
+
+  function makeEmptyState() {
+    const div = document.createElement("div");
+    div.className = "empty-state";
+    div.innerHTML = '<div class="empty-icon">&gt;_</div><div class="empty-text">Waiting for log data...</div><div class="empty-hint">Events appear here as Claude calls tools</div>';
+    return div;
+  }
+
+  function createPane(sessionId, label, color) {
+    const pane = document.createElement("div");
+    pane.className = "pane";
+    pane.dataset.session = sessionId;
+
+    const header = document.createElement("div");
+    header.className = "pane-header";
+    const dot = document.createElement("span");
+    dot.className = "pane-session-dot";
+    dot.style.background = color || "var(--accent)";
+    header.appendChild(dot);
+    header.appendChild(document.createTextNode(label));
+    pane.appendChild(header);
+
+    const scroll = document.createElement("div");
+    scroll.className = "log-scroll";
+    scroll.appendChild(makeEmptyState());
+    pane.appendChild(scroll);
+
+    const paneObj = { id: sessionId, el: pane, scrollEl: scroll, autoScroll: true, color };
+
+    scroll.addEventListener("scroll", () => {
+      const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 50;
+      paneObj.autoScroll = atBottom;
+    });
+
+    return paneObj;
+  }
+
+  // Build the pane layout based on current mode
+  function rebuildPanes() {
+    paneContainer.innerHTML = "";
+    panes.clear();
+    mainContainer = null;
+
+    if (activeSession !== "all" || sessions.size <= 1) {
+      // Single pane mode
+      paneContainer.classList.remove("multi-pane");
+      const p = createPane("main", "All", "var(--accent)");
+      paneContainer.appendChild(p.el);
+      panes.set("main", p);
+      mainContainer = p.scrollEl;
+    } else {
+      // Multi-pane: one per session
+      paneContainer.classList.add("multi-pane");
+      for (const [id, info] of sessions) {
+        if (!info.color) info.color = nextSessionColor();
+        const p = createPane(id, info.label, info.color);
+        paneContainer.appendChild(p.el);
+        panes.set(id, p);
+      }
+    }
+  }
+
+  // Get the scroll container for an entry
+  function getContainerFor(entry) {
+    if (activeSession !== "all" || sessions.size <= 1) {
+      return panes.get("main")?.scrollEl || null;
+    }
+    if (entry.sessionId && panes.has(entry.sessionId)) {
+      return panes.get(entry.sessionId).scrollEl;
+    }
+    // Entry with no session — put in first pane
+    const first = panes.values().next().value;
+    return first?.scrollEl || null;
+  }
+
+  function shouldAutoScroll(entry) {
+    if (activeSession !== "all" || sessions.size <= 1) {
+      return panes.get("main")?.autoScroll ?? true;
+    }
+    if (entry.sessionId && panes.has(entry.sessionId)) {
+      return panes.get(entry.sessionId).autoScroll;
+    }
+    return true;
+  }
+
+  function scrollPaneToBottom(entry) {
+    const container = getContainerFor(entry);
+    if (container) container.scrollTop = container.scrollHeight;
+  }
+
+  // Init default single pane
+  rebuildPanes();
 
   // ===== WebSocket =====
   let ws;
@@ -527,9 +616,9 @@
     lineCounter = 0;
     firstEventTs = null;
     sessions.clear();
-    container.innerHTML = "";
-    container.appendChild(emptyState);
+    colorIdx = 0;
     rebuildTabs();
+    rebuildPanes();
   }
 
   // ===== Parse =====
@@ -670,13 +759,14 @@
     if (!firstEventTs) firstEventTs = msg.ts;
 
     // Track sessions
+    let newSession = false;
     if (sessionId && !sessions.has(sessionId)) {
-      sessions.set(sessionId, { label: sessionLabel || sessionId.slice(0, 8), count: 0 });
+      sessions.set(sessionId, { label: sessionLabel || sessionId.slice(0, 8), count: 0, color: nextSessionColor() });
+      newSession = true;
       rebuildTabs();
     }
     if (sessionId && sessions.has(sessionId)) {
       sessions.get(sessionId).count++;
-      // Show activity dot on inactive tabs
       if (activeSession !== "all" && activeSession !== sessionId) {
         const tab = tabBar.querySelector(`[data-session="${sessionId}"] .tab-dot`);
         if (tab) tab.classList.add("has-activity");
@@ -686,13 +776,22 @@
     const entry = { id: lineCounter, category, title, summary, body, raw: msg.data, json: msg.json, ts: msg.ts, sessionId };
     entries.push(entry);
 
-    if (emptyState.parentNode) emptyState.remove();
+    // If new session discovered while in "all" mode, rebuild panes
+    if (newSession && activeSession === "all" && sessions.size > 1) {
+      rebuildPanes();
+      rebuildAllPaneContents();
+    } else if (matchesAll(entry)) {
+      const container = getContainerFor(entry);
+      if (container) {
+        // Remove empty state if present
+        const empty = container.querySelector(".empty-state");
+        if (empty) empty.remove();
 
-    if (matchesAll(entry)) {
-      const el = renderEntry(entry);
-      container.appendChild(el);
-      entry.el = el;
-      if (autoScroll) scrollToBottom();
+        const el = renderEntry(entry);
+        container.appendChild(el);
+        entry.el = el;
+        if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
+      }
     }
 
     lineCountEl.textContent = lineCounter;
@@ -742,7 +841,7 @@
   }
 
   function toggleEntry(id) {
-    const el = document.querySelector(`.log-entry[data-id="${id}"]`);
+    const el = paneContainer.querySelector(`.log-entry[data-id="${id}"]`);
     if (!el) return;
     const wasExpanded = el.classList.contains("expanded");
     el.classList.toggle("expanded");
@@ -855,19 +954,40 @@
   searchInput.addEventListener("input", (e) => { searchQuery = e.target.value; rebuildView(); });
 
   function rebuildView() {
-    container.innerHTML = "";
+    rebuildPanes();
+    rebuildAllPaneContents();
+  }
+
+  function rebuildAllPaneContents() {
+    // Clear all pane contents
+    for (const p of panes.values()) {
+      p.scrollEl.innerHTML = "";
+    }
+
     let matchCount = 0;
     for (const entry of entries) {
-      if (matchesAll(entry)) {
-        const el = renderEntry(entry);
-        container.appendChild(el);
-        entry.el = el;
-        matchCount++;
+      if (matchesFilter(entry) && matchesSearch(entry)) {
+        if (activeSession !== "all" && !matchesSession(entry)) continue;
+        const container = getContainerFor(entry);
+        if (container) {
+          const el = renderEntry(entry);
+          container.appendChild(el);
+          entry.el = el;
+          matchCount++;
+        }
       }
     }
-    if (matchCount === 0) container.appendChild(emptyState);
+
+    // Add empty states to empty panes
+    for (const p of panes.values()) {
+      if (p.scrollEl.children.length === 0) {
+        p.scrollEl.appendChild(makeEmptyState());
+      }
+      // Scroll to bottom
+      p.scrollEl.scrollTop = p.scrollEl.scrollHeight;
+    }
+
     searchCount.textContent = searchQuery ? `${matchCount}` : "";
-    if (autoScroll) scrollToBottom();
   }
 
   // ===== Session Tabs =====
@@ -892,42 +1012,49 @@
 
   function switchSession(id) {
     activeSession = id;
-    // Clear activity dot
     const dot = tabBar.querySelector(`[data-session="${id}"] .tab-dot`);
     if (dot) dot.classList.remove("has-activity");
     rebuildTabs();
     rebuildView();
   }
 
+  // Scroll all panes to bottom
+  function scrollAllToBottom() {
+    for (const p of panes.values()) {
+      p.scrollEl.scrollTop = p.scrollEl.scrollHeight;
+    }
+  }
+
   // ===== Collapse / Expand =====
   window.collapseAll = () => {
-    document.querySelectorAll(".log-entry.expanded").forEach(el => el.classList.remove("expanded"));
+    paneContainer.querySelectorAll(".log-entry.expanded").forEach(el => el.classList.remove("expanded"));
   };
   window.expandAll = () => {
-    document.querySelectorAll(".log-entry:not(.expanded)").forEach(el => {
+    paneContainer.querySelectorAll(".log-entry:not(.expanded)").forEach(el => {
       const id = parseInt(el.dataset.id);
       toggleEntry(id);
     });
   };
 
   // ===== Scroll =====
-  function scrollToBottom() { container.scrollTop = container.scrollHeight; }
+  function scrollToBottom() { scrollAllToBottom(); }
 
-  container.addEventListener("scroll", () => {
-    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
-    autoScroll = atBottom;
-    scrollFab.classList.toggle("visible", !atBottom);
-  });
-
-  window.jumpToBottom = () => { autoScroll = true; scrollToBottom(); scrollFab.classList.remove("visible"); };
+  window.jumpToBottom = () => {
+    autoScroll = true;
+    for (const p of panes.values()) { p.autoScroll = true; }
+    scrollAllToBottom();
+    scrollFab.classList.remove("visible");
+  };
 
   // ===== Clear =====
   window.clearLogs = () => {
     entries.length = 0;
     lineCounter = 0;
     firstEventTs = null;
-    container.innerHTML = "";
-    container.appendChild(emptyState);
+    sessions.clear();
+    colorIdx = 0;
+    rebuildTabs();
+    rebuildPanes();
     lineCountEl.textContent = "0";
   };
 
@@ -939,7 +1066,9 @@
     if (e.key === "Escape") { searchInput.blur(); searchInput.value = ""; searchQuery = ""; rebuildView(); return; }
     if (inSearch) return;
 
-    const visible = [...container.querySelectorAll(".log-entry")];
+    const firstPane = panes.values().next().value;
+    if (!firstPane) return;
+    const visible = [...firstPane.scrollEl.querySelectorAll(".log-entry")];
     if (!visible.length) return;
 
     if (e.key === "j" || e.key === "ArrowDown") {
