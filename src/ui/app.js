@@ -178,6 +178,8 @@
         panes.set(id, p);
       }
     }
+    // Attach scroll-wheel effect listeners to new panes
+    attachScrollWheelListeners();
   }
 
   // Grid column controls
@@ -933,24 +935,53 @@
     }
   }
 
-  // ===== Bubble recency (position-based size) =====
-  const BUBBLE_CLASSES = ["bubble-0", "bubble-1", "bubble-2", "bubble-3", "bubble-4"];
-  const BUBBLE_DEPTH = BUBBLE_CLASSES.length;
+  // ===== Scroll wheel recency (iOS-style viewport-relative) =====
+  // Entries near the bottom of the visible area are large and prominent.
+  // Entries further up shrink and recede like a 3D cylinder.
+  function applyScrollWheel(scrollEl) {
+    const rect = scrollEl.getBoundingClientRect();
+    const viewH = rect.height;
+    if (viewH <= 0) return;
 
-  function applyBubbleRecency() {
-    for (const p of panes.values()) {
-      const els = p.scrollEl.querySelectorAll(".log-entry");
-      const total = els.length;
-      els.forEach((el, i) => {
-        const fromEnd = total - 1 - i;
-        const oldBubble = BUBBLE_CLASSES.find(c => el.classList.contains(c));
-        const newBubble = fromEnd < BUBBLE_DEPTH ? BUBBLE_CLASSES[fromEnd] : null;
-        if (oldBubble !== newBubble) {
-          if (oldBubble) el.classList.remove(oldBubble);
-          if (newBubble) el.classList.add(newBubble);
-        }
-      });
+    const els = scrollEl.querySelectorAll(".log-entry");
+    for (const el of els) {
+      const elRect = el.getBoundingClientRect();
+      const elCenter = elRect.top + elRect.height / 2;
+
+      // Distance from bottom of viewport (0 = at bottom, 1 = at top)
+      const ratio = 1 - (elCenter - rect.top) / viewH;
+      // Clamp: entries below viewport = 1, above = 0
+      const t = Math.max(0, Math.min(1, ratio));
+
+      // Scale: 1.0 at bottom → 0.88 at top (curve for acceleration)
+      const scale = 0.88 + 0.12 * t * t;
+      // Opacity boost: 1.0 at bottom → 0.5 at top (on top of time-based aging)
+      const scrollOpacity = 0.5 + 0.5 * t * t;
+
+      el.style.transform = `scale(${scale.toFixed(3)})`;
+      el.style.setProperty("--scroll-opacity", scrollOpacity.toFixed(2));
     }
+  }
+
+  function applyScrollWheelAll() {
+    for (const p of panes.values()) {
+      applyScrollWheel(p.scrollEl);
+    }
+  }
+
+  // Attach scroll listeners to panes (called after pane rebuild)
+  function attachScrollWheelListeners() {
+    for (const p of panes.values()) {
+      // Remove old listener if any
+      if (p._scrollWheelHandler) p.scrollEl.removeEventListener("scroll", p._scrollWheelHandler);
+      p._scrollWheelHandler = () => requestAnimationFrame(() => applyScrollWheel(p.scrollEl));
+      p.scrollEl.addEventListener("scroll", p._scrollWheelHandler, { passive: true });
+    }
+  }
+
+  // Compat shim: old call sites used applyBubbleRecency
+  function applyBubbleRecency() {
+    applyScrollWheelAll();
   }
 
   // ===== Recency aging (time-based) =====

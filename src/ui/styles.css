@@ -522,52 +522,20 @@
   /* Keyboard focus indicator */
   .log-entry.kb-focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
-  /* ===== Bubble recency (position-based size) ===== */
+  /* ===== Scroll wheel recency (viewport-relative) ===== */
   .log-entry {
-    transition: padding 0.4s ease, font-size 0.3s ease, transform 0.4s ease, opacity 0.5s ease, border-left-width 0.3s ease, background 0.3s ease;
     transform-origin: left center;
+    --scroll-opacity: 1;
+    /* Final opacity = time-based age * scroll position */
   }
-
-  .log-entry.bubble-0 {
-    padding: 7px 10px;
-    transform: scale(1.0);
-  }
-  .log-entry.bubble-0 .entry-badge { font-size: 11px; }
-  .log-entry.bubble-0 .entry-tool { font-size: 14px; }
-  .log-entry.bubble-0 .entry-summary { font-size: 11px; }
-  .log-entry.bubble-0 .entry-row { min-height: 28px; }
-
-  .log-entry.bubble-1 {
-    padding: 6px 9px;
-    transform: scale(0.98);
-  }
-  .log-entry.bubble-1 .entry-badge { font-size: 10px; }
-  .log-entry.bubble-1 .entry-tool { font-size: 13px; }
-  .log-entry.bubble-1 .entry-row { min-height: 26px; }
-
-  .log-entry.bubble-2 {
-    padding: 5px 9px;
-    transform: scale(0.96);
-  }
-  .log-entry.bubble-2 .entry-row { min-height: 24px; }
-
-  .log-entry.bubble-3 {
-    padding: 4px 8px;
-    transform: scale(0.95);
-  }
-  .log-entry.bubble-3 .entry-row { min-height: 22px; }
-
-  .log-entry.bubble-4 {
-    padding: 4px 8px;
-    transform: scale(0.94);
-  }
-
-  /* After bubble-4, entries are at default size (no bubble class) */
+  .log-entry.age-0 { opacity: calc(1.0 * var(--scroll-opacity)); }
+  .log-entry.age-1 { opacity: calc(0.75 * var(--scroll-opacity)); }
+  .log-entry.age-2 { opacity: calc(0.4 * var(--scroll-opacity)); }
+  .log-entry.age-3 { opacity: calc(0.2 * var(--scroll-opacity)); }
 
   /* Recency — dramatic time-based contrast */
   /* age-0: <30s — vivid, full presence */
   .log-entry.age-0 {
-    opacity: 1;
     background: rgba(22, 27, 34, 0.5);
     border-left-width: 3px;
   }
@@ -578,7 +546,6 @@
 
   /* age-1: 30s-2min — settling */
   .log-entry.age-1 {
-    opacity: 0.75;
     border-left-width: 2px;
   }
   .log-entry.age-1 .entry-tool { color: #9eaab6; }
@@ -587,7 +554,6 @@
 
   /* age-2: 2-5min — fading */
   .log-entry.age-2 {
-    opacity: 0.4;
     border-left-width: 2px;
   }
   .log-entry.age-2 .entry-tool { color: #6e7681; }
@@ -597,7 +563,6 @@
 
   /* age-3: >5min — ghost */
   .log-entry.age-3 {
-    opacity: 0.2;
     border-left-width: 1px;
   }
   .log-entry.age-3 .entry-tool { color: #484f58; }
