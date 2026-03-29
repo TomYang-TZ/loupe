@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>logstream</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-card-hover: #1c2129;
+    --bg-surface: #21262d;
+    --border: #30363d;
+    --border-light: #1b2028;
+    --text: #e6edf3;
+    --text-muted: #7d8590;
+    --text-subtle: #484f58;
+    --accent: #58a6ff;
+    --accent-dim: rgba(88, 166, 255, 0.15);
+
+    --purple: #d2a8ff;
+    --purple-bg: rgba(210, 168, 255, 0.08);
+    --blue: #79c0ff;
+    --blue-bg: rgba(121, 192, 255, 0.08);
+    --green: #7ee787;
+    --green-bg: rgba(126, 231, 135, 0.08);
+    --red: #ff7b72;
+    --red-bg: rgba(255, 123, 114, 0.1);
+    --yellow: #e3b341;
+    --yellow-bg: rgba(227, 179, 65, 0.1);
+    --gray: #8b949e;
+    --gray-bg: rgba(139, 148, 158, 0.06);
+
+    --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", "Fira Code", Menlo, Consolas, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --radius: 6px;
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.5;
+    overflow: hidden;
+  }
+
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ===== Header ===== */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 14px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    z-index: 10;
+  }
+
+  .logo { font-family: var(--font-sans); font-weight: 700; font-size: 14px; color: var(--text); letter-spacing: -0.3px; white-space: nowrap; }
+  .logo span { color: var(--accent); }
+
+  .stats {
+    margin-left: auto;
+    display: flex;
+    gap: 12px;
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    align-items: center;
+  }
+  .stats .stat-val { color: var(--text); font-weight: 600; }
+
+  .conn-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 2px; }
+  .conn-dot.connected { background: var(--green); box-shadow: 0 0 4px var(--green); }
+  .conn-dot.disconnected { background: var(--red); box-shadow: 0 0 4px var(--red); }
+  .conn-dot.connecting { background: var(--yellow); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* ===== Session Tabs ===== */
+  .tab-bar {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 0 10px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border-light);
+    flex-shrink: 0;
+    overflow-x: auto;
+    min-height: 32px;
+  }
+  .tab-bar::-webkit-scrollbar { height: 0; }
+
+  .session-tab {
+    padding: 6px 14px;
+    font-size: 11px;
+    font-family: var(--font-sans);
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    transition: color 0.15s, border-color 0.15s;
+    user-select: none;
+    position: relative;
+  }
+  .session-tab:hover { color: var(--text); }
+  .session-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .session-tab .tab-dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--accent);
+    position: absolute; top: 4px; right: 4px;
+    display: none;
+  }
+  .session-tab .tab-dot.has-activity { display: block; }
+
+  .tab-split-btn {
+    margin-left: auto;
+    padding: 4px 8px;
+    font-size: 10px;
+    color: var(--text-subtle);
+    cursor: pointer;
+    border: none;
+    background: none;
+    font-family: var(--font-sans);
+  }
+  .tab-split-btn:hover { color: var(--text); }
+
+  /* ===== Toolbar ===== */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border-light);
+    flex-shrink: 0;
+  }
+
+  .search-box {
+    position: relative;
+    width: 180px;
+    flex-shrink: 0;
+  }
+  .search-box input {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 5px 8px 5px 24px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    outline: none;
+    transition: border-color 0.15s, width 0.2s;
+  }
+  .search-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); width: 100%; }
+  .search-box input::placeholder { color: var(--text-subtle); }
+  .search-box .search-icon { position: absolute; left: 7px; top: 50%; transform: translateY(-50%); color: var(--text-subtle); font-size: 11px; pointer-events: none; }
+  .search-box .search-count { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 10px; }
+
+  /* Filter dropdown */
+  .filter-select {
+    padding: 5px 8px;
+    border-radius: var(--radius);
+    font-size: 11px;
+    font-family: var(--font-sans);
+    background: var(--bg-card);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+    padding-right: 20px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%237d8590'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+  }
+  .filter-select:focus { border-color: var(--accent); }
+
+  .toolbar-sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
+
+  .toolbar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+  }
+
+  .btn {
+    padding: 4px 8px;
+    border-radius: var(--radius);
+    font-size: 10px;
+    font-family: var(--font-sans);
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-muted);
+    transition: all 0.15s;
+  }
+  .btn:hover { background: var(--bg-surface); color: var(--text); }
+  .btn.active { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+
+  /* ===== Split Pane Container ===== */
+  .pane-container {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  .pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 200px;
+  }
+
+  .pane + .pane { border-left: 2px solid var(--border); }
+
+  .pane-header {
+    padding: 4px 10px;
+    font-size: 10px;
+    font-family: var(--font-sans);
+    color: var(--text-subtle);
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border-light);
+    display: none;
+  }
+  .split-active .pane-header { display: flex; align-items: center; justify-content: space-between; }
+
+  .pane-close {
+    cursor: pointer;
+    color: var(--text-subtle);
+    font-size: 12px;
+    border: none;
+    background: none;
+    padding: 0 4px;
+  }
+  .pane-close:hover { color: var(--red); }
+
+  /* ===== Log Container ===== */
+  .log-scroll {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 4px 8px;
+  }
+  .log-scroll::-webkit-scrollbar { width: 5px; }
+  .log-scroll::-webkit-scrollbar-track { background: transparent; }
+  .log-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .log-scroll::-webkit-scrollbar-thumb:hover { background: var(--text-subtle); }
+
+  /* ===== Log Entry — Compact One-Liner ===== */
+  .log-entry {
+    border-left: 3px solid transparent;
+    border-radius: 3px;
+    margin-bottom: 1px;
+    padding: 4px 8px;
+    cursor: pointer;
+    transition: background 0.1s;
+    animation: fadeIn 0.15s ease-out;
+  }
+  .log-entry:hover { background: var(--bg-card); }
+  .log-entry.expanded { background: var(--bg-card); border-radius: 3px 3px 3px 3px; margin-bottom: 3px; padding-bottom: 8px; }
+  .log-entry.selected { background: var(--bg-card-hover); }
+
+  /* Border colors by type */
+  .log-entry[data-category="tool_use"] { border-left-color: var(--blue); }
+  .log-entry[data-category="tool_result"] { border-left-color: var(--green); }
+  .log-entry[data-category="error"] { border-left-color: var(--red); background: var(--red-bg); }
+  .log-entry[data-category="thinking"] { border-left-color: var(--purple); }
+  .log-entry[data-category="text"] { border-left-color: var(--gray); }
+  .log-entry[data-category="info"] { border-left-color: var(--yellow); }
+
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+  /* Compact header row */
+  .entry-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 22px;
+  }
+
+  .entry-badge {
+    font-size: 9px;
+    font-family: var(--font-sans);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+    width: 52px;
+  }
+  .entry-badge.cat-tool_use { color: var(--blue); }
+  .entry-badge.cat-tool_result { color: var(--green); }
+  .entry-badge.cat-error { color: var(--red); }
+  .entry-badge.cat-thinking { color: var(--purple); }
+  .entry-badge.cat-text { color: var(--gray); }
+  .entry-badge.cat-info { color: var(--yellow); }
+
+  .entry-tool {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    font-family: var(--font-sans);
+    flex-shrink: 0;
+  }
+
+  .entry-summary {
+    font-size: 11px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .entry-time {
+    font-size: 10px;
+    color: var(--text-subtle);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  /* Expanded body */
+  .entry-body {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border-light);
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    line-height: 1.6;
+    display: none;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  .log-entry.expanded .entry-body { display: block; }
+
+  .entry-body::-webkit-scrollbar { width: 4px; }
+  .entry-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* JSON Tree */
+  .json-tree { font-size: 11px; line-height: 1.5; word-break: break-word; overflow-wrap: anywhere; }
+  .json-key { color: var(--blue); }
+  .json-string { color: var(--green); word-break: break-all; overflow-wrap: anywhere; }
+  .json-number { color: var(--yellow); }
+  .json-bool { color: var(--purple); }
+  .json-null { color: var(--text-subtle); font-style: italic; }
+  .json-bracket { color: var(--text-subtle); }
+  .json-toggle { cursor: pointer; user-select: none; color: var(--text-subtle); }
+  .json-toggle:hover { color: var(--text); }
+  .json-collapsed-indicator { color: var(--text-subtle); font-style: italic; font-size: 10px; }
+
+  /* Scroll FAB */
+  #scroll-fab {
+    position: fixed;
+    bottom: 16px;
+    right: 16px;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    z-index: 20;
+  }
+  #scroll-fab:hover { transform: scale(1.1); }
+  #scroll-fab.visible { display: flex; }
+
+  /* Empty state */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-subtle);
+    font-family: var(--font-sans);
+    gap: 8px;
+  }
+  .empty-state .empty-icon { font-size: 32px; opacity: 0.2; }
+  .empty-state .empty-text { font-size: 13px; }
+  .empty-state .empty-hint { font-size: 11px; }
+
+  /* Search highlight */
+  mark { background: rgba(227, 179, 65, 0.35); color: var(--text); border-radius: 2px; padding: 0 1px; }
+
+  /* Keyboard focus indicator */
+  .log-entry.kb-focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">log<span>stream</span></div>
+    <div class="stats">
+      <span><span class="conn-dot connecting" id="conn-dot"></span><span id="conn-status">connecting</span></span>
+      <span><span class="stat-val" id="line-count">0</span> lines</span>
+      <span><span class="stat-val" id="lines-sec">0</span>/s</span>
+    </div>
+  </header>
+
+  <div class="tab-bar" id="tab-bar">
+    <div class="session-tab active" data-session="all">All Sessions</div>
+  </div>
+
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-icon">/</span>
+      <input type="text" id="search-input" placeholder="Search..." />
+      <span class="search-count" id="search-count"></span>
+    </div>
+    <select class="filter-select" id="filter-select" onchange="setFilter(this.value)">
+      <option value="all">All types</option>
+      <option value="tool_use">Tool Use</option>
+      <option value="tool_result">Result</option>
+      <option value="error">Error</option>
+      <option value="thinking">Thinking</option>
+      <option value="text">Text</option>
+    </select>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-right">
+      <button class="btn" onclick="collapseAll()" title="Collapse all cards">Fold</button>
+      <button class="btn" onclick="expandAll()" title="Expand all cards">Unfold</button>
+      <button class="btn" onclick="clearLogs()" title="Clear all entries">Clear</button>
+    </div>
+  </div>
+
+  <div class="pane-container" id="pane-container">
+    <div class="pane" id="pane-main">
+      <div class="pane-header"><span id="pane-main-label">All Sessions</span><button class="pane-close" onclick="closeSplit()">&times;</button></div>
+      <div class="log-scroll" id="log-container">
+        <div class="empty-state" id="empty-state">
+          <div class="empty-icon">&gt;_</div>
+          <div class="empty-text">Waiting for log data...</div>
+          <div class="empty-hint">Events appear here as Claude calls tools</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <button id="scroll-fab" onclick="jumpToBottom()">&#8595;</button>
+</div>
+
+<script>
+(() => {
+  // ===== State =====
+  const entries = [];
+  let lineCounter = 0;
+  let activeFilter = "all";
+  let activeSession = "all";
+  let searchQuery = "";
+  let autoScroll = true;
+  let linesThisSecond = 0;
+  let selectedIdx = -1;
+  let firstEventTs = null;
+  const sessions = new Map(); // session_id -> { label, count }
+
+  // DOM
+  const container = document.getElementById("log-container");
+  const emptyState = document.getElementById("empty-state");
+  const scrollFab = document.getElementById("scroll-fab");
+  const searchInput = document.getElementById("search-input");
+  const searchCount = document.getElementById("search-count");
+  const lineCountEl = document.getElementById("line-count");
+  const linesSecEl = document.getElementById("lines-sec");
+  const connDot = document.getElementById("conn-dot");
+  const connStatus = document.getElementById("conn-status");
+  const tabBar = document.getElementById("tab-bar");
+  const filterSelect = document.getElementById("filter-select");
+
+  // ===== WebSocket =====
+  let ws;
+  let reconnectDelay = 500;
+
+  function connect() {
+    const host = window.__LOGSTREAM_HOST || location.host;
+    ws = new WebSocket(`ws://${host}/ws`);
+
+    ws.onopen = () => {
+      reconnectDelay = 500;
+      setConnState("connected");
+    };
+
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "reset") { resetAll(); return; }
+      if (msg.type === "backlog_done") { scrollToBottom(); return; }
+      if (msg.type === "line") handleLine(msg);
+    };
+
+    ws.onclose = () => {
+      setConnState("disconnected");
+      setTimeout(() => { reconnectDelay = Math.min(reconnectDelay * 1.5, 5000); connect(); }, reconnectDelay);
+    };
+    ws.onerror = () => setConnState("disconnected");
+  }
+
+  function setConnState(state) {
+    connDot.className = `conn-dot ${state}`;
+    connStatus.textContent = state;
+  }
+
+  function resetAll() {
+    entries.length = 0;
+    lineCounter = 0;
+    firstEventTs = null;
+    sessions.clear();
+    container.innerHTML = "";
+    container.appendChild(emptyState);
+    rebuildTabs();
+  }
+
+  // ===== Parse =====
+  function unwrapHook(json) {
+    if (json && json._logstream_type && json.data) {
+      return { hookType: json._logstream_type, ts: json._ts, inner: json.data };
+    }
+    return null;
+  }
+
+  function categorize(msg) {
+    const json = msg.json;
+    if (json) {
+      const hook = unwrapHook(json);
+      if (hook) {
+        if (hook.hookType === "PreToolUse") return "tool_use";
+        if (hook.hookType === "PostToolUse") {
+          const inner = hook.inner;
+          if (inner && (inner.is_error || inner.error)) return "error";
+          return "tool_result";
+        }
+        if (hook.hookType === "thinking") return "thinking";
+      }
+      const t = json.type;
+      if (t === "thinking" || json.thinking) return "thinking";
+      if (t === "tool_use") return "tool_use";
+      if (t === "tool_result") return json.is_error ? "error" : "tool_result";
+      if (t === "error" || json.error) return "error";
+      if (t === "text" || t === "content_block_delta" || t === "assistant") return "text";
+    }
+    const lower = (msg.data || "").toLowerCase();
+    if (lower.includes("error") || lower.includes("fatal")) return "error";
+    return "text";
+  }
+
+  function extractTitle(msg, category) {
+    const json = msg.json;
+    if (!json) return null;
+    const hook = unwrapHook(json);
+    if (hook && hook.inner) {
+      return hook.inner.tool_name || hook.inner.name || null;
+    }
+    if (category === "tool_use") return json.name || json.tool_name || null;
+    return null;
+  }
+
+  function extractSummary(msg, category) {
+    const json = msg.json;
+    if (!json) return msg.data?.slice(0, 120) || "";
+    const hook = unwrapHook(json);
+    const inner = hook?.inner || json;
+
+    if (category === "tool_use") {
+      const input = inner.tool_input || inner.input || {};
+      if (input.file_path) return input.file_path;
+      if (input.command) {
+        const cmd = input.command.split("\n")[0];
+        return cmd.length > 100 ? cmd.slice(0, 100) + "..." : cmd;
+      }
+      if (input.pattern) return `pattern: ${input.pattern}`;
+      if (input.query) return input.query.slice(0, 100);
+      if (input.description) return input.description;
+      return Object.keys(input).slice(0, 3).join(", ");
+    }
+
+    if (category === "tool_result") {
+      const resp = inner.tool_response || {};
+      const out = resp.stdout || inner.tool_result || inner.output || inner.content;
+      if (typeof out === "string") {
+        const line = out.split("\n")[0];
+        return line.length > 100 ? line.slice(0, 100) + "..." : line;
+      }
+      return "";
+    }
+
+    if (category === "error") {
+      return inner.error || inner.tool_result || "Error";
+    }
+
+    if (category === "thinking") {
+      const t = inner.thinking || inner.content || inner.text || "";
+      return typeof t === "string" ? t.slice(0, 120) : "";
+    }
+
+    return "";
+  }
+
+  function extractBody(msg, category) {
+    const json = msg.json;
+    if (!json) return msg.data;
+    const hook = unwrapHook(json);
+    if (hook && hook.inner) {
+      const inner = hook.inner;
+      if (category === "tool_use") return inner.tool_input || inner.input || inner;
+      if (category === "tool_result") return inner.tool_response || inner.tool_result || inner.output || inner.content || inner;
+      if (category === "error") return inner.error || inner.tool_result || inner;
+      return inner;
+    }
+    if (category === "thinking") return json.thinking || json.content || json.text || msg.data;
+    if (category === "text") return json.text || json.content || json.data || msg.data;
+    if (category === "tool_use") return json.input || json.parameters || json;
+    if (category === "tool_result" || category === "error") return json.content || json.output || json.result || json.error || msg.data;
+    return json;
+  }
+
+  function extractSessionId(msg) {
+    const json = msg.json;
+    if (!json) return null;
+    const hook = unwrapHook(json);
+    const inner = hook?.inner || json;
+    return inner.session_id || null;
+  }
+
+  function extractSessionLabel(msg) {
+    const json = msg.json;
+    if (!json) return null;
+    const hook = unwrapHook(json);
+    const inner = hook?.inner || json;
+    const cwd = inner.cwd;
+    if (cwd) {
+      const parts = cwd.split("/");
+      return parts[parts.length - 1] || parts[parts.length - 2] || cwd;
+    }
+    return null;
+  }
+
+  // ===== Render =====
+  function handleLine(msg) {
+    lineCounter++;
+    linesThisSecond++;
+
+    const category = categorize(msg);
+    const title = extractTitle(msg, category);
+    const summary = extractSummary(msg, category);
+    const body = extractBody(msg, category);
+    const sessionId = extractSessionId(msg);
+    const sessionLabel = extractSessionLabel(msg);
+    if (!firstEventTs) firstEventTs = msg.ts;
+
+    // Track sessions
+    if (sessionId && !sessions.has(sessionId)) {
+      sessions.set(sessionId, { label: sessionLabel || sessionId.slice(0, 8), count: 0 });
+      rebuildTabs();
+    }
+    if (sessionId && sessions.has(sessionId)) {
+      sessions.get(sessionId).count++;
+      // Show activity dot on inactive tabs
+      if (activeSession !== "all" && activeSession !== sessionId) {
+        const tab = tabBar.querySelector(`[data-session="${sessionId}"] .tab-dot`);
+        if (tab) tab.classList.add("has-activity");
+      }
+    }
+
+    const entry = { id: lineCounter, category, title, summary, body, raw: msg.data, json: msg.json, ts: msg.ts, sessionId };
+    entries.push(entry);
+
+    if (emptyState.parentNode) emptyState.remove();
+
+    if (matchesAll(entry)) {
+      const el = renderEntry(entry);
+      container.appendChild(el);
+      entry.el = el;
+      if (autoScroll) scrollToBottom();
+    }
+
+    lineCountEl.textContent = lineCounter;
+  }
+
+  function relativeTime(ts) {
+    if (!firstEventTs) return "";
+    const diff = (ts - firstEventTs) / 1000;
+    if (diff < 0.1) return "0s";
+    if (diff < 60) return `+${diff.toFixed(1)}s`;
+    return `+${Math.floor(diff / 60)}m${Math.floor(diff % 60)}s`;
+  }
+
+  function badgeLabel(cat) {
+    const map = { tool_use: "USE", tool_result: "RESULT", error: "ERROR", thinking: "THINK", text: "TEXT", info: "INFO" };
+    return map[cat] || cat.toUpperCase();
+  }
+
+  function esc(str) {
+    const d = document.createElement("div");
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  function renderEntry(entry) {
+    const div = document.createElement("div");
+    div.className = "log-entry";
+    div.dataset.id = entry.id;
+    div.dataset.category = entry.category;
+    if (entry.sessionId) div.dataset.session = entry.sessionId;
+
+    const time = relativeTime(entry.ts);
+
+    div.innerHTML = `
+      <div class="entry-row">
+        <span class="entry-badge cat-${entry.category}">${badgeLabel(entry.category)}</span>
+        ${entry.title ? `<span class="entry-tool">${esc(entry.title)}</span>` : ""}
+        <span class="entry-summary">${esc(entry.summary)}</span>
+        <span class="entry-time">${time}</span>
+      </div>
+      <div class="entry-body" id="body-${entry.id}"></div>
+    `;
+
+    div.addEventListener("click", () => toggleEntry(entry.id));
+
+    return div;
+  }
+
+  function toggleEntry(id) {
+    const el = document.querySelector(`.log-entry[data-id="${id}"]`);
+    if (!el) return;
+    const wasExpanded = el.classList.contains("expanded");
+    el.classList.toggle("expanded");
+
+    // Lazy-render body on first expand
+    const bodyEl = el.querySelector(".entry-body");
+    if (!wasExpanded && bodyEl && !bodyEl.dataset.rendered) {
+      const entry = entries.find(e => e.id === id);
+      if (entry) {
+        const content = entry.body;
+        if (content && typeof content === "object") {
+          bodyEl.appendChild(renderJsonTree(content));
+        } else if (content) {
+          bodyEl.innerHTML = applySearch(String(content));
+        }
+        bodyEl.dataset.rendered = "1";
+      }
+    }
+  }
+
+  // ===== JSON Tree =====
+  function renderJsonTree(obj, depth = 0) {
+    const wrap = document.createElement("div");
+    wrap.className = "json-tree";
+    if (typeof obj !== "object" || obj === null) { wrap.innerHTML = renderPrimitive(obj); return wrap; }
+
+    const isArr = Array.isArray(obj);
+    const keys = Object.keys(obj);
+    const open = isArr ? "[" : "{";
+    const close = isArr ? "]" : "}";
+    if (keys.length === 0) { wrap.innerHTML = `<span class="json-bracket">${open}${close}</span>`; return wrap; }
+
+    const collapsed = depth > 1;
+    const toggle = document.createElement("span");
+    toggle.className = "json-toggle";
+    toggle.textContent = collapsed ? "\u25b6 " : "\u25bc ";
+    toggle.onclick = (e) => {
+      e.stopPropagation();
+      const content = wrap.querySelector(".json-content");
+      const ind = wrap.querySelector(".json-collapsed-indicator");
+      if (content.style.display === "none") {
+        content.style.display = ""; if (ind) ind.style.display = "none"; toggle.textContent = "\u25bc ";
+      } else {
+        content.style.display = "none"; if (ind) ind.style.display = ""; toggle.textContent = "\u25b6 ";
+      }
+    };
+    wrap.appendChild(toggle);
+    wrap.appendChild(spanOf(open, "json-bracket"));
+
+    const indicator = document.createElement("span");
+    indicator.className = "json-collapsed-indicator";
+    indicator.textContent = ` ${keys.length} items `;
+    indicator.style.display = collapsed ? "" : "none";
+    wrap.appendChild(indicator);
+
+    const content = document.createElement("div");
+    content.className = "json-content";
+    content.style.paddingLeft = "14px";
+    content.style.display = collapsed ? "none" : "";
+
+    keys.forEach((key, i) => {
+      const line = document.createElement("div");
+      if (!isArr) { line.appendChild(spanOf(`"${key}"`, "json-key")); line.appendChild(spanOf(": ", "json-bracket")); }
+      const val = obj[key];
+      if (typeof val === "object" && val !== null) { line.appendChild(renderJsonTree(val, depth + 1)); }
+      else { line.innerHTML += renderPrimitive(val); }
+      if (i < keys.length - 1) line.appendChild(spanOf(",", "json-bracket"));
+      content.appendChild(line);
+    });
+
+    wrap.appendChild(content);
+    wrap.appendChild(spanOf(close, "json-bracket"));
+    return wrap;
+  }
+
+  function renderPrimitive(val) {
+    if (val === null) return `<span class="json-null">null</span>`;
+    if (typeof val === "boolean") return `<span class="json-bool">${val}</span>`;
+    if (typeof val === "number") return `<span class="json-number">${val}</span>`;
+    const str = String(val);
+    const display = str.length > 500 ? esc(str.slice(0, 500)) + "..." : esc(str);
+    return `<span class="json-string">"${display}"</span>`;
+  }
+
+  function spanOf(text, cls) { const s = document.createElement("span"); s.className = cls; s.textContent = text; return s; }
+
+  // ===== Filtering =====
+  function matchesAll(entry) {
+    return matchesFilter(entry) && matchesSession(entry) && matchesSearch(entry);
+  }
+  function matchesFilter(entry) { return activeFilter === "all" || entry.category === activeFilter; }
+  function matchesSession(entry) { return activeSession === "all" || entry.sessionId === activeSession; }
+  function matchesSearch(entry) {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return (entry.raw || "").toLowerCase().includes(q)
+      || (entry.title || "").toLowerCase().includes(q)
+      || (entry.summary || "").toLowerCase().includes(q);
+  }
+
+  function applySearch(text) {
+    if (!searchQuery) return esc(text);
+    const escaped = esc(text);
+    const q = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return escaped.replace(new RegExp(`(${q})`, "gi"), "<mark>$1</mark>");
+  }
+
+  window.setFilter = (type) => { activeFilter = type; rebuildView(); };
+
+  searchInput.addEventListener("input", (e) => { searchQuery = e.target.value; rebuildView(); });
+
+  function rebuildView() {
+    container.innerHTML = "";
+    let matchCount = 0;
+    for (const entry of entries) {
+      if (matchesAll(entry)) {
+        const el = renderEntry(entry);
+        container.appendChild(el);
+        entry.el = el;
+        matchCount++;
+      }
+    }
+    if (matchCount === 0) container.appendChild(emptyState);
+    searchCount.textContent = searchQuery ? `${matchCount}` : "";
+    if (autoScroll) scrollToBottom();
+  }
+
+  // ===== Session Tabs =====
+  function rebuildTabs() {
+    tabBar.innerHTML = "";
+    const allTab = document.createElement("div");
+    allTab.className = `session-tab ${activeSession === "all" ? "active" : ""}`;
+    allTab.dataset.session = "all";
+    allTab.textContent = "All";
+    allTab.onclick = () => switchSession("all");
+    tabBar.appendChild(allTab);
+
+    for (const [id, info] of sessions) {
+      const tab = document.createElement("div");
+      tab.className = `session-tab ${activeSession === id ? "active" : ""}`;
+      tab.dataset.session = id;
+      tab.innerHTML = `${esc(info.label)} <span class="tab-dot"></span>`;
+      tab.onclick = () => switchSession(id);
+      tabBar.appendChild(tab);
+    }
+  }
+
+  function switchSession(id) {
+    activeSession = id;
+    // Clear activity dot
+    const dot = tabBar.querySelector(`[data-session="${id}"] .tab-dot`);
+    if (dot) dot.classList.remove("has-activity");
+    rebuildTabs();
+    rebuildView();
+  }
+
+  // ===== Collapse / Expand =====
+  window.collapseAll = () => {
+    document.querySelectorAll(".log-entry.expanded").forEach(el => el.classList.remove("expanded"));
+  };
+  window.expandAll = () => {
+    document.querySelectorAll(".log-entry:not(.expanded)").forEach(el => {
+      const id = parseInt(el.dataset.id);
+      toggleEntry(id);
+    });
+  };
+
+  // ===== Scroll =====
+  function scrollToBottom() { container.scrollTop = container.scrollHeight; }
+
+  container.addEventListener("scroll", () => {
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    autoScroll = atBottom;
+    scrollFab.classList.toggle("visible", !atBottom);
+  });
+
+  window.jumpToBottom = () => { autoScroll = true; scrollToBottom(); scrollFab.classList.remove("visible"); };
+
+  // ===== Clear =====
+  window.clearLogs = () => {
+    entries.length = 0;
+    lineCounter = 0;
+    firstEventTs = null;
+    container.innerHTML = "";
+    container.appendChild(emptyState);
+    lineCountEl.textContent = "0";
+  };
+
+  // ===== Keyboard =====
+  document.addEventListener("keydown", (e) => {
+    const inSearch = document.activeElement === searchInput;
+
+    if (e.key === "/" && !inSearch) { e.preventDefault(); searchInput.focus(); return; }
+    if (e.key === "Escape") { searchInput.blur(); searchInput.value = ""; searchQuery = ""; rebuildView(); return; }
+    if (inSearch) return;
+
+    const visible = [...container.querySelectorAll(".log-entry")];
+    if (!visible.length) return;
+
+    if (e.key === "j" || e.key === "ArrowDown") {
+      e.preventDefault();
+      selectedIdx = Math.min(selectedIdx + 1, visible.length - 1);
+      focusEntry(visible, selectedIdx);
+    }
+    if (e.key === "k" || e.key === "ArrowUp") {
+      e.preventDefault();
+      selectedIdx = Math.max(selectedIdx - 1, 0);
+      focusEntry(visible, selectedIdx);
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (selectedIdx >= 0 && visible[selectedIdx]) {
+        const id = parseInt(visible[selectedIdx].dataset.id);
+        toggleEntry(id);
+      }
+    }
+    if (e.key === "e") { filterSelect.value = activeFilter === "error" ? "all" : "error"; setFilter(filterSelect.value); }
+    if (e.key === "g") { jumpToBottom(); }
+  });
+
+  function focusEntry(visible, idx) {
+    visible.forEach(el => el.classList.remove("kb-focus"));
+    if (visible[idx]) {
+      visible[idx].classList.add("kb-focus");
+      visible[idx].scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  // ===== Lines/sec =====
+  setInterval(() => { linesSecEl.textContent = linesThisSecond; linesThisSecond = 0; }, 1000);
+
+  // ===== Init =====
+  connect();
+})();
+</script>
+</body>
+</html>
