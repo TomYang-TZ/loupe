@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>logstream</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">log<span>stream</span></div>
+    <div class="stats">
+      <span><span class="conn-dot connecting" id="conn-dot"></span><span id="conn-status">connecting</span></span>
+      <span><span class="stat-val" id="line-count">0</span> lines</span>
+      <span><span class="stat-val" id="lines-sec">0</span>/s</span>
+    </div>
+  </header>
+
+  <div class="tab-bar" id="tab-bar">
+    <div class="session-tab active" data-session="all">All Sessions</div>
+  </div>
+
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-icon">/</span>
+      <input type="text" id="search-input" placeholder="Search..." />
+      <span class="search-count" id="search-count"></span>
+    </div>
+    <select class="filter-select" id="filter-select" onchange="setFilter(this.value)">
+      <option value="all">All types</option>
+      <option value="tool_use">Tool Use</option>
+      <option value="tool_result">Result</option>
+      <option value="error">Error</option>
+      <option value="thinking">Thinking</option>
+      <option value="text">Text</option>
+    </select>
+    <div class="toolbar-sep"></div>
+    <div class="toolbar-right">
+      <button class="btn" onclick="collapseAll()" title="Collapse all cards">Fold</button>
+      <button class="btn" onclick="expandAll()" title="Expand all cards">Unfold</button>
+      <button class="btn" onclick="clearLogs()" title="Clear all entries">Clear</button>
+    </div>
+  </div>
+
+  <div class="pane-container" id="pane-container">
+    <!-- Panes are managed by JS -->
+  </div>
+
+  <button id="scroll-fab" onclick="jumpToBottom()">&#8595;</button>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

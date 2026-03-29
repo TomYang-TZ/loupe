@@ -35,10 +35,24 @@ if (!fs.existsSync(filePath)) {
   fs.writeFileSync(filePath, "");
 }
 
-const uiPath = path.join(__dirname, "index.html");
+const uiDir = path.join(__dirname, "..", "ui");
 
-function getUiHtml() {
-  return fs.readFileSync(uiPath, "utf-8");
+const MIME_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+};
+
+function serveStatic(filePath, res) {
+  try {
+    const content = fs.readFileSync(filePath);
+    const ext = path.extname(filePath);
+    res.writeHead(200, { "Content-Type": MIME_TYPES[ext] || "application/octet-stream" });
+    res.end(content);
+  } catch {
+    res.writeHead(404);
+    res.end("Not found");
+  }
 }
 
 // --- File tailing ---
@@ -153,21 +167,24 @@ async function sendBacklog(ws) {
 
 // --- HTTP server ---
 const server = http.createServer((req, res) => {
-  if (req.url === "/" || req.url === "/index.html") {
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(getUiHtml());
-  } else if (req.url === "/health") {
+  const url = req.url.split("?")[0];
+
+  if (url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        ok: true,
-        file: filePath,
-        clients: wss.clients.size,
-      })
-    );
+    res.end(JSON.stringify({ ok: true, file: filePath, clients: wss.clients.size }));
+    return;
+  }
+
+  // Serve static UI files
+  const file = url === "/" ? "index.html" : url.replace(/^\//, "");
+  const safe = path.normalize(file).replace(/^(\.\.[\/\\])+/, "");
+  const fullPath = path.join(uiDir, safe);
+
+  if (fullPath.startsWith(uiDir)) {
+    serveStatic(fullPath, res);
   } else {
-    res.writeHead(404);
-    res.end("Not found");
+    res.writeHead(403);
+    res.end("Forbidden");
   }
 });
 

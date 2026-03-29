@@ -24,7 +24,6 @@ fi
 # Append event to log file with metadata
 if [ -n "$INPUT" ]; then
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
-    # Wrap the hook data with our metadata
     echo "{\"_logstream_type\":\"$EVENT_TYPE\",\"_ts\":\"$TIMESTAMP\",\"data\":$INPUT}" >> "$LOG_FILE"
 fi
 
@@ -38,7 +37,6 @@ server_running() {
         fi
         rm -f "$PID_FILE"
     fi
-    # Also check if port is in use
     if lsof -ti:"$PORT" >/dev/null 2>&1; then
         return 0
     fi
@@ -54,17 +52,16 @@ if ! server_running; then
         cd "$LOGSTREAM_DIR" && npm install --production > /dev/null 2>&1
     fi
 
-    # Start server in background
-    nohup node "$LOGSTREAM_DIR/server.js" "$LOG_FILE" --json --port "$PORT" \
+    # Start server
+    nohup node "$LOGSTREAM_DIR/src/server/index.js" "$LOG_FILE" --json --port "$PORT" \
         > "$LOG_DIR/logstream-server.log" 2>&1 &
     SERVER_PID=$!
     echo "$SERVER_PID" > "$PID_FILE"
 
-    # Start thinking watcher (reads Claude transcript files for thinking blocks)
-    THINKER_PID_FILE="$LOG_DIR/logstream-thinker.pid"
-    nohup node "$LOGSTREAM_DIR/thinking-watcher.js" "$LOG_FILE" \
+    # Start thinking watcher
+    nohup node "$LOGSTREAM_DIR/src/server/watcher.js" "$LOG_FILE" \
         > "$LOG_DIR/logstream-thinker.log" 2>&1 &
-    echo "$!" > "$THINKER_PID_FILE"
+    echo "$!" > "$LOG_DIR/logstream-thinker.pid"
 
     # Wait for server to be ready
     sleep 0.5

@@ -1,4 +1,4 @@
 node_modules/
-logstream-app
 Logstream.app/
+native/logstream-app
 *.log
