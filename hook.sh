@@ -60,6 +60,12 @@ if ! server_running; then
     SERVER_PID=$!
     echo "$SERVER_PID" > "$PID_FILE"
 
+    # Start thinking watcher (reads Claude transcript files for thinking blocks)
+    THINKER_PID_FILE="$LOG_DIR/logstream-thinker.pid"
+    nohup node "$LOGSTREAM_DIR/thinking-watcher.js" "$LOG_FILE" \
+        > "$LOG_DIR/logstream-thinker.log" 2>&1 &
+    echo "$!" > "$THINKER_PID_FILE"
+
     # Wait for server to be ready
     sleep 0.5
 
