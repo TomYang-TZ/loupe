@@ -7,7 +7,6 @@
   let activeSession = "all";
   let searchQuery = "";
   let autoScroll = true;
-  let linesThisSecond = 0;
   let selectedIdx = -1;
   let firstEventTs = null;
   const sessions = new Map(); // session_id -> { label, count, color, lastEventTs }
@@ -18,7 +17,6 @@
   const searchInput = document.getElementById("search-input");
   const searchCount = document.getElementById("search-count");
   const lineCountEl = document.getElementById("line-count");
-  const linesSecEl = document.getElementById("lines-sec");
   const connDot = document.getElementById("conn-dot");
   const connStatus = document.getElementById("conn-status");
   const tabBar = document.getElementById("tab-bar");
@@ -398,7 +396,7 @@
   // ===== Render =====
   function handleLine(msg) {
     lineCounter++;
-    linesThisSecond++;
+
 
     const category = categorize(msg);
     const title = extractTitle(msg, category);
@@ -958,8 +956,6 @@
 
   setInterval(applyRecencyAging, 2000);
 
-  // ===== Lines/sec =====
-  setInterval(() => { linesSecEl.textContent = linesThisSecond; linesThisSecond = 0; }, 1000);
 
   // ===== Init =====
   connect();
