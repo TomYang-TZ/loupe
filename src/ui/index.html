@@ -11,6 +11,17 @@
   <header>
     <div class="logo">loupe<span class="logo-cursor">_</span></div>
     <div class="stats">
+      <label class="theme-switch" title="Toggle theme (⌘T)">
+        <input type="checkbox" id="theme-toggle">
+        <span class="theme-slider">
+          <span class="star star_1"></span>
+          <span class="star star_2"></span>
+          <span class="star star_3"></span>
+          <svg class="cloud" viewBox="0 0 56 26" xmlns="http://www.w3.org/2000/svg">
+            <path d="M48 22H12a10 10 0 01-1.5-19.9A12 12 0 0134 6a12 12 0 0111.8 10A8 8 0 0148 22z" fill="white" opacity="0.5"/>
+          </svg>
+        </span>
+      </label>
       <span><span class="conn-dot connecting" id="conn-dot"></span><span id="conn-status">connecting</span></span>
       <span><span class="stat-val" id="line-count">0</span> events</span>
     </div>

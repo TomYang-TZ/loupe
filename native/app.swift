@@ -1,13 +1,24 @@
 import Cocoa
 import WebKit
 
-class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     var window: NSWindow!
     var webView: WKWebView!
     var retryCount = 0
     let maxRetries = 60
     var port: String = "8390"
     var retryTimer: Timer?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == "themeChange", let theme = message.body as? String {
+            let appearance = theme == "light" ? NSAppearance(named: .aqua) : NSAppearance(named: .darkAqua)
+            window.appearance = appearance
+            let bgColor = theme == "light"
+                ? NSColor(red: 245.0/255, green: 245.0/255, blue: 247.0/255, alpha: 1.0)
+                : NSColor(red: 28.0/255, green: 28.0/255, blue: 34.0/255, alpha: 1.0)
+            window.backgroundColor = bgColor
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         port = ProcessInfo.processInfo.environment["LOUPE_PORT"] ?? "8390"
@@ -31,7 +42,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         window.title = "Loupe"
         window.titlebarAppearsTransparent = true
         window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(red: 13.0/255, green: 17.0/255, blue: 23.0/255, alpha: 1.0)
+        window.backgroundColor = NSColor(red: 28.0/255, green: 28.0/255, blue: 34.0/255, alpha: 1.0)
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 380, height: 400)
         window.setFrameAutosaveName("logstream-main")
@@ -41,12 +52,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         // WebView configuration
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        config.userContentController.add(self, name: "themeChange")
         // Allow insecure localhost connections
         config.websiteDataStore = WKWebsiteDataStore.default()
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
+        webView.allowsMagnification = false
 
         if let contentView = window.contentView {
             contentView.addSubview(webView)
@@ -61,6 +74,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // Intercept Cmd+/- for zoom, Cmd+Shift+/- for columns
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.modifierFlags.contains(.command) else { return event }
+            let hasShift = event.modifierFlags.contains(.shift)
+            if event.keyCode == 24 {  // =/+ key
+                if hasShift {
+                    self?.webView.evaluateJavaScript("setGridCols(gridCols+1)", completionHandler: nil)
+                } else {
+                    self?.webView.evaluateJavaScript("adjustFontSize(1)", completionHandler: nil)
+                }
+                return nil
+            }
+            if event.keyCode == 27 {  // -/_ key
+                if hasShift {
+                    self?.webView.evaluateJavaScript("setGridCols(gridCols-1)", completionHandler: nil)
+                } else {
+                    self?.webView.evaluateJavaScript("adjustFontSize(-1)", completionHandler: nil)
+                }
+                return nil
+            }
+            return event
+        }
 
         // Start loading — use a timer-based retry that keeps trying
         loadPage()

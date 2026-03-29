@@ -17,6 +17,26 @@ if (!outputFile) {
   process.exit(1);
 }
 
+// Single-instance guard: write PID file, exit if another watcher is running
+const pidFile = path.join(path.dirname(outputFile), "loupe-thinker.pid");
+try {
+  if (fs.existsSync(pidFile)) {
+    const existingPid = parseInt(fs.readFileSync(pidFile, "utf-8").trim(), 10);
+    try {
+      process.kill(existingPid, 0); // Check if process exists
+      console.error(`thinking-watcher: already running (PID ${existingPid}), exiting`);
+      process.exit(0);
+    } catch {
+      // Process doesn't exist, stale PID file — continue
+    }
+  }
+  fs.writeFileSync(pidFile, String(process.pid));
+} catch {}
+
+process.on("exit", () => {
+  try { fs.unlinkSync(pidFile); } catch {}
+});
+
 const claudeDir = path.join(process.env.HOME, ".claude", "projects");
 
 // Track file positions
@@ -54,8 +74,12 @@ function processFile(filePath) {
   }
 
   try {
-    const chunk = fs.readFileSync(filePath, { encoding: "utf-8", start: pos });
-    const newData = chunk.substring(pos === filePositions.get(filePath) ? 0 : chunk.indexOf("\n") + 1);
+    // Read only the new bytes using a file descriptor with position
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(stat.size - pos);
+    fs.readSync(fd, buf, 0, buf.length, pos);
+    fs.closeSync(fd);
+    const newData = buf.toString("utf-8");
     filePositions.set(filePath, stat.size);
 
     const lines = newData.split("\n");

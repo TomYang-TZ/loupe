@@ -1,5 +1,21 @@
 "use strict";
 
+// ===== Theme =====
+(function initTheme() {
+  const saved = localStorage.getItem("loupe-theme") || "dark";
+  document.documentElement.dataset.theme = saved;
+})();
+
+// ===== Zoom =====
+(function initZoom() {
+  const saved = localStorage.getItem("loupe-zoom");
+  if (saved) {
+    document.addEventListener("DOMContentLoaded", () => {
+      document.querySelectorAll(".log-scroll").forEach(el => { el.style.zoom = (parseFloat(saved) / 100).toString(); });
+    });
+  }
+})();
+
 // ===== State =====
 const entries = [];
 let lineCounter = 0;
@@ -167,6 +183,101 @@ setInterval(updatePaneIdleLabels, 5000);
 
 let gridCols = 4;
 
+// ===== Pane resize (edge-detect on grid gaps) =====
+const EDGE_ZONE = 5; // px from pane edge to trigger resize
+
+function detectEdge(e) {
+  const paneList = [...panes.values()];
+  for (let i = 0; i < paneList.length; i++) {
+    const rect = paneList[i].el.getBoundingClientRect();
+    // Right edge → col resize (if there's a pane to the right)
+    if (Math.abs(e.clientX - rect.right) < EDGE_ZONE && e.clientY >= rect.top && e.clientY <= rect.bottom) {
+      const rightNeighbor = paneList.find(p => {
+        const r = p.el.getBoundingClientRect();
+        return r.left > rect.right - 10 && r.left < rect.right + 10 && r.top < rect.bottom && r.bottom > rect.top;
+      });
+      if (rightNeighbor) return { type: "col", left: paneList[i], right: rightNeighbor };
+    }
+    // Bottom edge → row resize (if there's a pane below)
+    if (Math.abs(e.clientY - rect.bottom) < EDGE_ZONE && e.clientX >= rect.left && e.clientX <= rect.right) {
+      const belowNeighbor = paneList.find(p => {
+        const r = p.el.getBoundingClientRect();
+        return r.top > rect.bottom - 10 && r.top < rect.bottom + 10 && r.left < rect.right && r.right > rect.left;
+      });
+      if (belowNeighbor) return { type: "row", above: paneList[i], below: belowNeighbor };
+    }
+  }
+  return null;
+}
+
+paneContainer.addEventListener("mousemove", (e) => {
+  if (paneContainer._resizing) return;
+  const edge = detectEdge(e);
+  paneContainer.style.cursor = edge ? (edge.type === "col" ? "col-resize" : "row-resize") : "";
+});
+
+paneContainer.addEventListener("mousedown", (e) => {
+  const edge = detectEdge(e);
+  if (!edge) return;
+  e.preventDefault();
+  paneContainer._resizing = true;
+  document.body.style.userSelect = "none";
+
+  if (edge.type === "col") {
+    const colWidths = getComputedStyle(paneContainer).gridTemplateColumns.split(" ").map(parseFloat);
+    const leftIdx = [...panes.values()].indexOf(edge.left);
+    const rightIdx = [...panes.values()].indexOf(edge.right);
+    const cols = Math.min(gridCols, panes.size);
+    const leftCol = leftIdx % cols;
+    const rightCol = rightIdx % cols;
+    const startX = e.clientX;
+
+    document.body.style.cursor = "col-resize";
+    function onMove(ev) {
+      const delta = ev.clientX - startX;
+      const nw = [...colWidths];
+      nw[leftCol] = Math.max(80, colWidths[leftCol] + delta);
+      nw[rightCol] = Math.max(80, colWidths[rightCol] - delta);
+      paneContainer.style.gridTemplateColumns = nw.map(w => w + "px").join(" ");
+    }
+    function onUp() {
+      paneContainer._resizing = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  } else {
+    const rowHeights = getComputedStyle(paneContainer).gridTemplateRows.split(" ").map(parseFloat);
+    const aboveIdx = [...panes.values()].indexOf(edge.above);
+    const belowIdx = [...panes.values()].indexOf(edge.below);
+    const cols = Math.min(gridCols, panes.size);
+    const aboveRow = Math.floor(aboveIdx / cols);
+    const belowRow = Math.floor(belowIdx / cols);
+    const startY = e.clientY;
+
+    document.body.style.cursor = "row-resize";
+    function onMove(ev) {
+      const delta = ev.clientY - startY;
+      const nh = [...rowHeights];
+      nh[aboveRow] = Math.max(60, rowHeights[aboveRow] + delta);
+      nh[belowRow] = Math.max(60, rowHeights[belowRow] - delta);
+      paneContainer.style.gridTemplateRows = nh.map(h => h + "px").join(" ");
+    }
+    function onUp() {
+      paneContainer._resizing = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+});
+
 function rebuildPanes() {
   paneContainer.innerHTML = "";
   panes.clear();
@@ -176,6 +287,7 @@ function rebuildPanes() {
     paneContainer.classList.remove("multi-pane");
     paneContainer.classList.remove("grid-layout");
     paneContainer.style.removeProperty("grid-template-columns");
+    paneContainer.style.removeProperty("grid-template-rows");
     const p = createPane("main", "All", "var(--accent)");
     paneContainer.appendChild(p.el);
     panes.set("main", p);
@@ -184,8 +296,8 @@ function rebuildPanes() {
     syncSessionOrder();
     paneContainer.classList.add("multi-pane");
     paneContainer.classList.add("grid-layout");
-    const cols = Math.min(gridCols, sessionOrder.length);
-    paneContainer.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    paneContainer.style.removeProperty("flex-direction");
+    paneContainer.style.removeProperty("flex-wrap");
 
     for (const id of sessionOrder) {
       const info = sessions.get(id);
@@ -195,7 +307,15 @@ function rebuildPanes() {
       paneContainer.appendChild(p.el);
       panes.set(id, p);
     }
+
+    const cols = Math.min(gridCols, sessionOrder.length);
+    paneContainer.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    paneContainer.style.removeProperty("grid-template-rows");
   }
+
+  // Apply saved zoom
+  const z = localStorage.getItem("loupe-zoom");
+  if (z) applyZoom(parseFloat(z));
 }
 
 window.setGridCols = (n) => {
@@ -205,7 +325,7 @@ window.setGridCols = (n) => {
 };
 
 function updateGridControlsVisibility() {
-  const show = activeSession === "all" && sessions.size > 1;
+  const show = activeSession === "all";
   if (gridControls) gridControls.style.display = show ? "" : "none";
   if (gridSep) gridSep.style.display = show ? "" : "none";
 }
@@ -229,6 +349,7 @@ function scrollPaneToBottom(entry) {
 }
 
 rebuildPanes();
+updateGridControlsVisibility();
 
 // ===== WebSocket =====
 let ws;
@@ -311,29 +432,29 @@ function extractTitle(msg, category) {
 
 function extractSummary(msg, category) {
   const json = msg.json;
-  if (!json) return msg.data?.slice(0, 120) || "";
+  if (!json) return msg.data || "";
   const hook = unwrapHook(json);
   const inner = hook?.inner || json;
 
   if (category === "tool_use") {
     const input = inner.tool_input || inner.input || {};
     if (input.file_path) return input.file_path;
-    if (input.command) { const cmd = input.command.split("\n")[0]; return cmd.length > 100 ? cmd.slice(0, 100) + "..." : cmd; }
+    if (input.command) return input.command.split("\n")[0];
     if (input.pattern) return `pattern: ${input.pattern}`;
-    if (input.query) return input.query.slice(0, 100);
+    if (input.query) return input.query;
     if (input.description) return input.description;
     return Object.keys(input).slice(0, 3).join(", ");
   }
   if (category === "tool_result") {
     const resp = inner.tool_response || {};
     const out = resp.stdout || inner.tool_result || inner.output || inner.content;
-    if (typeof out === "string") { const line = out.split("\n")[0]; return line.length > 100 ? line.slice(0, 100) + "..." : line; }
+    if (typeof out === "string") return out.split("\n")[0];
     return "";
   }
   if (category === "error") return inner.error || inner.tool_result || "Error";
   if (category === "thinking") {
     const t = inner.thinking || inner.content || inner.text || "";
-    return typeof t === "string" ? t.slice(0, 120) : "";
+    return typeof t === "string" ? t : "";
   }
   return "";
 }
@@ -602,11 +723,10 @@ function applySearch(text) {
 
 // ===== Multi-select filter dropdown =====
 const FILTER_TYPES = [
-  { key: "tool_use", label: "Tool Use", color: "#3b82f6" },
+  { key: "tool_use", label: "Tool Use", color: "#06b6d4" },
   { key: "tool_result", label: "Result", color: "#4ade80" },
   { key: "error", label: "Error", color: "#ef4444" },
   { key: "thinking", label: "Thinking", color: "#8b5cf6" },
-  { key: "text", label: "Text", color: "#71717a" },
 ];
 
 function buildFilterMenu() {
@@ -640,8 +760,13 @@ function buildFilterMenu() {
     label.textContent = ft.label;
     label.onclick = (e) => {
       e.stopPropagation();
-      hiddenTypes.clear();
-      FILTER_TYPES.forEach(t => { if (t.key !== ft.key) hiddenTypes.add(t.key); });
+      const isAlreadySolo = hiddenTypes.size === FILTER_TYPES.length - 1 && !hiddenTypes.has(ft.key);
+      if (isAlreadySolo) {
+        hiddenTypes.clear();
+      } else {
+        hiddenTypes.clear();
+        FILTER_TYPES.forEach(t => { if (t.key !== ft.key) hiddenTypes.add(t.key); });
+      }
       buildFilterMenu();
       updateFilterLabel();
       rebuildView();
@@ -690,6 +815,7 @@ searchInput.addEventListener("input", (e) => { searchQuery = e.target.value; reb
 function rebuildView() {
   rebuildPanes();
   rebuildAllPaneContents();
+  updateGridControlsVisibility();
 }
 
 function rebuildAllPaneContents() {
@@ -801,14 +927,23 @@ function scrollAllToBottom() { for (const p of panes.values()) p.scrollEl.scroll
 window.collapseAll = () => { /* no-op: entries don't expand inline anymore */ };
 
 window.clearLogs = () => {
-  entries.length = 0;
-  lineCounter = 0;
-  firstEventTs = null;
-  sessions.clear();
-  colorIdx = 0;
-  rebuildTabs();
-  rebuildPanes();
-  lineCountEl.textContent = "0";
+  if (activeSession === "all") {
+    // Clear everything
+    entries.length = 0;
+    lineCounter = 0;
+    firstEventTs = null;
+    sessions.clear();
+    colorIdx = 0;
+    rebuildTabs();
+    rebuildPanes();
+    lineCountEl.textContent = "0";
+  } else {
+    // Clear only the active session
+    for (let i = entries.length - 1; i >= 0; i--) {
+      if (entries[i].sessionId === activeSession) entries.splice(i, 1);
+    }
+    rebuildView();
+  }
 };
 
 function scrollToBottom() { scrollAllToBottom(); }
@@ -859,6 +994,9 @@ function toggleHelp() {
           <div class="help-section">
             <div class="help-section-title">Actions</div>
             <div class="help-row"><kbd>e</kbd> <span>Toggle errors</span></div>
+            <div class="help-row"><kbd>&#8984;</kbd><kbd>T</kbd> <span>Toggle theme</span></div>
+            <div class="help-row"><kbd>&#8984;</kbd><kbd>+</kbd><kbd>-</kbd> <span>Zoom</span></div>
+            <div class="help-row"><kbd>&#8984;</kbd><kbd>&#8679;</kbd><kbd>+</kbd><kbd>-</kbd> <span>Columns</span></div>
             <div class="help-row"><kbd>?</kbd> <span>This help</span></div>
           </div>
         </div>
@@ -886,6 +1024,11 @@ document.addEventListener("keydown", (e) => {
   const inSearch = document.activeElement === searchInput;
 
   if (e.key === "?" && !inSearch) { toggleHelp(); return; }
+  if (e.key === "t" && e.metaKey) { e.preventDefault(); toggleTheme(); return; }
+  if ((e.key === "=" || e.key === "+") && e.metaKey && e.shiftKey) { e.preventDefault(); setGridCols(gridCols + 1); return; }
+  if ((e.key === "-" || e.key === "_") && e.metaKey && e.shiftKey) { e.preventDefault(); setGridCols(gridCols - 1); return; }
+  if ((e.key === "=" || e.key === "+") && e.metaKey) { e.preventDefault(); adjustFontSize(1); return; }
+  if (e.key === "-" && e.metaKey) { e.preventDefault(); adjustFontSize(-1); return; }
   if (e.key === "Escape") {
     if (helpVisible) { toggleHelp(); return; }
     searchInput.blur(); searchInput.value = ""; searchQuery = ""; rebuildView(); return;
@@ -921,6 +1064,56 @@ function focusEntry(visible, idx) {
   if (visible[idx]) { visible[idx].classList.add("kb-focus"); visible[idx].scrollIntoView({ block: "nearest" }); }
 }
 
+
+// ===== Theme toggle =====
+const themeToggle = document.getElementById("theme-toggle");
+
+function toggleTheme() {
+  const current = document.documentElement.dataset.theme || "dark";
+  const next = current === "dark" ? "light" : "dark";
+  applyTheme(next);
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("loupe-theme", theme);
+  // Sync checkbox state: checked = light mode
+  if (themeToggle) themeToggle.checked = (theme === "light");
+  // Notify native macOS app to update window chrome
+  if (window.webkit?.messageHandlers?.themeChange) {
+    window.webkit.messageHandlers.themeChange.postMessage(theme);
+  }
+}
+
+// Set initial state and notify native app
+if (themeToggle) {
+  const initialTheme = document.documentElement.dataset.theme || "dark";
+  themeToggle.checked = (initialTheme === "light");
+  // Use click on the label instead of change on checkbox to avoid macOS click sound
+  const themeLabel = themeToggle.closest(".theme-switch");
+  if (themeLabel) {
+    themeLabel.addEventListener("click", (e) => {
+      e.preventDefault();
+      toggleTheme();
+    });
+  }
+  if (window.webkit?.messageHandlers?.themeChange) {
+    window.webkit.messageHandlers.themeChange.postMessage(initialTheme);
+  }
+}
+
+// ===== Font Size =====
+function adjustFontSize(delta) {
+  const current = parseFloat(localStorage.getItem("loupe-zoom") || "100");
+  const step = delta * 10;
+  const next = Math.min(150, Math.max(60, current + step));
+  localStorage.setItem("loupe-zoom", next);
+  applyZoom(next);
+}
+
+function applyZoom(pct) {
+  document.querySelectorAll(".log-scroll").forEach(el => { el.style.zoom = (pct / 100).toString(); });
+}
 
 // ===== Init =====
 connect();

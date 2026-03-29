@@ -55,6 +55,21 @@ function serveStatic(filePath, res) {
   }
 }
 
+// --- Dedup for thinking entries (hook + watcher can double-log) ---
+const recentThinking = new Set();
+const DEDUP_WINDOW = 10000; // 10 seconds
+
+function isDuplicateThinking(json) {
+  if (!json || json._logstream_type !== "thinking") return false;
+  const text = json.data?.thinking || "";
+  // Use first 200 chars as key to avoid huge strings in the Set
+  const key = text.slice(0, 200);
+  if (recentThinking.has(key)) return true;
+  recentThinking.add(key);
+  setTimeout(() => recentThinking.delete(key), DEDUP_WINDOW);
+  return false;
+}
+
 // --- File tailing ---
 let fileSize = fs.statSync(filePath).size;
 let buffer = "";
@@ -90,6 +105,7 @@ function readNewBytes() {
     for (const line of lines) {
       if (line.trim() === "") continue;
       const msg = buildMessage(line);
+      if (msg.json && isDuplicateThinking(msg.json)) continue;
       broadcast(JSON.stringify(msg));
     }
   });
@@ -149,7 +165,17 @@ async function sendBacklog(ws) {
   try {
     const content = fs.readFileSync(filePath, "utf-8");
     const lines = content.split("\n").filter((l) => l.trim() !== "");
-    const backlog = lines.slice(-50);
+
+    // Only send entries from the last 5 minutes
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    const recent = lines.filter((line) => {
+      try {
+        const obj = JSON.parse(line);
+        const ts = obj._ts ? new Date(obj._ts).getTime() : 0;
+        return ts > cutoff;
+      } catch { return true; }
+    });
+    const backlog = recent.slice(-200);
 
     for (const line of backlog) {
       const truncated = truncateForBacklog(line);
