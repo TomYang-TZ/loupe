@@ -727,6 +727,7 @@ const FILTER_TYPES = [
   { key: "tool_result", label: "Result", color: "#4ade80" },
   { key: "error", label: "Error", color: "#ef4444" },
   { key: "thinking", label: "Thinking", color: "#8b5cf6" },
+  { key: "text", label: "Text", color: "#8b8b96" },
 ];
 
 function buildFilterMenu() {
