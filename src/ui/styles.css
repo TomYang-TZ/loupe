@@ -524,16 +524,11 @@
   /* Keyboard focus indicator */
   .log-entry.kb-focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
-  /* ===== Scroll wheel recency (viewport-relative) ===== */
-  .log-entry {
-    transform-origin: left center;
-    --scroll-opacity: 1;
-    /* Final opacity = time-based age * scroll position */
-  }
-  .log-entry.age-0 { opacity: var(--scroll-opacity); }
-  .log-entry.age-1 { opacity: calc(0.85 * var(--scroll-opacity)); }
-  .log-entry.age-2 { opacity: calc(0.65 * var(--scroll-opacity)); }
-  .log-entry.age-3 { opacity: calc(0.45 * var(--scroll-opacity)); }
+  /* Time-based recency opacity */
+  .log-entry.age-0 { opacity: 1; }
+  .log-entry.age-1 { opacity: 0.85; }
+  .log-entry.age-2 { opacity: 0.65; }
+  .log-entry.age-3 { opacity: 0.45; }
 
   /* Recency — dramatic time-based contrast */
   /* age-0: <30s — vivid, full presence */

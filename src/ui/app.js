@@ -935,53 +935,9 @@
     }
   }
 
-  // ===== Scroll wheel recency (iOS-style viewport-relative) =====
-  // Entries near the bottom of the visible area are large and prominent.
-  // Entries further up shrink and recede like a 3D cylinder.
-  function applyScrollWheel(scrollEl) {
-    const rect = scrollEl.getBoundingClientRect();
-    const viewH = rect.height;
-    if (viewH <= 0) return;
-
-    const els = scrollEl.querySelectorAll(".log-entry");
-    for (const el of els) {
-      const elRect = el.getBoundingClientRect();
-      const elCenter = elRect.top + elRect.height / 2;
-
-      // How close to the bottom (0 = top of viewport, 1 = bottom)
-      const ratio = (elCenter - rect.top) / viewH;
-      const t = Math.max(0, Math.min(1, ratio));
-
-      // Scale: 0.92 at top → 1.0 at bottom
-      const scale = 0.92 + 0.08 * t;
-      // Scroll opacity: 0.7 at top → 1.0 at bottom
-      const scrollOpacity = 0.7 + 0.3 * t;
-
-      el.style.transform = `scale(${scale.toFixed(3)})`;
-      el.style.setProperty("--scroll-opacity", scrollOpacity.toFixed(2));
-    }
-  }
-
-  function applyScrollWheelAll() {
-    for (const p of panes.values()) {
-      applyScrollWheel(p.scrollEl);
-    }
-  }
-
-  // Attach scroll listeners to panes (called after pane rebuild)
-  function attachScrollWheelListeners() {
-    for (const p of panes.values()) {
-      // Remove old listener if any
-      if (p._scrollWheelHandler) p.scrollEl.removeEventListener("scroll", p._scrollWheelHandler);
-      p._scrollWheelHandler = () => requestAnimationFrame(() => applyScrollWheel(p.scrollEl));
-      p.scrollEl.addEventListener("scroll", p._scrollWheelHandler, { passive: true });
-    }
-  }
-
-  // Compat shim: old call sites used applyBubbleRecency
-  function applyBubbleRecency() {
-    applyScrollWheelAll();
-  }
+  // Scroll wheel effect removed — keeping time-based aging only
+  function attachScrollWheelListeners() {}
+  function applyBubbleRecency() {}
 
   // ===== Recency aging (time-based) =====
   function applyRecencyAging() {
