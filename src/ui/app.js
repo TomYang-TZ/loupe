@@ -512,14 +512,25 @@
     return wrap;
   }
 
+  let truncId = 0;
   function renderPrimitive(val) {
     if (val === null) return `<span class="json-null">null</span>`;
     if (typeof val === "boolean") return `<span class="json-bool">${val}</span>`;
     if (typeof val === "number") return `<span class="json-number">${val}</span>`;
     const str = String(val);
-    const display = str.length > 500 ? esc(str.slice(0, 500)) + "..." : esc(str);
-    return `<span class="json-string">"${display}"</span>`;
+    if (str.length <= 800) {
+      return `<span class="json-string">"${esc(str)}"</span>`;
+    }
+    const id = "trunc-" + (truncId++);
+    return `<span class="json-string json-truncated" id="${id}">"${esc(str.slice(0, 800))}<span class="trunc-fade">...</span>"<button class="trunc-btn" onclick="event.stopPropagation(); expandTruncated('${id}', this)" data-full="${esc(str).replace(/"/g, '&quot;')}">${str.length.toLocaleString()} chars — show all</button></span>`;
   }
+
+  window.expandTruncated = (id, btn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const full = btn.dataset.full;
+    el.innerHTML = `"${full}"`;
+  };
 
   function spanOf(text, cls) { const s = document.createElement("span"); s.className = cls; s.textContent = text; return s; }
 
