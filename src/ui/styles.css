@@ -181,8 +181,6 @@ header {
 }
 .session-tab .tab-dot.has-activity { display: block; }
 
-.session-tab[draggable="true"] { }
-.session-tab[draggable="true"]:active { }
 .session-tab.tab-dragging { opacity: 0.3; }
 .session-tab.tab-drop-target { border-bottom-color: var(--accent); background: var(--accent-dim); }
 

@@ -544,12 +544,11 @@ function handleLine(msg) {
   if (sessionId && !sessions.has(sessionId)) {
     sessions.set(sessionId, { label: sessionLabel || sessionId.slice(0, 8), count: 0, color: nextSessionColor(), lastEventTs: msg.ts });
     newSession = true;
+    rebuildTabs();
     // Compact mode: auto-select first session instead of "All"
     if (isMinimalMode() && activeSession === "all") {
-      switchSession(sessionId);
-      return;
+      activeSession = sessionId;
     }
-    rebuildTabs();
   }
   if (sessionId && sessions.has(sessionId)) {
     const sInfo = sessions.get(sessionId);
