@@ -33,12 +33,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         if message.name == "autoHide", let enabled = message.body as? Bool {
             autoHideEnabled = enabled
             if enabled {
-                // Native window deactivation — instant, no JS roundtrip
-                autoHideObserver = NotificationCenter.default.addObserver(
-                    forName: NSWindow.didResignKeyNotification, object: window, queue: .main
-                ) { [weak self] _ in
-                    guard let self = self, !self.autoHideSuppressed else { return }
-                    self.window.orderOut(nil)
+                if autoHideObserver == nil {
+                    autoHideObserver = NotificationCenter.default.addObserver(
+                        forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+                    ) { [weak self] _ in
+                        guard let self = self, !self.autoHideSuppressed else { return }
+                        self.window.orderOut(nil)
+                    }
                 }
             } else {
                 if let obs = autoHideObserver {
@@ -104,6 +105,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
             guard event.modifierFlags.contains(.command) else { return event }
             if event.modifierFlags.contains(.shift) && event.keyCode == 37 { // Cmd+Shift+L
                 self?.toggleWindow()
+                return nil
+            }
+            if event.modifierFlags.contains(.shift) && event.keyCode == 4 { // Cmd+Shift+H
+                self?.webView.evaluateJavaScript("toggleAutoHide()", completionHandler: nil)
                 return nil
             }
             if event.modifierFlags.contains(.shift) && event.keyCode == 46 { // Cmd+Shift+M
@@ -192,7 +197,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
 
     func switchToFull() {
         isCompact = false
-        window.level = .normal
         // Toggle UI via JS (no reload)
         webView.evaluateJavaScript("document.body.classList.remove('minimal')", completionHandler: nil)
         // Resize window
@@ -208,7 +212,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
 
     func switchToCompact() {
         isCompact = true
-        window.level = .floating
         // Toggle UI via JS (no reload)
         webView.evaluateJavaScript("document.body.classList.add('minimal')", completionHandler: nil)
         // Resize window
