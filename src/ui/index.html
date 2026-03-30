@@ -30,9 +30,9 @@
           </g>
         </svg>
       </button>
-      <button class="mode-toggle-btn" id="collapse-btn" title="Collapse to menu bar">&#8598;</button>
       <span><span class="conn-dot connecting" id="conn-dot"></span><span id="conn-status">connecting</span></span>
       <span><span class="stat-val" id="line-count">0</span> events</span>
+      <button class="mode-toggle-btn" id="mode-toggle-btn" onclick="toggleMode()" title="Compact mode">&#8598;</button>
     </div>
     <div class="scanline" id="scanline"><div class="scanline-bar"></div></div>
   </header>
@@ -62,8 +62,7 @@
       </svg>
     </button>
     <div class="minimal-topbar-right">
-      <div class="pin-toggle unpinned" id="minimal-pin"></div>
-      <button class="minimal-mode-btn" id="minimal-detach" title="Open in window">&#8599;</button>
+      <button class="mode-toggle-btn" id="mode-toggle-btn-mini" onclick="toggleMode()" title="Expand to full window">&#8599;</button>
     </div>
   </div>
 
@@ -85,6 +84,7 @@
         <button class="btn btn-sm" onclick="setGridCols(gridCols+1)" title="More columns">+</button>
       </span>
       <div class="toolbar-sep" id="grid-sep" style="display:none"></div>
+      <button class="btn" id="autohide-btn" onclick="toggleAutoHide()" title="Auto-hide when inactive">Auto-hide</button>
       <button class="btn" onclick="clearLogs()" title="Clear all">Clear</button>
     </div>
   </div>

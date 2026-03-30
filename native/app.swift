@@ -2,39 +2,56 @@ import Cocoa
 import WebKit
 
 class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
-    var window: NSWindow?
-    var hasPositionedPopover = false
-    var popoverPanel: NSPanel!
-    var popoverWebView: WKWebView!
-    var windowWebView: WKWebView!
+    var window: NSWindow!
+    var webView: WKWebView!
+    var currentTheme = "dark"
+    var isCompact = true
     var retryCount = 0
     let maxRetries = 60
     var port: String = "8390"
     var retryTimer: Timer?
-    var isWindowMode = false
+    var hasPositionedWindow = false
+    var autoHideEnabled = false
+    var autoHideObserver: Any?
+    var autoHideSuppressed = false
+
+    // Saved frames for switching between compact/full
+    let compactSize = NSSize(width: 420, height: 600)
+    let fullSize = NSSize(width: 560, height: 0) // height computed from screen
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         if message.name == "themeChange", let theme = message.body as? String {
+            guard theme != currentTheme else { return }
+            currentTheme = theme
             let appearance = theme == "light" ? NSAppearance(named: .aqua) : NSAppearance(named: .darkAqua)
             let bgColor = theme == "light"
                 ? NSColor(red: 248.0/255, green: 250.0/255, blue: 252.0/255, alpha: 1.0)
                 : NSColor(red: 15.0/255, green: 23.0/255, blue: 42.0/255, alpha: 1.0)
-
-            popoverPanel.appearance = appearance
-            popoverPanel.backgroundColor = bgColor
-            if let w = window {
-                w.appearance = appearance
-                w.backgroundColor = bgColor
-            }
+            window.appearance = appearance
+            window.backgroundColor = bgColor
         }
-        if message.name == "pinPopover", let pinned = message.body as? Bool {
-            popoverPanel.hidesOnDeactivate = !pinned
+        if message.name == "autoHide", let enabled = message.body as? Bool {
+            autoHideEnabled = enabled
+            if enabled {
+                // Native window deactivation — instant, no JS roundtrip
+                autoHideObserver = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+                ) { [weak self] _ in
+                    guard let self = self, !self.autoHideSuppressed else { return }
+                    self.window.orderOut(nil)
+                }
+            } else {
+                if let obs = autoHideObserver {
+                    NotificationCenter.default.removeObserver(obs)
+                    autoHideObserver = nil
+                }
+            }
         }
         if message.name == "switchMode", let mode = message.body as? String {
             if mode == "window" {
-                switchToWindowMode()
+                switchToFull()
             } else {
-                switchToMenuBarMode()
+                switchToCompact()
             }
         }
     }
@@ -42,56 +59,62 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     func applicationDidFinishLaunching(_ notification: Notification) {
         port = ProcessInfo.processInfo.environment["LOUPE_PORT"] ?? "8390"
 
-        // Global hotkey: Cmd+Shift+L to toggle popover
+        // Global hotkey: Cmd+Shift+L to toggle window
         NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 37 { // L key
-                self?.togglePopover()
+            if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 37 {
+                self?.toggleWindow()
             }
-        }
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 37 { // L key
-                self?.togglePopover()
-                return nil
-            }
-            return event
         }
 
-        // Borderless panel (positioned top-right, remembers position)
-        popoverPanel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 600),
-            styleMask: [.nonactivatingPanel, .titled, .resizable, .closable],
+        // Create single window
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: compactSize.width, height: compactSize.height),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        popoverPanel.titlebarAppearsTransparent = true
-        popoverPanel.titleVisibility = .hidden
-        popoverPanel.isMovableByWindowBackground = true
-        popoverPanel.level = .popUpMenu
-        popoverPanel.appearance = NSAppearance(named: .darkAqua)
-        popoverPanel.backgroundColor = NSColor(red: 15.0/255, green: 23.0/255, blue: 42.0/255, alpha: 1.0)
-        popoverPanel.isReleasedWhenClosed = false
-        popoverPanel.hidesOnDeactivate = false
-        popoverPanel.minSize = NSSize(width: 320, height: 300)
-        popoverPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        popoverPanel.hasShadow = true
-        popoverPanel.setFrameAutosaveName("loupe-popover")
+        window.title = "Loupe"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.level = .floating
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = NSColor(red: 15.0/255, green: 23.0/255, blue: 42.0/255, alpha: 1.0)
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 320, height: 300)
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.hasShadow = true
+        window.setFrameAutosaveName("loupe-compact")
 
-        popoverWebView = makeWebView()
-        if let cv = popoverPanel.contentView {
-            cv.addSubview(popoverWebView)
-            popoverWebView.translatesAutoresizingMaskIntoConstraints = false
+        // Single webview
+        webView = makeWebView()
+        if let cv = window.contentView {
+            cv.addSubview(webView)
+            webView.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
-                popoverWebView.topAnchor.constraint(equalTo: cv.topAnchor),
-                popoverWebView.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
-                popoverWebView.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
-                popoverWebView.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
+                webView.topAnchor.constraint(equalTo: cv.topAnchor),
+                webView.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
+                webView.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
+                webView.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
             ])
         }
 
-        // Intercept Cmd+/- for zoom, Cmd+Shift+/- for columns
+        // Intercept Cmd+/- for zoom, Cmd+Shift+/- for columns, Cmd+Shift+L for toggle
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.modifierFlags.contains(.command) else { return event }
-            let wv = self?.activeWebView
+            if event.modifierFlags.contains(.shift) && event.keyCode == 37 { // Cmd+Shift+L
+                self?.toggleWindow()
+                return nil
+            }
+            if event.modifierFlags.contains(.shift) && event.keyCode == 46 { // Cmd+Shift+M
+                if self?.isCompact == true {
+                    self?.switchToFull()
+                } else {
+                    self?.switchToCompact()
+                }
+                return nil
+            }
+            let wv = self?.webView
             let hasShift = event.modifierFlags.contains(.shift)
             if event.keyCode == 24 {  // =/+ key
                 if hasShift {
@@ -112,10 +135,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
             return event
         }
 
-        // Load popover page and show it
-        loadPage(webView: popoverWebView, minimal: true)
-        positionPopoverPanel()
-        popoverPanel.makeKeyAndOrderFront(nil)
+        // Force compact size on launch (autosave may have restored a different size)
+        let currentOrigin = window.frame.origin
+        window.setFrame(NSRect(origin: currentOrigin, size: compactSize), display: false)
+
+        // Load page in compact (minimal) mode and show
+        loadPage()
+        positionWindow()
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -124,7 +151,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         config.userContentController.add(self, name: "themeChange")
         config.userContentController.add(self, name: "switchMode")
-        config.userContentController.add(self, name: "pinPopover")
+        config.userContentController.add(self, name: "autoHide")
         config.websiteDataStore = WKWebsiteDataStore.default()
 
         let wv = WKWebView(frame: .zero, configuration: config)
@@ -134,110 +161,65 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         return wv
     }
 
-    var activeWebView: WKWebView {
-        return isWindowMode ? windowWebView : popoverWebView
+    func showWindow() {
+        autoHideSuppressed = true
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        // Re-enable auto-hide after window is settled
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.autoHideSuppressed = false
+        }
     }
 
-    @objc func togglePopover() {
-        if isWindowMode {
-            if let w = window {
-                if w.isVisible {
-                    w.orderOut(nil)
-                } else {
-                    w.makeKeyAndOrderFront(nil)
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-            }
-            return
-        }
-
-        if popoverPanel.isVisible {
-            popoverPanel.orderOut(nil)
+    func toggleWindow() {
+        if window.isVisible {
+            window.orderOut(nil)
         } else {
-            positionPopoverPanel()
-            popoverPanel.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            showWindow()
         }
     }
 
-    func positionPopoverPanel() {
-        // Only set initial position once — after that, autosave handles it
-        if hasPositionedPopover { return }
-        hasPositionedPopover = true
+    func positionWindow() {
+        if hasPositionedWindow { return }
+        hasPositionedWindow = true
         guard let screen = NSScreen.main else { return }
         let visibleFrame = screen.visibleFrame
-        let panelSize = popoverPanel.frame.size
-        let x = visibleFrame.maxX - panelSize.width - 16
-        let y = visibleFrame.maxY - panelSize.height - 8
-        popoverPanel.setFrameOrigin(NSPoint(x: x, y: y))
+        let winSize = window.frame.size
+        let x = visibleFrame.minX + (visibleFrame.width - winSize.width) / 2 - visibleFrame.width * 0.1
+        let y = visibleFrame.minY + (visibleFrame.height - winSize.height) / 2
+        window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
-    func switchToWindowMode() {
-        // Close popover panel
-        popoverPanel.orderOut(nil)
-
-        // Show in dock + Cmd+Tab
-        NSApp.setActivationPolicy(.regular)
-
-        // Create window if needed
-        if window == nil {
-            let screen = NSScreen.main!.visibleFrame
-            let width: CGFloat = 560
-            let height: CGFloat = screen.height * 0.85
-            let x = screen.maxX - width - 16
-            let y = screen.minY + (screen.height - height) / 2
-
-            let w = NSWindow(
-                contentRect: NSRect(x: x, y: y, width: width, height: height),
-                styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                backing: .buffered,
-                defer: false
-            )
-            w.title = "Loupe"
-            w.titlebarAppearsTransparent = true
-            w.appearance = NSAppearance(named: .darkAqua)
-            w.backgroundColor = NSColor(red: 15.0/255, green: 23.0/255, blue: 42.0/255, alpha: 1.0)
-            w.isReleasedWhenClosed = false
-            w.minSize = NSSize(width: 380, height: 400)
-            w.setFrameAutosaveName("logstream-main")
-            w.level = .floating
-            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-            windowWebView = makeWebView()
-            if let cv = w.contentView {
-                cv.addSubview(windowWebView)
-                windowWebView.translatesAutoresizingMaskIntoConstraints = false
-                NSLayoutConstraint.activate([
-                    windowWebView.topAnchor.constraint(equalTo: cv.topAnchor),
-                    windowWebView.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
-                    windowWebView.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
-                    windowWebView.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
-                ])
-            }
-            window = w
-            loadPage(webView: windowWebView, minimal: false)
-        }
-
-        isWindowMode = true
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    func switchToFull() {
+        isCompact = false
+        window.level = .normal
+        // Toggle UI via JS (no reload)
+        webView.evaluateJavaScript("document.body.classList.remove('minimal')", completionHandler: nil)
+        // Resize window
+        guard let screen = NSScreen.main else { return }
+        let visibleFrame = screen.visibleFrame
+        let height = visibleFrame.height * 0.85
+        let currentFrame = window.frame
+        let newWidth = fullSize.width
+        // Keep top-left anchored
+        let newOrigin = NSPoint(x: currentFrame.origin.x, y: currentFrame.maxY - height)
+        window.setFrame(NSRect(origin: newOrigin, size: NSSize(width: newWidth, height: height)), display: true, animate: true)
     }
 
-    func switchToMenuBarMode() {
-        isWindowMode = false
-        window?.orderOut(nil)
-
-        // Show panel after a brief delay (allows activation policy change to settle)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self = self else { return }
-            self.positionPopoverPanel()
-            self.popoverPanel.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
+    func switchToCompact() {
+        isCompact = true
+        window.level = .floating
+        // Toggle UI via JS (no reload)
+        webView.evaluateJavaScript("document.body.classList.add('minimal')", completionHandler: nil)
+        // Resize window
+        let currentFrame = window.frame
+        // Keep top-left anchored
+        let newOrigin = NSPoint(x: currentFrame.origin.x, y: currentFrame.maxY - compactSize.height)
+        window.setFrame(NSRect(origin: newOrigin, size: compactSize), display: true, animate: true)
     }
 
-    func loadPage(webView: WKWebView, minimal: Bool) {
-        let mode = minimal ? "?mode=minimal" : ""
+    func loadPage() {
+        let mode = isCompact ? "?mode=minimal" : ""
         let url = URL(string: "http://localhost:\(port)\(mode)")!
         NSLog("loupe: loading \(url) (attempt \(retryCount + 1))")
         webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
@@ -254,12 +236,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     // Navigation failed — schedule retry
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         NSLog("loupe: load failed: \(error.localizedDescription)")
-        scheduleRetry(webView: webView)
+        scheduleRetry()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         NSLog("loupe: navigation error: \(error.localizedDescription)")
-        scheduleRetry(webView: webView)
+        scheduleRetry()
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
@@ -275,13 +257,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         return (.performDefaultHandling, nil)
     }
 
-    func scheduleRetry(webView: WKWebView) {
+    func scheduleRetry() {
         retryCount += 1
         if retryCount <= maxRetries {
             let delay = min(Double(retryCount) * 0.5, 3.0)
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                let minimal = webView === self?.popoverWebView
-                self?.loadPage(webView: webView, minimal: minimal)
+                self?.loadPage()
             }
         }
     }
@@ -291,11 +272,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        // `open Loupe.app` again → show the popover
-        if !flag || !popoverPanel.isVisible {
-            togglePopover()
+        if !flag || !window.isVisible {
+            showWindow()
         }
         return false
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // Dock click when window is hidden — bring it back
+        if !window.isVisible {
+            showWindow()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

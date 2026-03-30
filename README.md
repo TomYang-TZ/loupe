@@ -16,7 +16,8 @@ Press `?` in the app for all shortcuts.
 
 | Key | Action |
 |-----|--------|
-| `Cmd+Shift+L` | Toggle popover |
+| `Cmd+Shift+L` | Show/hide window |
+| `Cmd+Shift+M` | Toggle compact/full mode |
 | `Cmd+T` | Toggle theme |
 | `/` | Search |
 | `j`/`k` | Navigate entries |

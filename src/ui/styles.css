@@ -938,7 +938,10 @@ mark { background: rgba(250, 204, 21, 0.25); color: var(--text); border-radius: 
 
 /* ===== Minimal Mode (menu bar popover) ===== */
 body.minimal header { display: none; }
-body.minimal .toolbar { padding: 4px 8px; }
+body.minimal .toolbar { padding: 4px 8px; gap: 4px; }
+body.minimal .toolbar .search-box { width: 100px; }
+body.minimal .toolbar .btn { font-size: 9px; padding: 2px 5px; }
+body.minimal .toolbar .toolbar-sep { display: none; }
 
 .minimal-bar {
   display: none;
@@ -1032,19 +1035,20 @@ body.minimal .pin-toggle-knob {
 body.minimal .pin-toggle.unpinned .pin-toggle-knob { left: 2px; }
 body.minimal .pin-toggle.pinned .pin-toggle-knob { left: 14px; }
 
-/* Minimal top bar */
+/* Minimal top bar — positioned in titlebar area, top-right */
 .minimal-topbar {
   display: none;
   align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border-light);
-  flex-shrink: 0;
+  gap: 6px;
+  position: absolute;
+  top: 4px;
+  right: 10px;
+  z-index: 20;
+  background: none;
+  border: none;
 }
 body.minimal .minimal-topbar { display: flex; }
 .minimal-topbar-right {
-  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 5px;

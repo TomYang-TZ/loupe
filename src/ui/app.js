@@ -1,8 +1,9 @@
 "use strict";
 
 // ===== Minimal Mode =====
-const isMinimal = new URLSearchParams(window.location.search).get("mode") === "minimal";
-if (isMinimal) document.body.classList.add("minimal");
+const initialMinimal = new URLSearchParams(window.location.search).get("mode") === "minimal";
+if (initialMinimal) document.body.classList.add("minimal");
+function isMinimalMode() { return document.body.classList.contains("minimal"); }
 
 // ===== Theme =====
 (function initTheme() {
@@ -890,7 +891,7 @@ function rebuildTabs() {
   syncSessionOrder();
   tabBar.innerHTML = "";
 
-  if (!isMinimal) {
+  if (!isMinimalMode()) {
     const allTab = document.createElement("div");
     allTab.className = `session-tab ${activeSession === "all" ? "active" : ""}`;
     allTab.dataset.session = "all";
@@ -938,7 +939,7 @@ function rebuildTabs() {
   }
 
   // In minimal mode, no extra buttons in tab bar (they're in topbar)
-  if (isMinimal) {}
+  if (isMinimalMode()) {}
 }
 
 function switchSession(id) {
@@ -993,6 +994,18 @@ function reconcileSessions(serverList) {
 }
 
 setInterval(rebuildTabs, 30000);
+
+// ===== Auto-hide =====
+let autoHideEnabled = false;
+const autohideBtn = document.getElementById("autohide-btn");
+
+window.toggleAutoHide = () => {
+  autoHideEnabled = !autoHideEnabled;
+  if (autohideBtn) autohideBtn.classList.toggle("active", autoHideEnabled);
+  if (window.webkit?.messageHandlers?.autoHide) {
+    window.webkit.messageHandlers.autoHide.postMessage(autoHideEnabled);
+  }
+};
 
 function scrollAllToBottom() { for (const p of panes.values()) p.scrollEl.scrollTop = p.scrollEl.scrollHeight; }
 
@@ -1183,99 +1196,26 @@ function applyZoom(pct) {
   document.querySelectorAll(".log-scroll").forEach(el => { el.style.zoom = (pct / 100).toString(); });
 }
 
-// ===== Minimal mode session switching =====
-if (isMinimal) {
-  const minPrev = document.getElementById("minimal-prev");
-  const minNext = document.getElementById("minimal-next");
-  const minSession = document.getElementById("minimal-session");
-  const minDetach = document.getElementById("minimal-detach");
-
-  function updateMinimalBar() {
-    if (!minSession) return;
-    if (activeSession === "all") {
-      const list = getSessionList();
-      minSession.textContent = list.length > 1 ? "All (" + (list.length - 1) + ")" : "All";
-    } else {
-      const info = sessions.get(activeSession);
-      minSession.textContent = info ? info.label : activeSession.slice(0, 8);
-    }
+// ===== Mode switching (compact ↔ full) =====
+window.toggleMode = () => {
+  const mode = isMinimalMode() ? "window" : "menubar";
+  if (window.webkit?.messageHandlers?.switchMode) {
+    window.webkit.messageHandlers.switchMode.postMessage(mode);
   }
+};
 
-  if (minPrev) minPrev.onclick = () => { cycleSession(-1); updateMinimalBar(); };
-  if (minNext) minNext.onclick = () => { cycleSession(1); updateMinimalBar(); };
-  if (minDetach) minDetach.onclick = () => {
-    if (window.webkit?.messageHandlers?.switchMode) {
-      window.webkit.messageHandlers.switchMode.postMessage("window");
-    }
-  };
-
-  // Override switchSession to also update minimal bar
-  const origSwitchSession = switchSession;
-  // Patch: update minimal bar after any session switch
-  const origRebuildTabs = rebuildTabs;
-  setInterval(updateMinimalBar, 1000);
-  setTimeout(updateMinimalBar, 500);
-
-  // In minimal mode, auto-select first session when available
-  const origHandleLine = handleLine;
-  const patchMinimalSession = () => {
-    if (isMinimal && activeSession === "all" && sessions.size > 0) {
-      const firstId = sessions.keys().next().value;
-      switchSession(firstId);
-    }
-  };
-  setInterval(patchMinimalSession, 500);
+if (themeBtnMini) {
+  themeBtnMini.addEventListener("click", (e) => { e.preventDefault(); toggleTheme(); });
 }
 
-// ===== Minimal topbar controls =====
-if (isMinimal) {
-  const miniPin = document.getElementById("minimal-pin");
-  const miniDetach = document.getElementById("minimal-detach");
-
-  if (miniPin) {
-    window._autoHide = false; // Default: stay visible
-    function updateAutoHideToggle() {
-      const autoHide = !!window._autoHide;
-      miniPin.className = `pin-toggle ${autoHide ? "pinned" : "unpinned"}`;
-      miniPin.innerHTML = `<span class="pin-toggle-label">Auto-hide</span><span class="pin-toggle-track"><span class="pin-toggle-knob"></span></span>`;
-    }
-    updateAutoHideToggle();
-    miniPin.onclick = () => {
-      window._autoHide = !window._autoHide;
-      updateAutoHideToggle();
-      if (window.webkit?.messageHandlers?.pinPopover) {
-        // pinPopover(true) = hidesOnDeactivate=false, so invert autoHide
-        window.webkit.messageHandlers.pinPopover.postMessage(!window._autoHide);
-      }
-    };
-  }
-
-  if (miniDetach) {
-    miniDetach.onclick = () => {
-      if (window.webkit?.messageHandlers?.switchMode) {
-        window.webkit.messageHandlers.switchMode.postMessage("window");
-      }
-    };
-  }
-
-  if (themeBtnMini) {
-    themeBtnMini.addEventListener("click", (e) => { e.preventDefault(); toggleTheme(); });
-  }
+// When mode changes, rebuild UI
+function onModeChange() {
+  rebuildTabs();
+  rebuildView();
 }
 
-// ===== Collapse to menu bar =====
-const collapseBtn = document.getElementById("collapse-btn");
-if (collapseBtn) {
-  if (isMinimal) {
-    collapseBtn.style.display = "none";
-  } else {
-    collapseBtn.onclick = () => {
-      if (window.webkit?.messageHandlers?.switchMode) {
-        window.webkit.messageHandlers.switchMode.postMessage("menubar");
-      }
-    };
-  }
-}
+// Watch for body class changes (Swift toggles 'minimal')
+new MutationObserver(() => onModeChange()).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
 // ===== Init =====
 connect();
