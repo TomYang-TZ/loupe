@@ -207,6 +207,41 @@ header {
 }
 .tab-close:hover { color: var(--red); background: var(--red-dim); }
 
+/* Minimal mode tab overrides */
+body.minimal .session-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+body.minimal .session-tab .tab-label {
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+}
+
+body.minimal .tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+body.minimal .session-tab .tab-dot {
+  position: static;
+  flex-shrink: 0;
+  margin-right: -2px;
+}
+
 /* ===== Toolbar ===== */
 .toolbar {
   display: flex;

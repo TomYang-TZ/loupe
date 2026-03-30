@@ -910,7 +910,7 @@ function rebuildTabs() {
     tab.draggable = true;
     const shortcut = tabIdx <= 9 ? `<span class="tab-shortcut">${tabIdx}</span>` : "";
     const staleLabel = isStale ? `<span class="tab-stale-label">${staleMinutes}m</span>` : "";
-    tab.innerHTML = `${esc(info.label)}${shortcut}${staleLabel}<span class="tab-dot"></span><button class="tab-close" title="Remove">&times;</button>`;
+    tab.innerHTML = `<span class="tab-label">${esc(info.label)}</span>${shortcut}${staleLabel}<span class="tab-dot"></span><button class="tab-close" title="Remove">&times;</button>`;
     tab.onclick = (e) => { if (!e.target.classList.contains("tab-close")) switchSession(id); };
     tab.querySelector(".tab-close").onclick = (e) => { e.stopPropagation(); removeSession(id); };
 
