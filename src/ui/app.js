@@ -438,7 +438,7 @@ function categorize(msg) {
       if (hook.hookType === "PostToolUse") {
         const inner = hook.inner;
         if (inner && (inner.is_error || inner.error)) return "error";
-        return "tool_result";
+        return "post_tool";
       }
       if (hook.hookType === "thinking") return "thinking";
     }
@@ -478,7 +478,7 @@ function extractSummary(msg, category) {
     if (input.description) return input.description;
     return Object.keys(input).slice(0, 3).join(", ");
   }
-  if (category === "tool_result") {
+  if (category === "tool_result" || category === "post_tool") {
     const resp = inner.tool_response || {};
     const out = resp.stdout || inner.tool_result || inner.output || inner.content;
     if (typeof out === "string") return out.split("\n")[0];
@@ -499,14 +499,14 @@ function extractBody(msg, category) {
   if (hook && hook.inner) {
     const inner = hook.inner;
     if (category === "tool_use") return inner.tool_input || inner.input || inner;
-    if (category === "tool_result") return inner.tool_response || inner.tool_result || inner.output || inner.content || inner;
+    if (category === "tool_result" || category === "post_tool") return inner.tool_response || inner.tool_result || inner.output || inner.content || inner;
     if (category === "error") return inner.error || inner.tool_result || inner;
     return inner;
   }
   if (category === "thinking") return json.thinking || json.content || json.text || msg.data;
   if (category === "text") return json.text || json.content || json.data || msg.data;
   if (category === "tool_use") return json.input || json.parameters || json;
-  if (category === "tool_result" || category === "error") return json.content || json.output || json.result || json.error || msg.data;
+  if (category === "tool_result" || category === "post_tool" || category === "error") return json.content || json.output || json.result || json.error || msg.data;
   return json;
 }
 
@@ -582,7 +582,7 @@ function formatTime(ts) {
 }
 
 function badgeLabel(cat) {
-  return { tool_use: "USE", tool_result: "RESULT", error: "ERROR", thinking: "THINK", text: "TEXT" }[cat] || cat.toUpperCase();
+  return { tool_use: "USE", tool_result: "RESULT", post_tool: "POST", error: "ERROR", thinking: "THINK", text: "TEXT" }[cat] || cat.toUpperCase();
 }
 
 function esc(str) { const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
@@ -757,10 +757,11 @@ function applySearch(text) {
 // ===== Multi-select filter dropdown =====
 const FILTER_TYPES = [
   { key: "tool_use", label: "Tool Use", color: "#06b6d4" },
+  { key: "post_tool", label: "Post Tool", color: "#f97316" },
   { key: "tool_result", label: "Result", color: "#4ade80" },
   { key: "error", label: "Error", color: "#ef4444" },
   { key: "thinking", label: "Thinking", color: "#8b5cf6" },
-  { key: "text", label: "Text", color: "#8b8b96" },
+  { key: "text", label: "Other", color: "#8b8b96" },
 ];
 
 function buildFilterMenu() {
@@ -1232,17 +1233,19 @@ if (isMinimal) {
   const miniDetach = document.getElementById("minimal-detach");
 
   if (miniPin) {
-    function updatePinToggle() {
-      const pinned = !!window._popoverPinned;
-      miniPin.className = `pin-toggle ${pinned ? "pinned" : "unpinned"}`;
-      miniPin.innerHTML = `<span class="pin-toggle-label">${pinned ? "Unpin" : "Pin"}</span><span class="pin-toggle-track"><span class="pin-toggle-knob"></span></span>`;
+    window._autoHide = false; // Default: stay visible
+    function updateAutoHideToggle() {
+      const autoHide = !!window._autoHide;
+      miniPin.className = `pin-toggle ${autoHide ? "pinned" : "unpinned"}`;
+      miniPin.innerHTML = `<span class="pin-toggle-label">Auto-hide</span><span class="pin-toggle-track"><span class="pin-toggle-knob"></span></span>`;
     }
-    updatePinToggle();
+    updateAutoHideToggle();
     miniPin.onclick = () => {
-      window._popoverPinned = !window._popoverPinned;
-      updatePinToggle();
+      window._autoHide = !window._autoHide;
+      updateAutoHideToggle();
       if (window.webkit?.messageHandlers?.pinPopover) {
-        window.webkit.messageHandlers.pinPopover.postMessage(window._popoverPinned);
+        // pinPopover(true) = hidesOnDeactivate=false, so invert autoHide
+        window.webkit.messageHandlers.pinPopover.postMessage(!window._autoHide);
       }
     };
   }

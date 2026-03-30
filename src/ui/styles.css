@@ -163,7 +163,6 @@ header {
   font-family: var(--font-sans);
   font-weight: 500;
   color: var(--text-ghost);
-  cursor: default;
   border-bottom: 2px solid transparent;
   white-space: nowrap;
   transition: color 0.15s, border-color 0.15s;
@@ -182,8 +181,8 @@ header {
 }
 .session-tab .tab-dot.has-activity { display: block; }
 
-.session-tab[draggable="true"] { cursor: grab; }
-.session-tab[draggable="true"]:active { cursor: grabbing; }
+.session-tab[draggable="true"] { }
+.session-tab[draggable="true"]:active { }
 .session-tab.tab-dragging { opacity: 0.3; }
 .session-tab.tab-drop-target { border-bottom-color: var(--accent); background: var(--accent-dim); }
 
@@ -505,6 +504,7 @@ body.minimal .session-tab .tab-dot {
 /* Type colors */
 .log-entry[data-category="tool_use"] { border-left-color: #22d3ee; }
 .log-entry[data-category="tool_result"] { border-left-color: #4ade80; }
+.log-entry[data-category="post_tool"] { border-left-color: #f97316; }
 .log-entry[data-category="error"] { border-left-color: #f87171; background: rgba(248,113,113,0.06); }
 .log-entry[data-category="thinking"] { border-left-color: #a78bfa; }
 .log-entry[data-category="text"] { border-left-color: #8b8b96; }
@@ -528,6 +528,7 @@ body.minimal .session-tab .tab-dot {
 }
 .entry-badge.cat-tool_use { color: #34d8f0; }
 .entry-badge.cat-tool_result { color: #6ee7a0; }
+.entry-badge.cat-post_tool { color: #fb923c; }
 .entry-badge.cat-error { color: #f87171; }
 .entry-badge.cat-thinking { color: #a78bfa; }
 .entry-badge.cat-text { color: #b4b4be; }
@@ -613,6 +614,7 @@ body.minimal .session-tab .tab-dot {
 }
 .modal-badge.cat-tool_use { color: #34d8f0; background: rgba(34,211,238,0.12); }
 .modal-badge.cat-tool_result { color: #6ee7a0; background: rgba(74,222,128,0.1); }
+.modal-badge.cat-post_tool { color: #fb923c; background: rgba(249,115,22,0.12); }
 .modal-badge.cat-error { color: #f87171; background: rgba(248,113,113,0.12); }
 .modal-badge.cat-thinking { color: #a78bfa; background: rgba(167,139,250,0.12); }
 .modal-badge.cat-text { color: #b4b4be; background: rgba(180,180,190,0.08); }
@@ -895,6 +897,7 @@ mark { background: rgba(250, 204, 21, 0.25); color: var(--text); border-radius: 
 /* Light: entry border-left colors */
 [data-theme="light"] .log-entry[data-category="tool_use"] { border-left-color: #0369a1; }
 [data-theme="light"] .log-entry[data-category="tool_result"] { border-left-color: #16a34a; }
+[data-theme="light"] .log-entry[data-category="post_tool"] { border-left-color: #c2410c; }
 [data-theme="light"] .log-entry[data-category="error"] { border-left-color: #dc2626; background: rgba(220, 38, 38, 0.04); }
 [data-theme="light"] .log-entry[data-category="thinking"] { border-left-color: #c026d3; }
 [data-theme="light"] .log-entry[data-category="text"] { border-left-color: #8a8aa0; }
@@ -902,6 +905,7 @@ mark { background: rgba(250, 204, 21, 0.25); color: var(--text); border-radius: 
 /* Light: entry badge text colors */
 [data-theme="light"] .entry-badge.cat-tool_use { color: #0369a1; }
 [data-theme="light"] .entry-badge.cat-tool_result { color: #16a34a; }
+[data-theme="light"] .entry-badge.cat-post_tool { color: #c2410c; }
 [data-theme="light"] .entry-badge.cat-error { color: #dc2626; }
 [data-theme="light"] .entry-badge.cat-thinking { color: #c026d3; }
 [data-theme="light"] .entry-badge.cat-text { color: #55556a; }
@@ -909,6 +913,7 @@ mark { background: rgba(250, 204, 21, 0.25); color: var(--text); border-radius: 
 /* Light: modal badge colors */
 [data-theme="light"] .modal-badge.cat-tool_use { color: #0369a1; background: rgba(3, 105, 161, 0.08); }
 [data-theme="light"] .modal-badge.cat-tool_result { color: #16a34a; background: rgba(22, 163, 74, 0.06); }
+[data-theme="light"] .modal-badge.cat-post_tool { color: #c2410c; background: rgba(194, 65, 12, 0.06); }
 [data-theme="light"] .modal-badge.cat-error { color: #dc2626; background: rgba(220, 38, 38, 0.06); }
 [data-theme="light"] .modal-badge.cat-thinking { color: #c026d3; background: rgba(192, 38, 211, 0.06); }
 [data-theme="light"] .modal-badge.cat-text { color: #55556a; background: rgba(85, 85, 106, 0.04); }

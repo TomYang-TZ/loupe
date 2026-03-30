@@ -3,7 +3,7 @@ import WebKit
 
 class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     var window: NSWindow?
-    var statusItem: NSStatusItem!
+    var hasPositionedPopover = false
     var popoverPanel: NSPanel!
     var popoverWebView: WKWebView!
     var windowWebView: WKWebView!
@@ -42,22 +42,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     func applicationDidFinishLaunching(_ notification: Notification) {
         port = ProcessInfo.processInfo.environment["LOUPE_PORT"] ?? "8390"
 
-        // Menu bar status item
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem.button {
-            let attr = NSAttributedString(string: "loupe_", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .semibold),
-                .foregroundColor: NSColor.labelColor
-            ])
-            button.attributedTitle = attr
-            button.action = #selector(togglePopover)
-            button.target = self
+        // Global hotkey: Cmd+Shift+L to toggle popover
+        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 37 { // L key
+                self?.togglePopover()
+            }
+        }
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.modifierFlags.contains([.command, .shift]) && event.keyCode == 37 { // L key
+                self?.togglePopover()
+                return nil
+            }
+            return event
         }
 
-        // Borderless panel (no arrow, positioned below menu bar item)
+        // Borderless panel (positioned top-right, remembers position)
         popoverPanel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 600),
-            styleMask: [.nonactivatingPanel, .titled, .resizable, .closable, .fullSizeContentView],
+            styleMask: [.nonactivatingPanel, .titled, .resizable, .closable],
             backing: .buffered,
             defer: false
         )
@@ -68,7 +70,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         popoverPanel.appearance = NSAppearance(named: .darkAqua)
         popoverPanel.backgroundColor = NSColor(red: 15.0/255, green: 23.0/255, blue: 42.0/255, alpha: 1.0)
         popoverPanel.isReleasedWhenClosed = false
-        popoverPanel.hidesOnDeactivate = true
+        popoverPanel.hidesOnDeactivate = false
         popoverPanel.minSize = NSSize(width: 320, height: 300)
         popoverPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         popoverPanel.hasShadow = true
@@ -110,8 +112,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
             return event
         }
 
-        // Load popover page
+        // Load popover page and show it
         loadPage(webView: popoverWebView, minimal: true)
+        positionPopoverPanel()
+        popoverPanel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func makeWebView() -> WKWebView {
@@ -156,12 +161,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     }
 
     func positionPopoverPanel() {
-        guard let button = statusItem.button, let buttonWindow = button.window else { return }
-        let buttonRect = button.convert(button.bounds, to: nil)
-        let screenRect = buttonWindow.convertToScreen(buttonRect)
+        // Only set initial position once — after that, autosave handles it
+        if hasPositionedPopover { return }
+        hasPositionedPopover = true
+        guard let screen = NSScreen.main else { return }
+        let visibleFrame = screen.visibleFrame
         let panelSize = popoverPanel.frame.size
-        let x = screenRect.midX - panelSize.width / 2
-        let y = screenRect.minY - panelSize.height - 4
+        let x = visibleFrame.maxX - panelSize.width - 16
+        let y = visibleFrame.maxY - panelSize.height - 8
         popoverPanel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
@@ -219,9 +226,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     func switchToMenuBarMode() {
         isWindowMode = false
         window?.orderOut(nil)
-
-        // Hide from dock + Cmd+Tab
-        NSApp.setActivationPolicy(.accessory)
 
         // Show panel after a brief delay (allows activation policy change to settle)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
@@ -283,7 +287,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return false  // Keep running in menu bar
+        return false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // `open Loupe.app` again → show the popover
+        if !flag || !popoverPanel.isVisible {
+            togglePopover()
+        }
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -295,7 +307,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
 }
 
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory)  // Menu bar app, no dock icon
+app.setActivationPolicy(.regular)
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
