@@ -396,6 +396,8 @@ function connect() {
     const msg = JSON.parse(e.data);
     if (msg.type === "reset") { resetAll(); return; }
     if (msg.type === "backlog_done") { scrollToBottom(); return; }
+    if (msg.type === "sessions") { reconcileSessions(msg.list); return; }
+    if (msg.type === "session_remove") { pruneSessionTab(msg.id); return; }
     if (msg.type === "line") handleLine(msg);
   };
 
@@ -954,6 +956,39 @@ function removeSession(id) {
   if (activeSession === id) activeSession = "all";
   rebuildTabs();
   rebuildView();
+}
+
+function pruneSessionTab(id) {
+  sessions.delete(id);
+  sessionOrder = sessionOrder.filter(s => s !== id);
+  if (activeSession === id) activeSession = "all";
+  rebuildTabs();
+  rebuildView();
+}
+
+function reconcileSessions(serverList) {
+  const serverIds = new Set(serverList.map(s => s.id));
+  let changed = false;
+  // Remove local sessions not in server's list (batch — no rebuild per removal)
+  for (const id of [...sessions.keys()]) {
+    if (!serverIds.has(id)) {
+      sessions.delete(id);
+      sessionOrder = sessionOrder.filter(s => s !== id);
+      if (activeSession === id) activeSession = "all";
+      changed = true;
+    }
+  }
+  // Add missing sessions from server
+  for (const s of serverList) {
+    if (!sessions.has(s.id)) {
+      sessions.set(s.id, { label: s.label, count: 0, color: nextSessionColor(), lastEventTs: null });
+      changed = true;
+    }
+  }
+  if (changed) {
+    rebuildTabs();
+    rebuildView();
+  }
 }
 
 setInterval(rebuildTabs, 30000);

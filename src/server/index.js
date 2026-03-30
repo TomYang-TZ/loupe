@@ -70,6 +70,50 @@ function isDuplicateThinking(json) {
   return false;
 }
 
+// --- Session tracking ---
+const knownSessions = new Map(); // sessionId -> { label, lastEventTs }
+
+function extractSessionFromLine(line) {
+  try {
+    const obj = JSON.parse(line);
+    // Unwrap hook envelope if present
+    const inner = (obj._logstream_type && obj.data) ? obj.data : obj;
+    const sessionId = inner.session_id;
+    if (!sessionId) return null;
+    // Extract label from cwd (last path segment)
+    const cwd = inner.cwd;
+    let label = sessionId.slice(0, 8);
+    if (cwd) {
+      const parts = cwd.split("/");
+      label = parts[parts.length - 1] || parts[parts.length - 2] || cwd;
+    }
+    return { id: sessionId, label };
+  } catch {
+    return null;
+  }
+}
+
+function trackSession(line) {
+  const info = extractSessionFromLine(line);
+  if (!info) return;
+  knownSessions.set(info.id, { label: info.label, lastEventTs: Date.now() });
+}
+
+function getSessionsList() {
+  return [...knownSessions.entries()].map(([id, info]) => ({ id, label: info.label }));
+}
+
+// Prune sessions with no events for 5+ minutes
+setInterval(() => {
+  const cutoff = Date.now() - 5 * 60 * 1000;
+  for (const [id, info] of knownSessions) {
+    if (info.lastEventTs < cutoff) {
+      knownSessions.delete(id);
+      broadcast(JSON.stringify({ type: "session_remove", id }));
+    }
+  }
+}, 30000);
+
 // --- File tailing ---
 let fileSize = fs.statSync(filePath).size;
 let buffer = "";
@@ -106,6 +150,7 @@ function readNewBytes() {
       if (line.trim() === "") continue;
       const msg = buildMessage(line);
       if (msg.json && isDuplicateThinking(msg.json)) continue;
+      trackSession(line);
       broadcast(JSON.stringify(msg));
     }
   });
@@ -186,6 +231,12 @@ async function sendBacklog(ws) {
       await new Promise((r) => setTimeout(r, 5));
     }
     ws.send(JSON.stringify({ type: "backlog_done" }));
+    // Track sessions from backlog for new clients
+    for (const line of backlog) {
+      trackSession(line);
+    }
+    // Send current session list
+    ws.send(JSON.stringify({ type: "sessions", list: getSessionsList() }));
   } catch (err) {
     console.error("Backlog error:", err.message);
   }
