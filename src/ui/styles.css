@@ -1015,13 +1015,25 @@ body.minimal .toolbar { padding: 4px 8px; }
 .pin-toggle.unpinned .pin-toggle-knob { left: 2px; }
 .pin-toggle.pinned .pin-toggle-knob { left: 14px; }
 
+/* Compact pin toggle for minimal mode */
+body.minimal .pin-toggle-track {
+  width: 26px;
+  height: 14px;
+}
+body.minimal .pin-toggle-knob {
+  width: 10px;
+  height: 10px;
+}
+body.minimal .pin-toggle.unpinned .pin-toggle-knob { left: 2px; }
+body.minimal .pin-toggle.pinned .pin-toggle-knob { left: 14px; }
+
 /* Minimal top bar */
 .minimal-topbar {
   display: none;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  background: var(--bg);
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--surface);
   border-bottom: 1px solid var(--border-light);
   flex-shrink: 0;
 }
