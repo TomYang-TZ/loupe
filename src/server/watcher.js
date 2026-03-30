@@ -39,8 +39,10 @@ process.on("exit", () => {
 
 const claudeDir = path.join(process.env.HOME, ".claude", "projects");
 
-// Track file positions
+// Track file positions, last user query, and images per file
 const filePositions = new Map();
+const lastUserQuery = new Map();
+const lastUserImages = new Map();
 
 function findTranscriptFiles() {
   const files = [];
@@ -87,8 +89,50 @@ function processFile(filePath) {
       if (!line.trim()) continue;
       try {
         const obj = JSON.parse(line);
+        // Track the latest user message per file
+        if (obj.type === "user" && obj.isMeta) {
+          // isMeta messages carry image file paths
+          const content = obj.message?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              const text = typeof block === "string" ? block : block.text || "";
+              const match = text.match(/\[Image: source: ([^\]]+)\]/);
+              if (match) {
+                const images = lastUserImages.get(filePath) || [];
+                images.push(match[1]);
+                lastUserImages.set(filePath, images);
+              }
+            }
+          }
+        }
+        if (obj.type === "user" && !obj.isMeta) {
+          // Reset images for new user message
+          lastUserImages.set(filePath, []);
+          const content = obj.message?.content;
+          let text = typeof content === "string"
+            ? content
+            : Array.isArray(content)
+              ? content.filter(b => typeof b === "string" || b.type === "text").map(b => typeof b === "string" ? b : b.text).join(" ")
+              : "";
+          // Strip [Image #N] references from the text
+          text = text.replace(/\s*\[Image #\d+\]\s*/g, " ").trim();
+          if (text) lastUserQuery.set(filePath, text);
+        }
         if (obj.type === "assistant" && obj.message?.content) {
           const sessionId = path.basename(filePath, ".jsonl");
+          const userQuery = lastUserQuery.get(filePath) || null;
+          const userImages = (lastUserImages.get(filePath) || []).length > 0 ? lastUserImages.get(filePath) : null;
+          const usage = obj.message?.usage || {};
+          const meta = {
+            model: obj.message?.model || null,
+            input_tokens: usage.input_tokens || 0,
+            output_tokens: usage.output_tokens || 0,
+            cache_read: usage.cache_read_input_tokens || 0,
+            cache_create: usage.cache_creation_input_tokens || 0,
+            cwd: obj.cwd || null,
+            git_branch: obj.gitBranch || null,
+            version: obj.version || null,
+          };
           for (const block of obj.message.content) {
             if (block.type === "thinking" && block.thinking) {
               const entry = {
@@ -98,6 +142,9 @@ function processFile(filePath) {
                   session_id: sessionId,
                   type: "thinking",
                   thinking: block.thinking,
+                  user_query: userQuery,
+                  user_images: userImages,
+                  meta,
                 },
               };
               fs.appendFileSync(outputFile, JSON.stringify(entry) + "\n");

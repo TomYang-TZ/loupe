@@ -4,6 +4,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { WebSocketServer } = require("ws");
+const { fork } = require("child_process");
 
 const args = process.argv.slice(2);
 let port = 8390;
@@ -244,11 +245,35 @@ async function sendBacklog(ws) {
 
 // --- HTTP server ---
 const server = http.createServer((req, res) => {
-  const url = req.url.split("?")[0];
+  const fullUrl = req.url;
+  const url = fullUrl.split("?")[0];
 
   if (url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, file: filePath, clients: wss.clients.size }));
+    return;
+  }
+
+  // Serve local images (only from .claude/image-cache)
+  if (url === "/image" && fullUrl.includes("path=")) {
+    const imgPath = decodeURIComponent(fullUrl.split("path=")[1]);
+    const allowedPrefix = path.join(process.env.HOME, ".claude", "image-cache");
+    const resolved = path.resolve(imgPath);
+    if (!resolved.startsWith(allowedPrefix)) {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
+    const ext = path.extname(resolved).toLowerCase();
+    const imgMime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" }[ext] || "application/octet-stream";
+    try {
+      const data = fs.readFileSync(resolved);
+      res.writeHead(200, { "Content-Type": imgMime, "Cache-Control": "max-age=3600" });
+      res.end(data);
+    } catch {
+      res.writeHead(404);
+      res.end("Not found");
+    }
     return;
   }
 
@@ -294,6 +319,19 @@ fs.watch(filePath, () => {
 // Fallback poll
 setInterval(readNewBytes, 500);
 
+// --- Start thinking watcher as child process ---
+let watcherProcess = null;
+const watcherScript = path.join(__dirname, "watcher.js");
+
+if (fs.existsSync(watcherScript)) {
+  watcherProcess = fork(watcherScript, [filePath], { silent: true });
+  console.log(`thinking-watcher started (PID: ${watcherProcess.pid})`);
+  watcherProcess.on("exit", (code) => {
+    console.log(`thinking-watcher exited (code: ${code})`);
+    watcherProcess = null;
+  });
+}
+
 // --- Start ---
 server.listen(port, () => {
   console.log(`logstream watching: ${filePath}`);
@@ -302,9 +340,16 @@ server.listen(port, () => {
 });
 
 // Graceful shutdown
-process.on("SIGINT", () => {
+function shutdown() {
   console.log("\nShutting down...");
+  if (watcherProcess) {
+    watcherProcess.kill();
+    watcherProcess = null;
+  }
   wss.close();
   server.close();
   process.exit(0);
-});
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

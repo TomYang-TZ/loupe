@@ -46,24 +46,19 @@ if ! server_running; then
         cd "$LOUPE_DIR" && npm install --production > /dev/null 2>&1
     fi
 
-    # Start server
+    # Start server (it spawns the thinking watcher as a child process)
     nohup node "$LOUPE_DIR/src/server/index.js" "$LOG_FILE" --json --port "$PORT" \
         > "$LOG_DIR/loupe-server.log" 2>&1 &
     SERVER_PID=$!
     echo "$SERVER_PID" > "$PID_FILE"
 
-    # Start thinking watcher
-    nohup node "$LOUPE_DIR/src/server/watcher.js" "$LOG_FILE" \
-        > "$LOG_DIR/loupe-thinker.log" 2>&1 &
-    echo "$!" > "$LOG_DIR/loupe-thinker.pid"
-
     sleep 0.5
 
-    # Launch native app
+    # Launch native app (skip if already running)
     APP_BUNDLE="$LOUPE_DIR/Loupe.app"
-    if [ -d "$APP_BUNDLE" ]; then
+    if [ -d "$APP_BUNDLE" ] && ! pgrep -f "Loupe.app/Contents/MacOS/loupe" > /dev/null 2>&1; then
         LOUPE_PORT="$PORT" LOUPE_SERVER_PID="$SERVER_PID" \
-            nohup "$APP_BUNDLE/Contents/MacOS/loupe" > /dev/null 2>&1 &
+            open "$APP_BUNDLE"
     fi
 fi
 

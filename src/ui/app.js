@@ -435,8 +435,12 @@ function categorize(msg) {
   if (json) {
     const hook = unwrapHook(json);
     if (hook) {
-      if (hook.hookType === "PreToolUse") return "tool_use";
+      if (hook.hookType === "PreToolUse") {
+        if (hook.inner?.tool_name === "Agent") return "sub_agent";
+        return "tool_use";
+      }
       if (hook.hookType === "PostToolUse") {
+        if (hook.inner?.tool_name === "Agent") return "sub_agent_result";
         const inner = hook.inner;
         if (inner && (inner.is_error || inner.error)) return "error";
         return "post_tool";
@@ -459,7 +463,13 @@ function extractTitle(msg, category) {
   const json = msg.json;
   if (!json) return null;
   const hook = unwrapHook(json);
-  if (hook && hook.inner) return hook.inner.tool_name || hook.inner.name || null;
+  if (hook && hook.inner) {
+    if (category === "sub_agent" || category === "sub_agent_result") {
+      const input = hook.inner.tool_input || {};
+      return input.subagent_type || input.description || "Agent";
+    }
+    return hook.inner.tool_name || hook.inner.name || null;
+  }
   if (category === "tool_use") return json.name || json.tool_name || null;
   return null;
 }
@@ -472,11 +482,11 @@ function extractSummary(msg, category) {
 
   if (category === "tool_use") {
     const input = inner.tool_input || inner.input || {};
+    if (input.description) return input.description;
     if (input.file_path) return input.file_path;
     if (input.command) return input.command.split("\n")[0];
     if (input.pattern) return `pattern: ${input.pattern}`;
     if (input.query) return input.query;
-    if (input.description) return input.description;
     return Object.keys(input).slice(0, 3).join(", ");
   }
   if (category === "tool_result" || category === "post_tool") {
@@ -490,6 +500,15 @@ function extractSummary(msg, category) {
     const t = inner.thinking || inner.content || inner.text || "";
     return typeof t === "string" ? t : "";
   }
+  if (category === "sub_agent") {
+    const input = inner.tool_input || {};
+    return input.description || input.prompt?.slice(0, 100) || "";
+  }
+  if (category === "sub_agent_result") {
+    const resp = inner.tool_response || {};
+    const text = resp.content?.[0]?.text || resp.status || "";
+    return typeof text === "string" ? text.split("\n")[0] : "";
+  }
   return "";
 }
 
@@ -499,9 +518,12 @@ function extractBody(msg, category) {
   const hook = unwrapHook(json);
   if (hook && hook.inner) {
     const inner = hook.inner;
+    if (category === "sub_agent") return inner.tool_input || inner;
+    if (category === "sub_agent_result") return inner.tool_response || inner;
     if (category === "tool_use") return inner.tool_input || inner.input || inner;
     if (category === "tool_result" || category === "post_tool") return inner.tool_response || inner.tool_result || inner.output || inner.content || inner;
     if (category === "error") return inner.error || inner.tool_result || inner;
+    if (category === "thinking") return inner.thinking || inner.content || inner.text || inner;
     return inner;
   }
   if (category === "thinking") return json.thinking || json.content || json.text || msg.data;
@@ -516,6 +538,27 @@ function extractSessionId(msg) {
   if (!json) return null;
   const hook = unwrapHook(json);
   return (hook?.inner || json).session_id || null;
+}
+
+function extractUserQuery(msg) {
+  const json = msg.json;
+  if (!json) return null;
+  const hook = unwrapHook(json);
+  return (hook?.inner || json).user_query || null;
+}
+
+function extractMeta(msg) {
+  const json = msg.json;
+  if (!json) return null;
+  const hook = unwrapHook(json);
+  return (hook?.inner || json).meta || null;
+}
+
+function extractUserImages(msg) {
+  const json = msg.json;
+  if (!json) return null;
+  const hook = unwrapHook(json);
+  return (hook?.inner || json).user_images || null;
 }
 
 function extractSessionLabel(msg) {
@@ -538,6 +581,9 @@ function handleLine(msg) {
   const body = extractBody(msg, category);
   const sessionId = extractSessionId(msg);
   const sessionLabel = extractSessionLabel(msg);
+  const userQuery = extractUserQuery(msg);
+  const meta = extractMeta(msg);
+  const userImages = extractUserImages(msg);
   if (!firstEventTs) firstEventTs = msg.ts;
 
   let newSession = false;
@@ -545,10 +591,6 @@ function handleLine(msg) {
     sessions.set(sessionId, { label: sessionLabel || sessionId.slice(0, 8), count: 0, color: nextSessionColor(), lastEventTs: msg.ts });
     newSession = true;
     rebuildTabs();
-    // Compact mode: auto-select first session instead of "All"
-    if (isMinimalMode() && activeSession === "all") {
-      activeSession = sessionId;
-    }
   }
   if (sessionId && sessions.has(sessionId)) {
     const sInfo = sessions.get(sessionId);
@@ -560,7 +602,7 @@ function handleLine(msg) {
     }
   }
 
-  const entry = { id: lineCounter, category, title, summary, body, raw: msg.data, json: msg.json, ts: msg.ts, sessionId };
+  const entry = { id: lineCounter, category, title, summary, body, raw: msg.data, json: msg.json, ts: msg.ts, sessionId, userQuery, userImages, meta };
   entries.push(entry);
 
   if (newSession && activeSession === "all" && sessions.size > 1) {
@@ -587,7 +629,7 @@ function formatTime(ts) {
 }
 
 function badgeLabel(cat) {
-  return { tool_use: "USE", tool_result: "RESULT", post_tool: "POST", error: "ERROR", thinking: "THINK", text: "TEXT" }[cat] || cat.toUpperCase();
+  return { tool_use: "USE", tool_result: "RESULT", post_tool: "POST", error: "ERROR", thinking: "THINK", text: "TEXT", sub_agent: "AGENT", sub_agent_result: "AGENT" }[cat] || cat.toUpperCase();
 }
 
 function esc(str) { const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
@@ -625,24 +667,146 @@ function openModal(id) {
   modalTool.textContent = entry.title || "";
   modalTime.textContent = formatTime(entry.ts);
 
+  // Apply thinking variant to panel
+  modalPanel.classList.toggle("modal-thinking", entry.category === "thinking");
+
   modalBody.innerHTML = "";
 
-  const content = entry.body;
-  if (content && typeof content === "object") {
-    // Structured: show input + response sections if available
-    if (content.tool_input || content.command || content.file_path) {
-      addModalSection("Input", content);
-    } else if (content.tool_response) {
-      addModalSection("Input", { ...content, tool_response: undefined });
-      addModalSection("Response", content.tool_response);
-    } else {
-      addModalSection("Detail", content);
+  if (entry.category === "thinking") {
+    // Thinking modal: user query + thinking content
+    if (entry.userQuery) {
+      const queryWrap = document.createElement("div");
+      queryWrap.className = "modal-user-query-inline";
+      queryWrap.innerHTML = `<span class="modal-user-query-label">Q</span><span class="modal-user-query-text">${esc(entry.userQuery)}</span>`;
+      queryWrap.style.cursor = "pointer";
+      queryWrap.addEventListener("click", () => {
+        const isExpanded = queryWrap.classList.toggle("expanded");
+        queryWrap.title = isExpanded ? "Click to collapse" : "Click to expand";
+      });
+      queryWrap.title = "Click to expand";
+      modalBody.appendChild(queryWrap);
     }
-  } else if (content) {
-    const code = document.createElement("div");
-    code.className = "modal-code";
-    code.textContent = String(content);
-    modalBody.appendChild(code);
+    // Image thumbnails
+    if (entry.userImages && entry.userImages.length > 0) {
+      const imgRow = document.createElement("div");
+      imgRow.className = "modal-image-row";
+      for (const imgPath of entry.userImages) {
+        const thumb = document.createElement("img");
+        thumb.className = "modal-image-thumb";
+        thumb.src = `/image?path=${encodeURIComponent(imgPath)}`;
+        thumb.alt = "User image";
+        thumb.addEventListener("click", () => {
+          thumb.classList.toggle("modal-image-expanded");
+        });
+        imgRow.appendChild(thumb);
+      }
+      modalBody.appendChild(imgRow);
+    }
+    const thinkCode = document.createElement("div");
+    thinkCode.className = "modal-code modal-thinking-body";
+    thinkCode.textContent = String(entry.body || "");
+    modalBody.appendChild(thinkCode);
+
+    // Collapsible metadata
+    if (entry.meta) {
+      const metaToggle = document.createElement("div");
+      metaToggle.className = "modal-meta-toggle";
+      metaToggle.innerHTML = `<span class="modal-meta-arrow">\u25b6</span> Metadata`;
+      const metaContent = document.createElement("div");
+      metaContent.className = "modal-meta-content";
+      metaContent.style.display = "none";
+      const m = entry.meta;
+      const rows = [];
+      if (m.model) rows.push(["Model", m.model]);
+      if (m.input_tokens) rows.push(["Input tokens", m.input_tokens.toLocaleString()]);
+      if (m.output_tokens) rows.push(["Output tokens", m.output_tokens.toLocaleString()]);
+      if (m.cache_read) rows.push(["Cache read", m.cache_read.toLocaleString()]);
+      if (m.cache_create) rows.push(["Cache create", m.cache_create.toLocaleString()]);
+      if (m.cwd) rows.push(["Working dir", m.cwd]);
+      if (m.git_branch) rows.push(["Branch", m.git_branch]);
+      if (m.version) rows.push(["Version", m.version]);
+      metaContent.innerHTML = rows.map(([k, v]) =>
+        `<div class="modal-meta-row"><span class="modal-meta-key">${esc(k)}</span><span class="modal-meta-val">${esc(String(v))}</span></div>`
+      ).join("");
+      metaToggle.addEventListener("click", () => {
+        const open = metaContent.style.display !== "none";
+        metaContent.style.display = open ? "none" : "";
+        metaToggle.querySelector(".modal-meta-arrow").textContent = open ? "\u25b6" : "\u25bc";
+      });
+      modalBody.appendChild(metaToggle);
+      modalBody.appendChild(metaContent);
+    }
+  } else if (entry.category === "sub_agent" || entry.category === "sub_agent_result") {
+    const content = entry.body;
+    if (content && typeof content === "object") {
+      // Prompt section
+      const prompt = content.prompt || content.description;
+      if (prompt) {
+        const lbl = document.createElement("div");
+        lbl.className = "modal-section-label";
+        lbl.textContent = "Prompt";
+        modalBody.appendChild(lbl);
+        const code = document.createElement("div");
+        code.className = "modal-code";
+        code.textContent = prompt;
+        modalBody.appendChild(code);
+      }
+      // Content blocks
+      const blocks = content.content || [];
+      if (Array.isArray(blocks) && blocks.length > 0) {
+        const lbl = document.createElement("div");
+        lbl.className = "modal-section-label";
+        lbl.textContent = "Response";
+        modalBody.appendChild(lbl);
+        for (const block of blocks) {
+          const blockDiv = document.createElement("div");
+          blockDiv.className = "modal-code modal-agent-block";
+          if (block.type && block.type !== "text") {
+            const tag = document.createElement("span");
+            tag.className = "modal-agent-block-type";
+            tag.textContent = block.type;
+            blockDiv.appendChild(tag);
+          }
+          const text = block.text || block.content || (typeof block === "string" ? block : JSON.stringify(block));
+          const textNode = document.createTextNode(text);
+          blockDiv.appendChild(textNode);
+          modalBody.appendChild(blockDiv);
+        }
+      }
+      // Status if present
+      if (content.status && content.status !== "completed") {
+        const lbl = document.createElement("div");
+        lbl.className = "modal-section-label";
+        lbl.textContent = "Status";
+        modalBody.appendChild(lbl);
+        const code = document.createElement("div");
+        code.className = "modal-code";
+        code.textContent = content.status;
+        modalBody.appendChild(code);
+      }
+    } else if (content) {
+      const code = document.createElement("div");
+      code.className = "modal-code";
+      code.textContent = String(content);
+      modalBody.appendChild(code);
+    }
+  } else {
+    const content = entry.body;
+    if (content && typeof content === "object") {
+      if (content.tool_input || content.command || content.file_path) {
+        addModalSection("Input", content);
+      } else if (content.tool_response) {
+        addModalSection("Input", { ...content, tool_response: undefined });
+        addModalSection("Response", content.tool_response);
+      } else {
+        addModalSection("Detail", content);
+      }
+    } else if (content) {
+      const code = document.createElement("div");
+      code.className = "modal-code";
+      code.textContent = String(content);
+      modalBody.appendChild(code);
+    }
   }
 
   modalOverlay.classList.add("visible");
@@ -744,7 +908,10 @@ function spanOf(text, cls) { const s = document.createElement("span"); s.classNa
 
 // ===== Filtering =====
 function matchesAll(entry) { return matchesFilter(entry) && matchesSession(entry) && matchesSearch(entry); }
-function matchesFilter(entry) { return !hiddenTypes.has(entry.category); }
+function matchesFilter(entry) {
+  if (entry.category === "sub_agent_result") return !hiddenTypes.has("sub_agent");
+  return !hiddenTypes.has(entry.category);
+}
 function matchesSession(entry) { return activeSession === "all" || entry.sessionId === activeSession; }
 function matchesSearch(entry) {
   if (!searchQuery) return true;
@@ -766,6 +933,7 @@ const FILTER_TYPES = [
   { key: "tool_result", label: "Result", color: "#4ade80" },
   { key: "error", label: "Error", color: "#ef4444" },
   { key: "thinking", label: "Thinking", color: "#8b5cf6" },
+  { key: "sub_agent", label: "Agent", color: "#f59e0b" },
   { key: "text", label: "Other", color: "#8b8b96" },
 ];
 
@@ -895,7 +1063,7 @@ function rebuildTabs() {
   syncSessionOrder();
   tabBar.innerHTML = "";
 
-  if (!isMinimalMode()) {
+  {
     const allTab = document.createElement("div");
     allTab.className = `session-tab ${activeSession === "all" ? "active" : ""}`;
     allTab.dataset.session = "all";
@@ -1214,12 +1382,6 @@ if (themeBtnMini) {
 
 // When mode changes, rebuild UI
 function onModeChange() {
-  // Compact mode: auto-select first session (multi-pane doesn't fit)
-  if (isMinimalMode() && activeSession === "all" && sessions.size > 0) {
-    const firstId = sessions.keys().next().value;
-    switchSession(firstId);
-    return; // switchSession already rebuilds
-  }
   rebuildTabs();
   rebuildView();
 }
