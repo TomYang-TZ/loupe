@@ -2,6 +2,8 @@
 
 Real-time log viewer for Claude Code sessions. Streams tool calls, results, errors, and thinking blocks into a floating macOS window.
 
+*Si c'est loupé, loupe_*
+
 ## Install
 
 ```bash
