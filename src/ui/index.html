@@ -11,17 +11,26 @@
   <header>
     <div class="logo">loupe<span class="logo-cursor">_</span></div>
     <div class="stats">
-      <label class="theme-switch" title="Toggle theme (⌘T)">
-        <input type="checkbox" id="theme-toggle">
-        <span class="theme-slider">
-          <span class="star star_1"></span>
-          <span class="star star_2"></span>
-          <span class="star star_3"></span>
-          <svg class="cloud" viewBox="0 0 56 26" xmlns="http://www.w3.org/2000/svg">
-            <path d="M48 22H12a10 10 0 01-1.5-19.9A12 12 0 0134 6a12 12 0 0111.8 10A8 8 0 0148 22z" fill="white" opacity="0.5"/>
-          </svg>
-        </span>
-      </label>
+      <button id="theme-toggle" class="theme-toggle" title="Toggle theme (⌘T)" aria-label="Switch to light theme">
+        <svg class="sun-and-moon" aria-hidden="true" width="22" height="22" viewBox="0 0 24 24">
+          <mask class="moon" id="moon-mask">
+            <rect x="0" y="0" width="100%" height="100%" fill="white" />
+            <circle cx="24" cy="10" r="6" fill="black" />
+          </mask>
+          <circle class="sun" cx="12" cy="12" r="6" mask="url(#moon-mask)" fill="currentColor" />
+          <g class="sun-beams" stroke="currentColor">
+            <line x1="12" y1="1" x2="12" y2="3" />
+            <line x1="12" y1="21" x2="12" y2="23" />
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+            <line x1="1" y1="12" x2="3" y2="12" />
+            <line x1="21" y1="12" x2="23" y2="12" />
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+          </g>
+        </svg>
+      </button>
+      <button class="mode-toggle-btn" id="collapse-btn" title="Collapse to menu bar">&#8598;</button>
       <span><span class="conn-dot connecting" id="conn-dot"></span><span id="conn-status">connecting</span></span>
       <span><span class="stat-val" id="line-count">0</span> events</span>
     </div>
@@ -30,6 +39,32 @@
 
   <div class="tab-bar" id="tab-bar">
     <div class="session-tab active" data-session="all">All</div>
+  </div>
+
+  <div class="minimal-topbar" id="minimal-topbar">
+    <button id="theme-toggle-mini" class="theme-toggle" title="Toggle theme (⌘T)" aria-label="Switch to light theme">
+      <svg class="sun-and-moon" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24">
+        <mask class="moon" id="moon-mask-mini">
+          <rect x="0" y="0" width="100%" height="100%" fill="white" />
+          <circle cx="24" cy="10" r="6" fill="black" />
+        </mask>
+        <circle class="sun" cx="12" cy="12" r="6" mask="url(#moon-mask-mini)" fill="currentColor" />
+        <g class="sun-beams" stroke="currentColor">
+          <line x1="12" y1="1" x2="12" y2="3" />
+          <line x1="12" y1="21" x2="12" y2="23" />
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+          <line x1="1" y1="12" x2="3" y2="12" />
+          <line x1="21" y1="12" x2="23" y2="12" />
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+        </g>
+      </svg>
+    </button>
+    <div class="minimal-topbar-right">
+      <div class="pin-toggle unpinned" id="minimal-pin"></div>
+      <button class="minimal-mode-btn" id="minimal-detach" title="Open in window">&#8599;</button>
+    </div>
   </div>
 
   <div class="toolbar">

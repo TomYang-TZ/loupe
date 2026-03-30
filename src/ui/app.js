@@ -1,5 +1,9 @@
 "use strict";
 
+// ===== Minimal Mode =====
+const isMinimal = new URLSearchParams(window.location.search).get("mode") === "minimal";
+if (isMinimal) document.body.classList.add("minimal");
+
 // ===== Theme =====
 (function initTheme() {
   const saved = localStorage.getItem("loupe-theme") || "dark";
@@ -883,12 +887,14 @@ function rebuildTabs() {
   syncSessionOrder();
   tabBar.innerHTML = "";
 
-  const allTab = document.createElement("div");
-  allTab.className = `session-tab ${activeSession === "all" ? "active" : ""}`;
-  allTab.dataset.session = "all";
-  allTab.textContent = "All";
-  allTab.onclick = () => switchSession("all");
-  tabBar.appendChild(allTab);
+  if (!isMinimal) {
+    const allTab = document.createElement("div");
+    allTab.className = `session-tab ${activeSession === "all" ? "active" : ""}`;
+    allTab.dataset.session = "all";
+    allTab.textContent = "All";
+    allTab.onclick = () => switchSession("all");
+    tabBar.appendChild(allTab);
+  }
 
   let tabIdx = 1;
   const now = Date.now();
@@ -927,6 +933,9 @@ function rebuildTabs() {
     tabBar.appendChild(tab);
     tabIdx++;
   }
+
+  // In minimal mode, no extra buttons in tab bar (they're in topbar)
+  if (isMinimal) {}
 }
 
 function switchSession(id) {
@@ -1094,7 +1103,8 @@ function focusEntry(visible, idx) {
 
 
 // ===== Theme toggle =====
-const themeToggle = document.getElementById("theme-toggle");
+const themeBtn = document.getElementById("theme-toggle");
+const themeBtnMini = document.getElementById("theme-toggle-mini");
 
 function toggleTheme() {
   const current = document.documentElement.dataset.theme || "dark";
@@ -1105,26 +1115,20 @@ function toggleTheme() {
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
   localStorage.setItem("loupe-theme", theme);
-  // Sync checkbox state: checked = light mode
-  if (themeToggle) themeToggle.checked = (theme === "light");
+  // Update aria-labels
+  const label = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+  if (themeBtn) themeBtn.setAttribute("aria-label", label);
+  if (themeBtnMini) themeBtnMini.setAttribute("aria-label", label);
   // Notify native macOS app to update window chrome
   if (window.webkit?.messageHandlers?.themeChange) {
     window.webkit.messageHandlers.themeChange.postMessage(theme);
   }
 }
 
-// Set initial state and notify native app
-if (themeToggle) {
+// Set initial state and bind click
+if (themeBtn) {
+  themeBtn.addEventListener("click", (e) => { e.preventDefault(); toggleTheme(); });
   const initialTheme = document.documentElement.dataset.theme || "dark";
-  themeToggle.checked = (initialTheme === "light");
-  // Use click on the label instead of change on checkbox to avoid macOS click sound
-  const themeLabel = themeToggle.closest(".theme-switch");
-  if (themeLabel) {
-    themeLabel.addEventListener("click", (e) => {
-      e.preventDefault();
-      toggleTheme();
-    });
-  }
   if (window.webkit?.messageHandlers?.themeChange) {
     window.webkit.messageHandlers.themeChange.postMessage(initialTheme);
   }
@@ -1141,6 +1145,98 @@ function adjustFontSize(delta) {
 
 function applyZoom(pct) {
   document.querySelectorAll(".log-scroll").forEach(el => { el.style.zoom = (pct / 100).toString(); });
+}
+
+// ===== Minimal mode session switching =====
+if (isMinimal) {
+  const minPrev = document.getElementById("minimal-prev");
+  const minNext = document.getElementById("minimal-next");
+  const minSession = document.getElementById("minimal-session");
+  const minDetach = document.getElementById("minimal-detach");
+
+  function updateMinimalBar() {
+    if (!minSession) return;
+    if (activeSession === "all") {
+      const list = getSessionList();
+      minSession.textContent = list.length > 1 ? "All (" + (list.length - 1) + ")" : "All";
+    } else {
+      const info = sessions.get(activeSession);
+      minSession.textContent = info ? info.label : activeSession.slice(0, 8);
+    }
+  }
+
+  if (minPrev) minPrev.onclick = () => { cycleSession(-1); updateMinimalBar(); };
+  if (minNext) minNext.onclick = () => { cycleSession(1); updateMinimalBar(); };
+  if (minDetach) minDetach.onclick = () => {
+    if (window.webkit?.messageHandlers?.switchMode) {
+      window.webkit.messageHandlers.switchMode.postMessage("window");
+    }
+  };
+
+  // Override switchSession to also update minimal bar
+  const origSwitchSession = switchSession;
+  // Patch: update minimal bar after any session switch
+  const origRebuildTabs = rebuildTabs;
+  setInterval(updateMinimalBar, 1000);
+  setTimeout(updateMinimalBar, 500);
+
+  // In minimal mode, auto-select first session when available
+  const origHandleLine = handleLine;
+  const patchMinimalSession = () => {
+    if (isMinimal && activeSession === "all" && sessions.size > 0) {
+      const firstId = sessions.keys().next().value;
+      switchSession(firstId);
+    }
+  };
+  setInterval(patchMinimalSession, 500);
+}
+
+// ===== Minimal topbar controls =====
+if (isMinimal) {
+  const miniPin = document.getElementById("minimal-pin");
+  const miniDetach = document.getElementById("minimal-detach");
+
+  if (miniPin) {
+    function updatePinToggle() {
+      const pinned = !!window._popoverPinned;
+      miniPin.className = `pin-toggle ${pinned ? "pinned" : "unpinned"}`;
+      miniPin.innerHTML = `<span class="pin-toggle-label">${pinned ? "Unpin" : "Pin"}</span><span class="pin-toggle-track"><span class="pin-toggle-knob"></span></span>`;
+    }
+    updatePinToggle();
+    miniPin.onclick = () => {
+      window._popoverPinned = !window._popoverPinned;
+      updatePinToggle();
+      if (window.webkit?.messageHandlers?.pinPopover) {
+        window.webkit.messageHandlers.pinPopover.postMessage(window._popoverPinned);
+      }
+    };
+  }
+
+  if (miniDetach) {
+    miniDetach.onclick = () => {
+      if (window.webkit?.messageHandlers?.switchMode) {
+        window.webkit.messageHandlers.switchMode.postMessage("window");
+      }
+    };
+  }
+
+  if (themeBtnMini) {
+    themeBtnMini.addEventListener("click", (e) => { e.preventDefault(); toggleTheme(); });
+  }
+}
+
+// ===== Collapse to menu bar =====
+const collapseBtn = document.getElementById("collapse-btn");
+if (collapseBtn) {
+  if (isMinimal) {
+    collapseBtn.style.display = "none";
+  } else {
+    collapseBtn.onclick = () => {
+      if (window.webkit?.messageHandlers?.switchMode) {
+        window.webkit.messageHandlers.switchMode.postMessage("menubar");
+      }
+    };
+  }
 }
 
 // ===== Init =====
