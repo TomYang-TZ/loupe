@@ -123,7 +123,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
             let hasShift = event.modifierFlags.contains(.shift)
             if event.keyCode == 24 {  // =/+ key
                 if hasShift {
-                    wv?.evaluateJavaScript("setGridCols(gridCols+1)", completionHandler: nil)
+                    wv?.evaluateJavaScript("if(typeof gravityView!=='undefined'&&gravityView){if(typeof gravityDim!=='undefined'&&gravityDim==='3d'){Gravity3D.zoom(1.2)}else{Gravity.zoom(1.2)}}else{setGridCols(gridCols+1)}", completionHandler: nil)
                 } else {
                     wv?.evaluateJavaScript("adjustFontSize(1)", completionHandler: nil)
                 }
@@ -131,7 +131,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
             }
             if event.keyCode == 27 {  // -/_ key
                 if hasShift {
-                    wv?.evaluateJavaScript("setGridCols(gridCols-1)", completionHandler: nil)
+                    wv?.evaluateJavaScript("if(typeof gravityView!=='undefined'&&gravityView){if(typeof gravityDim!=='undefined'&&gravityDim==='3d'){Gravity3D.zoom(0.8)}else{Gravity.zoom(0.8)}}else{setGridCols(gridCols-1)}", completionHandler: nil)
                 } else {
                     wv?.evaluateJavaScript("adjustFontSize(-1)", completionHandler: nil)
                 }

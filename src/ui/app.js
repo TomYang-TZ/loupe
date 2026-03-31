@@ -605,6 +605,10 @@ function handleLine(msg) {
   const entry = { id: lineCounter, category, title, summary, body, raw: msg.data, json: msg.json, ts: msg.ts, sessionId, userQuery, userImages, meta };
   entries.push(entry);
 
+  // Feed to gravity maps if initialized
+  if (gravityInitialized) Gravity.addEntry(entry);
+  if (gravity3dInitialized) Gravity3D.addEntry(entry);
+
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
     rebuildAllPaneContents();
@@ -1282,13 +1286,15 @@ document.addEventListener("keydown", (e) => {
   const inSearch = document.activeElement === searchInput;
 
   if (e.key === "?" && !inSearch) { toggleHelp(); return; }
+  if (e.key === "m" && !inSearch) { toggleView(); return; }
   if (e.key === "t" && e.metaKey) { e.preventDefault(); toggleTheme(); return; }
-  if ((e.key === "=" || e.key === "+") && e.metaKey && e.shiftKey) { e.preventDefault(); setGridCols(gridCols + 1); return; }
-  if ((e.key === "-" || e.key === "_") && e.metaKey && e.shiftKey) { e.preventDefault(); setGridCols(gridCols - 1); return; }
+  if ((e.key === "=" || e.key === "+") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) { gravityDim === "3d" ? Gravity3D.zoom(1.2) : Gravity.zoom(1.2); } else setGridCols(gridCols + 1); return; }
+  if ((e.key === "-" || e.key === "_") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) { gravityDim === "3d" ? Gravity3D.zoom(0.8) : Gravity.zoom(0.8); } else setGridCols(gridCols - 1); return; }
   if ((e.key === "=" || e.key === "+") && e.metaKey) { e.preventDefault(); adjustFontSize(1); return; }
   if (e.key === "-" && e.metaKey) { e.preventDefault(); adjustFontSize(-1); return; }
   if (e.key === "Escape") {
     if (helpVisible) { toggleHelp(); return; }
+    if (gravityView && gravityDim === "2d") { Gravity.deselect(); return; }
     searchInput.blur(); searchInput.value = ""; searchQuery = ""; rebuildView(); return;
   }
   if (e.key === "/" && !inSearch) { e.preventDefault(); searchInput.focus(); return; }
@@ -1388,6 +1394,93 @@ function onModeChange() {
 
 // Watch for body class changes (Swift toggles 'minimal')
 new MutationObserver(() => onModeChange()).observe(document.body, { attributes: true, attributeFilter: ["class"] });
+
+// ===== Gravity Map View =====
+let gravityView = false;
+let gravityDim = "2d"; // "2d" or "3d"
+const gravityContainer = document.getElementById("gravity-container");
+const gravityCanvas = document.getElementById("gravity-canvas");
+const gravity3dEl = document.getElementById("gravity-3d");
+const gravityTooltip = document.getElementById("gravity-tooltip");
+const viewToggleBtn = document.getElementById("view-toggle-btn");
+let gravityInitialized = false;
+let gravity3dInitialized = false;
+
+window.toggleView = () => {
+  gravityView = !gravityView;
+  viewToggleBtn.classList.toggle("active", gravityView);
+
+  if (gravityView) {
+    paneContainer.style.display = "none";
+    gravityContainer.style.display = "";
+    if (gridControls) gridControls.style.display = "none";
+    if (gridSep) gridSep.style.display = "none";
+    applyGravityDim();
+  } else {
+    gravityContainer.style.display = "none";
+    paneContainer.style.display = "";
+    updateGridControlsVisibility();
+  }
+};
+
+window.setGravityDim = (dim) => {
+  gravityDim = dim;
+  document.querySelectorAll(".gravity-dim-btn").forEach(b => b.classList.toggle("active", b.dataset.dim === dim));
+  applyGravityDim();
+};
+
+const gravityHud = document.getElementById("gravity-hud");
+const gravityLegend3d = document.getElementById("gravity-legend-3d");
+
+function applyGravityDim() {
+  // Always ensure 2D data is loaded first (it's the single source of truth)
+  if (!gravityInitialized) {
+    Gravity.init(gravityCanvas);
+    Gravity.addEntries(entries);
+    gravityInitialized = true;
+  }
+
+  if (gravityDim === "3d") {
+    gravityCanvas.style.display = "none";
+    gravity3dEl.style.display = "";
+    gravityHud.style.display = "";
+    gravityLegend3d.style.display = "";
+    if (!gravity3dInitialized) {
+      Gravity3D.init(gravity3dEl);
+      Gravity3D.loadFullHistory(); // reads from 2D Gravity's data
+      gravity3dInitialized = true;
+    } else {
+      Gravity3D.rebuild(); // re-sync from 2D data
+      Gravity3D.resize();
+    }
+    updateGravityHud();
+  } else {
+    gravity3dEl.style.display = "none";
+    gravityHud.style.display = "none";
+    gravityLegend3d.style.display = "none";
+    gravityCanvas.style.display = "";
+  }
+}
+
+window.updateGravityHud = function updateGravityHud() {
+  if (!gravityHud || gravityDim !== "3d" || !gravity3dInitialized) return;
+  const stats = Gravity3D.getStats ? Gravity3D.getStats() : null;
+  if (stats) {
+    gravityHud.textContent = `${stats.nodes}/${stats.totalNodes} files · ${stats.edges} edges (live + warm only)`;
+  }
+}
+
+// Tooltip update loop for gravity map
+setInterval(() => {
+  if (!gravityView) return;
+  const info = Gravity.getTooltip();
+  if (info) {
+    gravityTooltip.innerHTML = `<span class="gt-file">${info.label}</span><span class="gt-dir">${info.dir}</span><div class="gt-stats"><span class="gt-stat-read">${info.reads} reads</span> &middot; <span class="gt-stat-edit">${info.edits} edits</span> &middot; <span class="gt-stat-exec">${info.execs} runs</span></div>`;
+    gravityTooltip.classList.add("visible");
+  } else {
+    gravityTooltip.classList.remove("visible");
+  }
+}, 100);
 
 // ===== Init =====
 connect();

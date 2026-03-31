@@ -277,6 +277,29 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // API: return all PreToolUse entries with file paths (for gravity map)
+  if (url === "/api/file-accesses") {
+    try {
+      const content = fs.readFileSync(filePath, "utf-8");
+      const lines = content.split("\n");
+      const results = [];
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj._logstream_type !== "PreToolUse") continue;
+          results.push(line);
+        } catch {}
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(results));
+    } catch (err) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   // Serve static UI files
   const file = url === "/" ? "index.html" : url.replace(/^\//, "");
   const safe = path.normalize(file).replace(/^(\.\.[\/\\])+/, "");
