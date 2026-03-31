@@ -93,25 +93,16 @@
   <div class="pane-container" id="pane-container"></div>
 
   <div class="gravity-container" id="gravity-container" style="display:none">
-    <canvas id="gravity-canvas"></canvas>
-    <div id="gravity-3d" style="display:none"></div>
-    <div class="gravity-hud" id="gravity-hud" style="display:none"></div>
-    <div class="gravity-legend-3d" id="gravity-legend-3d" style="display:none">
-      <div class="gl-row"><span class="gl-dot" style="background:#3b82f6"></span>Read</div>
-      <div class="gl-row"><span class="gl-dot" style="background:#4ade80"></span>Edited</div>
-      <div class="gl-row"><span class="gl-dot" style="background:#f97316"></span>Executed</div>
-      <div class="gl-section"></div>
-      <div class="gl-row"><span class="gl-ray" style="background:linear-gradient(90deg,transparent,#8b5cf6)"></span>Prerequisite (Read→Edit)</div>
-      <div class="gl-row"><span class="gl-ray" style="background:linear-gradient(90deg,transparent,#f97316)"></span>Coupling (Edit→Edit)</div>
-      <div class="gl-row"><span class="gl-ray" style="background:linear-gradient(90deg,transparent,#4ade80)"></span>Validation (Edit→Run)</div>
-      <div class="gl-row"><span class="gl-ray" style="background:linear-gradient(90deg,transparent,#3b82f6)"></span>Discovery (Search→Read)</div>
-      <div class="gl-row"><span class="gl-ray" style="background:linear-gradient(90deg,transparent,#475569)"></span>Sequential</div>
-    </div>
+    <div id="universe-container" style="width:100%;height:100%;position:relative;"></div>
+    <div class="gravity-hud" id="gravity-hud"></div>
     <div class="gravity-tooltip" id="gravity-tooltip"></div>
-    <div class="gravity-mode-toggle" id="gravity-mode-toggle">
-      <button class="btn btn-sm gravity-dim-btn active" data-dim="2d" onclick="setGravityDim('2d')">2D</button>
-      <button class="btn btn-sm gravity-dim-btn" data-dim="3d" onclick="setGravityDim('3d')">3D</button>
+    <div class="universe-filter-bar" id="universe-filter-bar">
+      <button class="filter-btn active" data-filter="all" onclick="Universe.setFilter && Universe.setFilter('all')">All</button>
+      <button class="filter-btn" data-filter="read" onclick="Universe.setFilter && Universe.setFilter('read')">Read</button>
+      <button class="filter-btn" data-filter="edit" onclick="Universe.setFilter && Universe.setFilter('edit')">Edit</button>
+      <button class="filter-btn" data-filter="exec" onclick="Universe.setFilter && Universe.setFilter('exec')">Exec</button>
     </div>
+    <div class="universe-vignette"></div>
   </div>
 
   <button id="scroll-fab" onclick="jumpToBottom()">&#8595;</button>
@@ -131,11 +122,14 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-<script src="https://unpkg.com/three-spritetext@1.9.5/dist/three-spritetext.min.js"></script>
-<script src="https://unpkg.com/3d-force-graph@1.79.1/dist/3d-force-graph.min.js"></script>
-<script src="gravity.js"></script>
-<script src="gravity3d.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/shaders/CopyShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+<script src="universe.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
