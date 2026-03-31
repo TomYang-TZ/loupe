@@ -874,7 +874,9 @@ const Gravity = (() => {
   function getTooltip() {
     if (!hoveredNode && !selectedNode) return null;
     const n = hoveredNode || selectedNode;
-    return { file: n.id, label: n.label, dir: n.dir, reads: n.readCount, edits: n.editCount, execs: n.execCount, total: n.accessCount };
+    const imp = getImportance(n);
+    const sc = getStarClass(n);
+    return { file: n.id, label: n.label, dir: n.dir, readCount: n.readCount, editCount: n.editCount, execCount: n.execCount, total: n.accessCount, classification: sc.name, importance: imp };
   }
 
   // --- Public API ---
