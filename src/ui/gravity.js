@@ -26,8 +26,10 @@ const Gravity = (() => {
   // Claude presence — tracks where Claude is right now (current files only, no fade)
   let claudeCurrentFiles = new Set(); // files Claude is currently at
   let claudeTrail = []; // [{fromFile, toFile, ts}] — most recent movement
-  const TRAIL_DURATION = 2000; // trail fades over 2s
+  const TRAIL_DURATION = 1500; // comet travel time
   const MAX_TRAIL = 1;
+  // Comet particle system — particles that fly from source to destination
+  let cometParticles = []; // [{x, y, targetX, targetY, born, life, size, angle}]
 
   // Fisheye (subtle)
   let fisheyeX = 0, fisheyeY = 0;
@@ -68,11 +70,11 @@ const Gravity = (() => {
 
   // --- Star Classification ---
   const STAR_CLASSES = [
-    { name: "Red Dwarf",    minImp: 1,  maxImp: 3,  dark: "#ff6b4a", light: "#c44a30" },
-    { name: "Orange Dwarf", minImp: 4,  maxImp: 8,  dark: "#ff9f43", light: "#b06a1e" },
-    { name: "Yellow Star",  minImp: 9,  maxImp: 15, dark: "#ffd93d", light: "#8a7a18" },
-    { name: "White Star",   minImp: 16, maxImp: 25, dark: "#f0f0ff", light: "#505068" },
-    { name: "Blue Giant",   minImp: 26, maxImp: Infinity, dark: "#7eb8ff", light: "#2a5a8a" },
+    { name: "Red Dwarf",    minImp: 1,  maxImp: 3,  dark: "#ff6b4a", light: "#d4937a" },
+    { name: "Orange Dwarf", minImp: 4,  maxImp: 8,  dark: "#ff9f43", light: "#c8a47a" },
+    { name: "Yellow Star",  minImp: 9,  maxImp: 15, dark: "#ffd93d", light: "#b0a070" },
+    { name: "White Star",   minImp: 16, maxImp: 25, dark: "#f0f0ff", light: "#8898a8" },
+    { name: "Blue Giant",   minImp: 26, maxImp: Infinity, dark: "#7eb8ff", light: "#6a8faa" },
   ];
 
   function getImportance(n) {
@@ -100,9 +102,21 @@ const Gravity = (() => {
   function getEdgeColor(edge, theme, solid) {
     const dark = theme === "dark";
     if (solid) {
-      return ({ prerequisite: dark ? "#8b5cf6" : "#7c3aed", coupling: dark ? "#f97316" : "#c2410c", validation: dark ? "#4ade80" : "#16a34a", discovery: dark ? "#3b82f6" : "#2563eb", sequence: dark ? "#475569" : "#94a3b8" })[edge.type] || (dark ? "#475569" : "#94a3b8");
+      return ({
+        prerequisite: dark ? "#8b5cf6" : "#9a7ab8",
+        coupling: dark ? "#f97316" : "#c49a6c",
+        validation: dark ? "#4ade80" : "#7aaa88",
+        discovery: dark ? "#3b82f6" : "#7a94b0",
+        sequence: dark ? "#475569" : "#b0a898",
+      })[edge.type] || (dark ? "#475569" : "#b0a898");
     }
-    return ({ prerequisite: dark ? "rgba(139,92,246,0.4)" : "rgba(124,58,237,0.3)", coupling: dark ? "rgba(249,115,22,0.4)" : "rgba(194,65,12,0.3)", validation: dark ? "rgba(74,222,128,0.4)" : "rgba(22,163,74,0.3)", discovery: dark ? "rgba(59,130,246,0.3)" : "rgba(37,99,235,0.2)", sequence: dark ? "rgba(100,116,139,0.08)" : "rgba(100,116,139,0.05)" })[edge.type] || (dark ? "rgba(100,116,139,0.08)" : "rgba(100,116,139,0.05)");
+    return ({
+      prerequisite: dark ? "rgba(139,92,246,0.4)" : "rgba(154,122,184,0.3)",
+      coupling: dark ? "rgba(249,115,22,0.4)" : "rgba(196,154,108,0.3)",
+      validation: dark ? "rgba(74,222,128,0.4)" : "rgba(122,170,136,0.3)",
+      discovery: dark ? "rgba(59,130,246,0.3)" : "rgba(122,148,176,0.25)",
+      sequence: dark ? "rgba(100,116,139,0.08)" : "rgba(160,150,135,0.12)",
+    })[edge.type] || (dark ? "rgba(100,116,139,0.08)" : "rgba(160,150,135,0.12)");
   }
 
   // --- Helpers ---
@@ -479,25 +493,39 @@ const Gravity = (() => {
       }
       ctx.globalAlpha = 1;
     } else {
-      // Light mode: visible dots mirroring dark mode
+      // Light mode: warm watercolor washes
+      const lightWashes = [
+        { x: 0.15, y: 0.25, rx: width * 0.3, color: [210, 180, 160, 0.045] },
+        { x: 0.7, y: 0.2, rx: width * 0.25, color: [170, 185, 200, 0.04] },
+        { x: 0.8, y: 0.7, rx: width * 0.28, color: [190, 175, 165, 0.035] },
+        { x: 0.3, y: 0.75, rx: width * 0.22, color: [175, 195, 180, 0.03] },
+        { x: 0.5, y: 0.5, rx: width * 0.35, color: [200, 190, 175, 0.025] },
+      ];
+      for (const w of lightWashes) {
+        const breathe = 1 + 0.03 * Math.sin(t / 25 * Math.PI * 2);
+        const cx = w.x * width + Math.sin(t / 40) * 2;
+        const cy = w.y * height + Math.cos(t / 35) * 2;
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, w.rx * breathe);
+        grad.addColorStop(0, `rgba(${w.color[0]},${w.color[1]},${w.color[2]},${w.color[3]})`);
+        grad.addColorStop(0.6, `rgba(${w.color[0]},${w.color[1]},${w.color[2]},${w.color[3] * 0.3})`);
+        grad.addColorStop(1, `rgba(${w.color[0]},${w.color[1]},${w.color[2]},0)`);
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, width, height);
+      }
+      // Subtle speckle texture (like paper grain)
       for (const s of bgStars) {
-        let op = s.opacity * 0.5;
-        if (s.twinkle >= 0) op *= (0.6 + 0.4 * Math.sin(t / s.twinkleSpeed * Math.PI * 2 + s.twinkle));
-        ctx.globalAlpha = op;
-        ctx.fillStyle = s.lightColor;
-        const sx = ((s.x * width + camX * s.drift * width) % width + width) % width;
-        const sy = ((s.y * height + camY * s.drift * height) % height + height) % height;
+        if (s.opacity < 0.3) continue; // only some speckles
+        ctx.globalAlpha = s.opacity * 0.08;
+        ctx.fillStyle = "#a09080";
+        const sx = ((s.x * width + camX * s.drift * 0.3 * width) % width + width) % width;
+        const sy = ((s.y * height + camY * s.drift * 0.3 * height) % height + height) % height;
         ctx.beginPath();
-        ctx.arc(sx, sy, s.size * 0.9, 0, Math.PI * 2);
+        ctx.arc(sx, sy, s.size * 0.4, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
-      // Light mode nebula: soft shadow-like washes (inverted nebula)
-      const lightNebulae = [
-        { x: 0.2, y: 0.3, rx: width * 0.25, color: [120, 100, 160, 0.03] },
-        { x: 0.75, y: 0.65, rx: width * 0.2, color: [100, 130, 160, 0.025] },
-        { x: 0.5, y: 0.8, rx: width * 0.18, color: [160, 110, 100, 0.02] },
-      ];
+      // Skip the dark-mode nebula block
+      const lightNebulae = [];
       for (const n of lightNebulae) {
         const breathe = 1 + 0.04 * Math.sin(t / 22 * Math.PI * 2);
         const cx = n.x * width;
@@ -632,7 +660,7 @@ const Gravity = (() => {
     buildHoverNeighbors();
     updateCamera();
 
-    ctx.fillStyle = dark ? "#050510" : "#f0f1f5";
+    ctx.fillStyle = dark ? "#050510" : "#f7f5f0";
     ctx.fillRect(0, 0, width, height);
     drawBackground(dark, now);
 
@@ -682,27 +710,80 @@ const Gravity = (() => {
     }
 
     // --- Claude Trail (movement path) ---
-    // Clean up old trail entries
+    // --- Claude Comet Trail ---
+    // Spawn comet particles from new trails
     claudeTrail = claudeTrail.filter(t => now - t.ts < TRAIL_DURATION).slice(-MAX_TRAIL);
-    // Draw trail line (just the most recent movement)
     for (const trail of claudeTrail) {
       const fromN = nodes.get(trail.fromFile);
       const toN = nodes.get(trail.toFile);
       if (!fromN || !toN) continue;
       const fs = fisheyeTransform(fromN);
       const fd = fisheyeTransform(toN);
-      const trailAge = (now - trail.ts) / TRAIL_DURATION;
-      const trailAlpha = (1 - trailAge) * 0.5;
-      // Animated dash
-      ctx.setLineDash([4, 6]);
-      ctx.lineDashOffset = -(now / 50); // animate the dash
-      ctx.beginPath();
-      ctx.moveTo(fs.x, fs.y);
-      ctx.lineTo(fd.x, fd.y);
-      ctx.strokeStyle = dark ? `rgba(255,255,255,${trailAlpha})` : `rgba(0,0,0,${trailAlpha * 0.6})`;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-      ctx.setLineDash([]);
+      const progress = Math.min(1, (now - trail.ts) / TRAIL_DURATION);
+      const eased = progress * progress * (3 - 2 * progress); // smoothstep
+
+      // Comet head position
+      const headX = fs.x + (fd.x - fs.x) * eased;
+      const headY = fs.y + (fd.y - fs.y) * eased;
+
+      // Draw comet tail — a gradient trail behind the head
+      if (progress < 1) {
+        const tailLen = 0.25; // tail covers 25% of the path
+        const tailStart = Math.max(0, eased - tailLen);
+        const tailX = fs.x + (fd.x - fs.x) * tailStart;
+        const tailY = fs.y + (fd.y - fs.y) * tailStart;
+
+        const tailGrad = ctx.createLinearGradient(tailX, tailY, headX, headY);
+        if (dark) {
+          tailGrad.addColorStop(0, "rgba(255,255,255,0)");
+          tailGrad.addColorStop(0.7, "rgba(255,255,255,0.15)");
+          tailGrad.addColorStop(1, "rgba(255,255,255,0.5)");
+        } else {
+          tailGrad.addColorStop(0, "rgba(106,143,170,0)");
+          tailGrad.addColorStop(0.7, "rgba(106,143,170,0.12)");
+          tailGrad.addColorStop(1, "rgba(106,143,170,0.35)");
+        }
+        ctx.beginPath();
+        ctx.moveTo(tailX, tailY);
+        ctx.lineTo(headX, headY);
+        ctx.strokeStyle = tailGrad;
+        ctx.lineWidth = 3;
+        ctx.lineCap = "round";
+        ctx.stroke();
+
+        // Comet head glow
+        const glowR = 6;
+        const glowGrad = ctx.createRadialGradient(headX, headY, 0, headX, headY, glowR);
+        if (dark) {
+          glowGrad.addColorStop(0, "rgba(255,255,255,0.8)");
+          glowGrad.addColorStop(0.4, "rgba(200,220,255,0.3)");
+          glowGrad.addColorStop(1, "rgba(200,220,255,0)");
+        } else {
+          glowGrad.addColorStop(0, "rgba(106,143,170,0.7)");
+          glowGrad.addColorStop(0.4, "rgba(106,143,170,0.2)");
+          glowGrad.addColorStop(1, "rgba(106,143,170,0)");
+        }
+        ctx.fillStyle = glowGrad;
+        ctx.beginPath();
+        ctx.arc(headX, headY, glowR, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Sparkle particles scattered behind the head
+        const sparkleCount = 5;
+        for (let i = 0; i < sparkleCount; i++) {
+          const sp = eased - (i / sparkleCount) * tailLen * 0.6;
+          if (sp < 0) continue;
+          const sx = fs.x + (fd.x - fs.x) * sp + (Math.sin(now / 100 + i * 2) * 4);
+          const sy = fs.y + (fd.y - fs.y) * sp + (Math.cos(now / 120 + i * 3) * 4);
+          const sparkleAlpha = (1 - i / sparkleCount) * 0.4;
+          ctx.globalAlpha = sparkleAlpha;
+          ctx.fillStyle = dark ? "#ffffff" : "#6a8faa";
+          ctx.beginPath();
+          ctx.arc(sx, sy, 1.5 - i * 0.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
     }
 
     // --- Nodes ---
@@ -794,7 +875,7 @@ const Gravity = (() => {
       // Border on hover/select
       if (isHovered || isSelected) {
         blobPath(fx, fy, r);
-        ctx.strokeStyle = dark ? "rgba(255,255,255,0.8)" : "rgba(0,0,0,0.6)";
+        ctx.strokeStyle = dark ? "rgba(255,255,255,0.8)" : "rgba(80,65,50,0.5)";
         ctx.lineWidth = 2;
         ctx.stroke();
       }
@@ -808,7 +889,7 @@ const Gravity = (() => {
         const beaconAlpha = (1 - beaconT) * 0.6;
         ctx.beginPath();
         ctx.arc(fx, fy, beaconR, 0, Math.PI * 2);
-        ctx.strokeStyle = dark ? `rgba(255,255,255,${beaconAlpha})` : `rgba(0,0,0,${beaconAlpha * 0.7})`;
+        ctx.strokeStyle = dark ? `rgba(255,255,255,${beaconAlpha})` : `rgba(80,65,50,${beaconAlpha * 0.5})`;
         ctx.lineWidth = 2;
         ctx.stroke();
         // Second ring, offset timing
@@ -817,13 +898,13 @@ const Gravity = (() => {
         const beaconAlpha2 = (1 - beaconT2) * 0.4;
         ctx.beginPath();
         ctx.arc(fx, fy, beaconR2, 0, Math.PI * 2);
-        ctx.strokeStyle = dark ? `rgba(255,255,255,${beaconAlpha2})` : `rgba(0,0,0,${beaconAlpha2 * 0.5})`;
+        ctx.strokeStyle = dark ? `rgba(255,255,255,${beaconAlpha2})` : `rgba(80,65,50,${beaconAlpha2 * 0.4})`;
         ctx.lineWidth = 1.5;
         ctx.stroke();
         // Small "cursor" dot
         ctx.beginPath();
         ctx.arc(fx + r + 3, fy - r - 3, 3, 0, Math.PI * 2);
-        ctx.fillStyle = dark ? "#ffffff" : "#000000";
+        ctx.fillStyle = dark ? "#ffffff" : "#504130";
         ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 300);
         ctx.fill();
         ctx.globalAlpha = alpha;
@@ -841,7 +922,7 @@ const Gravity = (() => {
         let la = isGlowing ? 0.85 : isWarm ? 0.55 : 0.3;
         if (dimmed) la *= (1 - fisheyeStrength * 0.65);
         if (isHovered || isSelected) la = 1;
-        ctx.fillStyle = dark ? `rgba(241,245,249,${la})` : `rgba(15,23,42,${la})`;
+        ctx.fillStyle = dark ? `rgba(241,245,249,${la})` : `rgba(80,65,50,${la})`;
         ctx.fillText(dl, fx, fy + r + 3);
 
         if (isHovered || isSelected) {
@@ -864,7 +945,7 @@ const Gravity = (() => {
 
   function drawLegend(dark) {
     const x = 12, y = height - 120;
-    const fg = dark ? "rgba(241,245,249,0.5)" : "rgba(15,23,42,0.5)";
+    const fg = dark ? "rgba(241,245,249,0.5)" : "rgba(80,65,50,0.5)";
     ctx.textAlign = "left"; ctx.textBaseline = "middle";
 
     [{ c: dark ? "#3b82f6" : "#2563eb", l: "Read" }, { c: dark ? "#4ade80" : "#16a34a", l: "Edited" }, { c: dark ? "#f97316" : "#c2410c", l: "Executed" }].forEach((item, i) => {
@@ -905,7 +986,7 @@ const Gravity = (() => {
   }
 
   function drawStats(dark, now) {
-    const fg = dark ? "rgba(241,245,249,0.4)" : "rgba(15,23,42,0.4)";
+    const fg = dark ? "rgba(241,245,249,0.4)" : "rgba(80,65,50,0.4)";
     ctx.font = '400 9px "SF Mono",Menlo,monospace'; ctx.textAlign = "right"; ctx.textBaseline = "top";
     let ac = 0, wc = 0;
     for (const [, ts] of activeFiles) { const a = now - ts; if (a < GLOW_DURATION) ac++; else if (a < WARM_DURATION) wc++; }
