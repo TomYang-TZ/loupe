@@ -23,6 +23,11 @@ const Gravity = (() => {
   let selectedNode = null;
   let draggingNode = null;
 
+  // Claude presence — tracks where Claude is right now
+  let claudePresence = []; // [{file, ts, action}] — last few tool uses
+  const PRESENCE_WINDOW = 5000; // show presence for 5 seconds
+  let claudeTrail = []; // [{fromFile, toFile, ts}] — recent movement trail
+
   // Fisheye (subtle)
   let fisheyeX = 0, fisheyeY = 0;
   let fisheyeActive = false;
@@ -133,7 +138,9 @@ const Gravity = (() => {
   // --- Graph building ---
   function getOrCreateNode(fp) {
     if (nodes.has(fp)) return nodes.get(fp);
-    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, x: width / 2 + (Math.random() - 0.5) * 300, y: height / 2 + (Math.random() - 0.5) * 300, vx: 0, vy: 0, fx: null, fy: null };
+    // blobSeed: 8 random offsets for organic blob shape (consistent per node)
+    const blobSeed = Array.from({length: 8}, () => 0.8 + Math.random() * 0.4);
+    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, x: width / 2 + (Math.random() - 0.5) * 300, y: height / 2 + (Math.random() - 0.5) * 300, vx: 0, vy: 0, fx: null, fy: null, blobSeed };
     nodes.set(fp, n);
     return n;
   }
@@ -192,6 +199,15 @@ const Gravity = (() => {
       if (Date.now() - ts < 5000) spawnPulse(edge);
     }
     lastToolBySession.set(sessionId, { tool: toolName, action, file: fp, ts });
+
+    // Track Claude's presence
+    const prevPresence = claudePresence.length > 0 ? claudePresence[claudePresence.length - 1] : null;
+    claudePresence.push({ file: fp, ts: Date.now(), action });
+    // Trail line from previous location
+    if (prevPresence && prevPresence.file !== fp) {
+      claudeTrail.push({ fromFile: prevPresence.file, toFile: fp, ts: Date.now() });
+    }
+
     return true;
   }
 
@@ -655,6 +671,31 @@ const Gravity = (() => {
       drawRayPulse(fs, fd, eased, getEdgeColor(pulse, theme, true), theme);
     }
 
+    // --- Claude Trail (movement path) ---
+    // Clean up old presence/trail entries
+    claudePresence = claudePresence.filter(p => now - p.ts < PRESENCE_WINDOW);
+    claudeTrail = claudeTrail.filter(t => now - t.ts < PRESENCE_WINDOW);
+    // Draw trail lines
+    for (const trail of claudeTrail) {
+      const fromN = nodes.get(trail.fromFile);
+      const toN = nodes.get(trail.toFile);
+      if (!fromN || !toN) continue;
+      const fs = fisheyeTransform(fromN);
+      const fd = fisheyeTransform(toN);
+      const trailAge = (now - trail.ts) / PRESENCE_WINDOW;
+      const trailAlpha = (1 - trailAge) * 0.5;
+      // Animated dash
+      ctx.setLineDash([4, 6]);
+      ctx.lineDashOffset = -(now / 50); // animate the dash
+      ctx.beginPath();
+      ctx.moveTo(fs.x, fs.y);
+      ctx.lineTo(fd.x, fd.y);
+      ctx.strokeStyle = dark ? `rgba(255,255,255,${trailAlpha})` : `rgba(0,0,0,${trailAlpha * 0.6})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     // --- Nodes ---
     for (const node of nodes.values()) {
       if (!nodeVisible(node)) continue;
@@ -683,15 +724,17 @@ const Gravity = (() => {
       if (isHovered || isSelected) alpha = 1;
       ctx.globalAlpha = alpha;
 
-      // === NODE SHAPE: Diamond gem with light rays ===
+      // === NODE SHAPE: Organic blob (celestial body) ===
+      const seed = node.blobSeed || [1,1,1,1,1,1,1,1];
+      const nPoints = 8;
 
-      // Outer aura — soft radial glow
+      // Soft aura glow
       if (rgb && !dimmed) {
-        const auraR = r * 3;
-        const auraAlpha = (isGlowing ? 0.2 : isWarm ? 0.08 : 0.04) * alpha;
-        const grad = ctx.createRadialGradient(fx, fy, 0, fx, fy, auraR);
+        const auraR = r * 2.5;
+        const auraAlpha = (isGlowing ? 0.18 : isWarm ? 0.08 : 0.04) * alpha;
+        const grad = ctx.createRadialGradient(fx, fy, r * 0.2, fx, fy, auraR);
         grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${auraAlpha})`);
-        grad.addColorStop(0.4, `rgba(${rgb.r},${rgb.g},${rgb.b},${auraAlpha * 0.3})`);
+        grad.addColorStop(0.5, `rgba(${rgb.r},${rgb.g},${rgb.b},${auraAlpha * 0.25})`);
         grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
         ctx.fillStyle = grad;
         ctx.beginPath();
@@ -701,105 +744,103 @@ const Gravity = (() => {
 
       // Pulsing ring for active nodes
       if (isGlowing && rgb && !dimmed) {
-        const pulseT = ((now % 2000) / 2000);
-        const ringR = r * (1.3 + pulseT * 1.2);
-        const ringAlpha = (1 - pulseT) * 0.3 * alpha;
+        const pulseT = ((now % 2500) / 2500);
+        const ringR = r * (1.2 + pulseT * 1.5);
+        const ringAlpha = (1 - pulseT) * 0.25 * alpha;
         ctx.beginPath();
         ctx.arc(fx, fy, ringR, 0, Math.PI * 2);
         ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${ringAlpha})`;
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.2;
         ctx.stroke();
       }
 
-      // Light rays — 4 pointed cross extending from node
-      if (rgb && r > 4 && !dimmed) {
-        const rayLen = r * (isGlowing ? 2.5 : 1.8);
-        const rayAlpha = (isGlowing ? 0.25 : isWarm ? 0.12 : 0.06) * alpha;
-        ctx.lineWidth = 1;
-        // Vertical ray
-        const vGrad = ctx.createLinearGradient(fx, fy - rayLen, fx, fy + rayLen);
-        vGrad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
-        vGrad.addColorStop(0.4, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha})`);
-        vGrad.addColorStop(0.5, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha * 1.5})`);
-        vGrad.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha})`);
-        vGrad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
-        ctx.strokeStyle = vGrad;
-        ctx.beginPath(); ctx.moveTo(fx, fy - rayLen); ctx.lineTo(fx, fy + rayLen); ctx.stroke();
-        // Horizontal ray
-        const hGrad = ctx.createLinearGradient(fx - rayLen, fy, fx + rayLen, fy);
-        hGrad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
-        hGrad.addColorStop(0.4, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha})`);
-        hGrad.addColorStop(0.5, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha * 1.5})`);
-        hGrad.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha})`);
-        hGrad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
-        ctx.strokeStyle = hGrad;
-        ctx.beginPath(); ctx.moveTo(fx - rayLen, fy); ctx.lineTo(fx + rayLen, fy); ctx.stroke();
+      // Build organic blob path using smooth curve through irregular points
+      function blobPath(cx, cy, radius) {
+        const pts = [];
+        for (let i = 0; i < nPoints; i++) {
+          const angle = (i / nPoints) * Math.PI * 2;
+          const wobble = seed[i] * radius;
+          pts.push({ x: cx + Math.cos(angle) * wobble, y: cy + Math.sin(angle) * wobble });
+        }
+        ctx.beginPath();
+        // Smooth closed curve through points using quadratic bezier
+        const last = pts[pts.length - 1];
+        const first = pts[0];
+        ctx.moveTo((last.x + first.x) / 2, (last.y + first.y) / 2);
+        for (let i = 0; i < pts.length; i++) {
+          const curr = pts[i];
+          const next = pts[(i + 1) % pts.length];
+          const midX = (curr.x + next.x) / 2;
+          const midY = (curr.y + next.y) / 2;
+          ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
+        }
+        ctx.closePath();
       }
 
-      // Diamond shape (rotated square) — the core gem
-      ctx.save();
-      ctx.translate(fx, fy);
-      ctx.rotate(Math.PI / 4);
-      const gemSize = r * 0.75;
-
-      // Fill with gradient
+      // Fill blob with gradient
+      blobPath(fx, fy, r);
       if (rgb) {
-        const gemGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, gemSize);
-        gemGrad.addColorStop(0, `rgba(${Math.min(255, rgb.r + 60)},${Math.min(255, rgb.g + 60)},${Math.min(255, rgb.b + 60)},${alpha})`);
-        gemGrad.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`);
-        gemGrad.addColorStop(1, `rgba(${Math.max(0, rgb.r - 30)},${Math.max(0, rgb.g - 30)},${Math.max(0, rgb.b - 30)},${alpha * 0.8})`);
-        ctx.fillStyle = gemGrad;
+        const blobGrad = ctx.createRadialGradient(fx - r * 0.2, fy - r * 0.2, 0, fx, fy, r);
+        blobGrad.addColorStop(0, `rgba(${Math.min(255, rgb.r + 50)},${Math.min(255, rgb.g + 50)},${Math.min(255, rgb.b + 50)},${alpha})`);
+        blobGrad.addColorStop(0.7, `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`);
+        blobGrad.addColorStop(1, `rgba(${Math.max(0, rgb.r - 40)},${Math.max(0, rgb.g - 40)},${Math.max(0, rgb.b - 40)},${alpha * 0.85})`);
+        ctx.fillStyle = blobGrad;
       } else {
         ctx.fillStyle = baseColor;
       }
-
-      // Rounded diamond path
-      const cr = gemSize * 0.2; // corner radius
-      ctx.beginPath();
-      ctx.moveTo(0, -gemSize + cr);
-      ctx.quadraticCurveTo(0, -gemSize, cr, -gemSize + cr);
-      ctx.lineTo(gemSize - cr, 0);
-      ctx.quadraticCurveTo(gemSize, 0, gemSize - cr, cr);
-      ctx.lineTo(cr, gemSize - cr);
-      ctx.quadraticCurveTo(0, gemSize, 0, gemSize - cr);
-      ctx.lineTo(-gemSize + cr, cr);
-      ctx.quadraticCurveTo(-gemSize, 0, -gemSize + cr, -cr);
-      ctx.lineTo(-cr, -gemSize + cr);
-      ctx.quadraticCurveTo(0, -gemSize, 0, -gemSize + cr);
-      ctx.closePath();
       ctx.fill();
 
-      // Highlight line across top facet (gem reflection)
-      if (rgb && r > 5) {
+      // Specular highlight — small bright spot off-center
+      if (rgb && r > 4 && !dimmed) {
+        const hlX = fx - r * 0.25, hlY = fy - r * 0.25;
+        const hlR = r * 0.35;
+        const hlGrad = ctx.createRadialGradient(hlX, hlY, 0, hlX, hlY, hlR);
+        hlGrad.addColorStop(0, `rgba(255,255,255,${alpha * 0.35})`);
+        hlGrad.addColorStop(1, `rgba(255,255,255,0)`);
+        ctx.fillStyle = hlGrad;
         ctx.beginPath();
-        ctx.moveTo(-gemSize * 0.5, -gemSize * 0.1);
-        ctx.lineTo(gemSize * 0.1, -gemSize * 0.5);
-        ctx.strokeStyle = `rgba(255,255,255,${alpha * 0.3})`;
-        ctx.lineWidth = 1;
-        ctx.stroke();
+        ctx.arc(hlX, hlY, hlR, 0, Math.PI * 2);
+        ctx.fill();
       }
 
       // Border on hover/select
       if (isHovered || isSelected) {
-        ctx.strokeStyle = dark ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.7)";
+        blobPath(fx, fy, r);
+        ctx.strokeStyle = dark ? "rgba(255,255,255,0.8)" : "rgba(0,0,0,0.6)";
         ctx.lineWidth = 2;
-        // Retrace the diamond path for stroke
-        ctx.beginPath();
-        ctx.moveTo(0, -gemSize + cr);
-        ctx.quadraticCurveTo(0, -gemSize, cr, -gemSize + cr);
-        ctx.lineTo(gemSize - cr, 0);
-        ctx.quadraticCurveTo(gemSize, 0, gemSize - cr, cr);
-        ctx.lineTo(cr, gemSize - cr);
-        ctx.quadraticCurveTo(0, gemSize, 0, gemSize - cr);
-        ctx.lineTo(-gemSize + cr, cr);
-        ctx.quadraticCurveTo(-gemSize, 0, -gemSize + cr, -cr);
-        ctx.lineTo(-cr, -gemSize + cr);
-        ctx.quadraticCurveTo(0, -gemSize, 0, -gemSize + cr);
-        ctx.closePath();
         ctx.stroke();
       }
 
-      ctx.restore();
+      // Claude presence beacon
+      const isClaudeHere = claudePresence.some(p => p.file === node.id && (now - p.ts) < PRESENCE_WINDOW);
+      if (isClaudeHere && !dimmed) {
+        // Animated beacon ring
+        const beaconT = ((now % 1200) / 1200);
+        const beaconR = r + 4 + beaconT * 12;
+        const beaconAlpha = (1 - beaconT) * 0.6;
+        ctx.beginPath();
+        ctx.arc(fx, fy, beaconR, 0, Math.PI * 2);
+        ctx.strokeStyle = dark ? `rgba(255,255,255,${beaconAlpha})` : `rgba(0,0,0,${beaconAlpha * 0.7})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // Second ring, offset timing
+        const beaconT2 = (((now + 600) % 1200) / 1200);
+        const beaconR2 = r + 4 + beaconT2 * 12;
+        const beaconAlpha2 = (1 - beaconT2) * 0.4;
+        ctx.beginPath();
+        ctx.arc(fx, fy, beaconR2, 0, Math.PI * 2);
+        ctx.strokeStyle = dark ? `rgba(255,255,255,${beaconAlpha2})` : `rgba(0,0,0,${beaconAlpha2 * 0.5})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        // Small "cursor" dot
+        ctx.beginPath();
+        ctx.arc(fx + r + 3, fy - r - 3, 3, 0, Math.PI * 2);
+        ctx.fillStyle = dark ? "#ffffff" : "#000000";
+        ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 300);
+        ctx.fill();
+        ctx.globalAlpha = alpha;
+      }
+
       ctx.globalAlpha = 1;
 
       // Label
