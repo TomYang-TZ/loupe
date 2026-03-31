@@ -139,7 +139,7 @@ const Gravity = (() => {
   function getOrCreateNode(fp) {
     if (nodes.has(fp)) return nodes.get(fp);
     // blobSeed: 8 random offsets for organic blob shape (consistent per node)
-    const blobSeed = Array.from({length: 8}, () => 0.8 + Math.random() * 0.4);
+    const blobSeed = Array.from({length: 8}, () => 0.92 + Math.random() * 0.16);
     const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, x: width / 2 + (Math.random() - 0.5) * 300, y: height / 2 + (Math.random() - 0.5) * 300, vx: 0, vy: 0, fx: null, fy: null, blobSeed };
     nodes.set(fp, n);
     return n;
@@ -777,31 +777,10 @@ const Gravity = (() => {
         ctx.closePath();
       }
 
-      // Fill blob with gradient
+      // Fill blob — flat color, clean
       blobPath(fx, fy, r);
-      if (rgb) {
-        const blobGrad = ctx.createRadialGradient(fx - r * 0.2, fy - r * 0.2, 0, fx, fy, r);
-        blobGrad.addColorStop(0, `rgba(${Math.min(255, rgb.r + 50)},${Math.min(255, rgb.g + 50)},${Math.min(255, rgb.b + 50)},${alpha})`);
-        blobGrad.addColorStop(0.7, `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`);
-        blobGrad.addColorStop(1, `rgba(${Math.max(0, rgb.r - 40)},${Math.max(0, rgb.g - 40)},${Math.max(0, rgb.b - 40)},${alpha * 0.85})`);
-        ctx.fillStyle = blobGrad;
-      } else {
-        ctx.fillStyle = baseColor;
-      }
+      ctx.fillStyle = baseColor;
       ctx.fill();
-
-      // Specular highlight — small bright spot off-center
-      if (rgb && r > 4 && !dimmed) {
-        const hlX = fx - r * 0.25, hlY = fy - r * 0.25;
-        const hlR = r * 0.35;
-        const hlGrad = ctx.createRadialGradient(hlX, hlY, 0, hlX, hlY, hlR);
-        hlGrad.addColorStop(0, `rgba(255,255,255,${alpha * 0.35})`);
-        hlGrad.addColorStop(1, `rgba(255,255,255,0)`);
-        ctx.fillStyle = hlGrad;
-        ctx.beginPath();
-        ctx.arc(hlX, hlY, hlR, 0, Math.PI * 2);
-        ctx.fill();
-      }
 
       // Border on hover/select
       if (isHovered || isSelected) {
