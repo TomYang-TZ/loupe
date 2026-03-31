@@ -74,9 +74,9 @@ const Universe = (function () {
 
   function createStarField() {
     const configs = [
-      { count: 800, sizeRange: [0.3, 0.8], opRange: [0.15, 0.35], drift: 0.001, twinkle: 0.02 },
-      { count: 200, sizeRange: [0.6, 1.2], opRange: [0.25, 0.55], drift: 0.003, twinkle: 0.08 },
-      { count: 50,  sizeRange: [1.0, 2.0], opRange: [0.5, 0.85],  drift: 0.008, twinkle: 0.20 },
+      { count: 800, sizeRange: [1.0, 2.5], opRange: [0.2, 0.5],  drift: 0.001, twinkle: 0.02 },
+      { count: 200, sizeRange: [2.0, 4.0], opRange: [0.35, 0.7], drift: 0.003, twinkle: 0.08 },
+      { count: 50,  sizeRange: [3.0, 6.0], opRange: [0.6, 1.0],  drift: 0.008, twinkle: 0.20 },
     ];
     const colorPool = [
       new THREE.Color("#ffffff"), new THREE.Color("#ffffff"), new THREE.Color("#ffffff"),
@@ -95,9 +95,13 @@ const Universe = (function () {
       const twinkleSpeed = new Float32Array(cfg.count);
 
       for (let i = 0; i < cfg.count; i++) {
-        positions[i * 3]     = (Math.random() - 0.5) * 1200;
-        positions[i * 3 + 1] = (Math.random() - 0.5) * 800;
-        positions[i * 3 + 2] = -200 - Math.random() * 300; // behind data nodes
+        // Spread stars in a large sphere around the origin so they're visible from any camera angle
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos(2 * Math.random() - 1);
+        const r = 500 + Math.random() * 500; // 500-1000 units from origin
+        positions[i * 3]     = Math.sin(phi) * Math.cos(theta) * r;
+        positions[i * 3 + 1] = Math.sin(phi) * Math.sin(theta) * r;
+        positions[i * 3 + 2] = Math.cos(phi) * r;
         const c = colorPool[Math.floor(Math.random() * colorPool.length)];
         colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
         sizes[i] = cfg.sizeRange[0] + Math.random() * (cfg.sizeRange[1] - cfg.sizeRange[0]);
@@ -123,7 +127,7 @@ const Universe = (function () {
             vColor = color;
             vOpacity = aOpacity;
             vec4 mv = modelViewMatrix * vec4(position, 1.0);
-            gl_PointSize = size * (300.0 / -mv.z);
+            gl_PointSize = size * (800.0 / -mv.z);
             gl_Position = projectionMatrix * mv;
           }
         `,
@@ -178,9 +182,9 @@ const Universe = (function () {
 
   function createNebula() {
     const configs = [
-      { color: [60, 40, 120], alpha: 0.12, w: 600, h: 350, z: -180, x: -150, y: 80, breathe: 25 },
-      { color: [30, 60, 100], alpha: 0.10, w: 500, h: 400, z: -220, x: 200, y: -100, breathe: 30 },
-      { color: [80, 30, 50],  alpha: 0.08, w: 400, h: 250, z: -160, x: 50, y: -150, breathe: 20 },
+      { color: [60, 40, 120], alpha: 0.15, w: 800, h: 500, z: -100, x: -200, y: 100, breathe: 25 },
+      { color: [30, 60, 100], alpha: 0.12, w: 700, h: 550, z: -150, x: 250, y: -120, breathe: 30 },
+      { color: [80, 30, 50],  alpha: 0.10, w: 550, h: 350, z: -80, x: 80, y: -180, breathe: 20 },
     ];
 
     for (const cfg of configs) {
