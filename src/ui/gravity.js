@@ -240,6 +240,8 @@ const Gravity = (() => {
         edge.weight++;
         edge.lastTs = ts;
         edge.sessions.add(sessionId);
+        edge.srcAction = prev.action;
+        edge.dstAction = action;
         getOrCreateNode(prev.file, fp);
       }
     }
@@ -574,15 +576,23 @@ const Gravity = (() => {
     else if (age < 60000) lastActionStr += " · <1m ago";
     else lastActionStr += ` · ${Math.round(age / 60000)}m ago`;
 
-    const edgeTypes = {};
+    const edgeInfos = [];
     for (const e of connEdges) {
       const dir = e.source === node.id ? "→" : "←";
       const other = e.source === node.id ? shortName(e.target) : shortName(e.source);
-      edgeTypes[`${dir} ${other}`] = EDGE_TYPE_LABELS[e.type] || e.type;
+      const actionArrow = e.srcAction && e.dstAction
+        ? `${e.srcAction[0].toUpperCase()}${e.srcAction.slice(1)} → ${e.dstAction[0].toUpperCase()}${e.dstAction.slice(1)}`
+        : "";
+      edgeInfos.push({
+        label: `${dir} ${other}`,
+        type: e.type,
+        typeLabel: EDGE_TYPE_LABELS[e.type] || e.type,
+        actionArrow,
+      });
     }
 
     return {
-      file: node.id, lastAction: lastActionStr, edgeTypes,
+      file: node.id, lastAction: lastActionStr, edgeInfos,
       connections: [...connFiles].map(shortName),
       reads: node.readCount, edits: node.editCount, execs: node.execCount,
     };
@@ -671,8 +681,7 @@ const Gravity = (() => {
     html += `<div class="gc-action">${esc(info.lastAction)}</div>`;
 
     // Behavioral patterns — unified section
-    const edgeEntries = Object.entries(info.edgeTypes);
-    const hasPatterns = edgeEntries.length > 0 || node.iterationCount || node.reviewCount;
+    const hasPatterns = info.edgeInfos.length > 0 || node.iterationCount || node.reviewCount;
     if (hasPatterns) {
       html += `<div class="gc-section"><div class="gc-label">Behavior</div>`;
       if (node.iterationCount) {
@@ -681,10 +690,10 @@ const Gravity = (() => {
       if (node.reviewCount) {
         html += `<div class="gc-edge">↩ ${node.reviewCount}× <span class="gc-type" data-tip="${NAMES.review}">Edit → Read</span></div>`;
       }
-      for (const [label, type] of edgeEntries) {
-        const key = Object.entries(EDGE_TYPE_LABELS).find(([k, v]) => v === type)?.[0] || "";
-        const name = NAMES[key] || "";
-        html += `<div class="gc-edge">${esc(label)} <span class="gc-type" data-tip="${name}">${esc(type)}</span></div>`;
+      for (const ei of info.edgeInfos) {
+        const name = NAMES[ei.type] || "";
+        const tip = ei.type === "sequence" ? (ei.actionArrow || "other") : name;
+        html += `<div class="gc-edge">${esc(ei.label)} <span class="gc-type" data-tip="${tip}">${esc(ei.typeLabel)}</span></div>`;
       }
       html += `</div>`;
     }

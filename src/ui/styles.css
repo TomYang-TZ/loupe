@@ -1564,20 +1564,20 @@ body.minimal .minimal-topbar { display: flex; }
 .gravity-card .gc-type:hover::after {
   content: attr(data-tip);
   position: absolute;
-  left: 0;
+  left: 100%;
   bottom: 100%;
-  margin-bottom: 4px;
+  margin-left: 4px;
   font-size: 8px;
   white-space: nowrap;
   padding: 3px 6px;
   border-radius: 3px;
-  background: rgba(10, 12, 20, 0.95);
-  color: rgba(200, 215, 240, 0.7);
+  background: #0a0c14;
+  color: rgba(200, 215, 240, 0.9);
   pointer-events: none;
 }
 [data-theme="light"] .gravity-card .gc-type:hover::after {
-  background: rgba(255, 255, 255, 0.95);
-  color: rgba(30, 40, 50, 0.7);
+  background: #fff;
+  color: rgba(30, 40, 50, 0.85);
   box-shadow: 0 1px 4px rgba(0,0,0,0.1);
 }
 .gravity-card .gc-stats {
