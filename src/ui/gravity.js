@@ -23,12 +23,11 @@ const Gravity = (() => {
   let selectedNode = null;
   let draggingNode = null;
 
-  // Claude presence — tracks where Claude is right now
-  let claudePresence = []; // [{file, ts, action}] — last few tool uses
-  const PRESENCE_WINDOW = 3000; // show presence for 3 seconds
-  const MAX_PRESENCE = 2; // only show last 2 locations
+  // Claude presence — tracks where Claude is right now (current files only, no fade)
+  let claudeCurrentFiles = new Set(); // files Claude is currently at
   let claudeTrail = []; // [{fromFile, toFile, ts}] — most recent movement
-  const MAX_TRAIL = 1; // only show 1 trail line
+  const TRAIL_DURATION = 2000; // trail fades over 2s
+  const MAX_TRAIL = 1;
 
   // Fisheye (subtle)
   let fisheyeX = 0, fisheyeY = 0;
@@ -202,12 +201,16 @@ const Gravity = (() => {
     }
     lastToolBySession.set(sessionId, { tool: toolName, action, file: fp, ts });
 
-    // Track Claude's presence
-    const prevPresence = claudePresence.length > 0 ? claudePresence[claudePresence.length - 1] : null;
-    claudePresence.push({ file: fp, ts: Date.now(), action });
+    // Track Claude's presence — clear old, set new
+    const prevFiles = new Set(claudeCurrentFiles);
+    claudeCurrentFiles.clear();
+    claudeCurrentFiles.add(fp);
     // Trail line from previous location
-    if (prevPresence && prevPresence.file !== fp) {
-      claudeTrail.push({ fromFile: prevPresence.file, toFile: fp, ts: Date.now() });
+    if (prevFiles.size > 0) {
+      const prevFile = [...prevFiles][0];
+      if (prevFile !== fp) {
+        claudeTrail.push({ fromFile: prevFile, toFile: fp, ts: Date.now() });
+      }
     }
 
     return true;
@@ -322,10 +325,15 @@ const Gravity = (() => {
 
     simulation = d3.forceSimulation(nodeArray)
       .force("charge", d3.forceManyBody().strength(-120).distanceMax(350))
-      .force("link", d3.forceLink(edgeArray).id(d => d.id).distance(80).strength(e => 0.08 + e.weight * 0.01))
+      .force("link", d3.forceLink(edgeArray).id(d => d.id).distance(d => {
+        // Scale link distance based on node sizes so bigger nodes push further apart
+        const sr = nodeRadius(d.source), tr = nodeRadius(d.target);
+        return 60 + sr + tr;
+      }).strength(e => 0.12 + e.weight * 0.01))
       .force("center", d3.forceCenter(width / 2, height / 2).strength(0.015))
-      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 5))
+      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) * 1.8 + 8).strength(0.9))
       .force("cluster", clusterForce(dirGroups, 0.08))
+      .velocityDecay(0.25)
       .alphaDecay(0.02)
       .on("tick", () => {});
 
@@ -674,9 +682,8 @@ const Gravity = (() => {
     }
 
     // --- Claude Trail (movement path) ---
-    // Clean up old presence/trail entries, keep only most recent
-    claudePresence = claudePresence.filter(p => now - p.ts < PRESENCE_WINDOW).slice(-MAX_PRESENCE);
-    claudeTrail = claudeTrail.filter(t => now - t.ts < PRESENCE_WINDOW).slice(-MAX_TRAIL);
+    // Clean up old trail entries
+    claudeTrail = claudeTrail.filter(t => now - t.ts < TRAIL_DURATION).slice(-MAX_TRAIL);
     // Draw trail line (just the most recent movement)
     for (const trail of claudeTrail) {
       const fromN = nodes.get(trail.fromFile);
@@ -684,7 +691,7 @@ const Gravity = (() => {
       if (!fromN || !toN) continue;
       const fs = fisheyeTransform(fromN);
       const fd = fisheyeTransform(toN);
-      const trailAge = (now - trail.ts) / PRESENCE_WINDOW;
+      const trailAge = (now - trail.ts) / TRAIL_DURATION;
       const trailAlpha = (1 - trailAge) * 0.5;
       // Animated dash
       ctx.setLineDash([4, 6]);
@@ -792,8 +799,8 @@ const Gravity = (() => {
         ctx.stroke();
       }
 
-      // Claude presence beacon
-      const isClaudeHere = claudePresence.some(p => p.file === node.id && (now - p.ts) < PRESENCE_WINDOW);
+      // Claude presence beacon — instant on/off, no fade
+      const isClaudeHere = claudeCurrentFiles.has(node.id);
       if (isClaudeHere && !dimmed) {
         // Animated beacon ring
         const beaconT = ((now % 1200) / 1200);
@@ -939,7 +946,7 @@ const Gravity = (() => {
         selectedNode = hit;
         hit.fx = hit.x;
         hit.fy = hit.y;
-        if (simulation) simulation.alphaTarget(0.3).restart();
+        if (simulation) simulation.alphaTarget(0.5).restart();
         canvas.style.cursor = "grabbing";
         return;
       }
