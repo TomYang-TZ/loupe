@@ -670,26 +670,9 @@ const Gravity = (() => {
       const isNeighbor = hoverNeighbors.has(node.id);
       const dimmed = fisheyeStrength > 0.01 && hoveredNode && !isNeighbor;
 
-      // Corona glow (universe aesthetic)
       const rgb = hexToRgb(baseColor);
-      if (rgb && !dimmed) {
-        const coronaR = r * 2.5;
-        const grad = ctx.createRadialGradient(fx, fy, r * 0.3, fx, fy, coronaR);
-        const coronaAlpha = isGlowing ? 0.25 : isWarm ? 0.12 : 0.06;
-        grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${coronaAlpha})`);
-        grad.addColorStop(0.5, `rgba(${rgb.r},${rgb.g},${rgb.b},${coronaAlpha * 0.3})`);
-        grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
-        ctx.beginPath();
-        ctx.arc(fx, fy, coronaR, 0, Math.PI * 2);
-        ctx.fillStyle = grad;
-        ctx.fill();
-      }
-
-      // Core circle
-      ctx.beginPath();
-      ctx.arc(fx, fy, r, 0, Math.PI * 2);
+      const imp = getImportance(node);
       let alpha = isGlowing ? 0.9 : isWarm ? 0.6 : 0.3;
-      // Filter dimming
       if (activeFilter !== "all") {
         const matchesFilter = (activeFilter === "read" && node.readCount > 0) ||
           (activeFilter === "edit" && node.editCount > 0) ||
@@ -699,15 +682,124 @@ const Gravity = (() => {
       if (dimmed) alpha *= (1 - fisheyeStrength * 0.65);
       if (isHovered || isSelected) alpha = 1;
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = baseColor;
-      ctx.fill();
 
-      if (isHovered || isSelected) {
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = dark ? "rgba(241,245,249,0.8)" : "rgba(15,23,42,0.8)";
+      // === NODE SHAPE: Diamond gem with light rays ===
+
+      // Outer aura — soft radial glow
+      if (rgb && !dimmed) {
+        const auraR = r * 3;
+        const auraAlpha = (isGlowing ? 0.2 : isWarm ? 0.08 : 0.04) * alpha;
+        const grad = ctx.createRadialGradient(fx, fy, 0, fx, fy, auraR);
+        grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${auraAlpha})`);
+        grad.addColorStop(0.4, `rgba(${rgb.r},${rgb.g},${rgb.b},${auraAlpha * 0.3})`);
+        grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(fx, fy, auraR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Pulsing ring for active nodes
+      if (isGlowing && rgb && !dimmed) {
+        const pulseT = ((now % 2000) / 2000);
+        const ringR = r * (1.3 + pulseT * 1.2);
+        const ringAlpha = (1 - pulseT) * 0.3 * alpha;
+        ctx.beginPath();
+        ctx.arc(fx, fy, ringR, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${ringAlpha})`;
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
+
+      // Light rays — 4 pointed cross extending from node
+      if (rgb && r > 4 && !dimmed) {
+        const rayLen = r * (isGlowing ? 2.5 : 1.8);
+        const rayAlpha = (isGlowing ? 0.25 : isWarm ? 0.12 : 0.06) * alpha;
+        ctx.lineWidth = 1;
+        // Vertical ray
+        const vGrad = ctx.createLinearGradient(fx, fy - rayLen, fx, fy + rayLen);
+        vGrad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
+        vGrad.addColorStop(0.4, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha})`);
+        vGrad.addColorStop(0.5, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha * 1.5})`);
+        vGrad.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha})`);
+        vGrad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
+        ctx.strokeStyle = vGrad;
+        ctx.beginPath(); ctx.moveTo(fx, fy - rayLen); ctx.lineTo(fx, fy + rayLen); ctx.stroke();
+        // Horizontal ray
+        const hGrad = ctx.createLinearGradient(fx - rayLen, fy, fx + rayLen, fy);
+        hGrad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
+        hGrad.addColorStop(0.4, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha})`);
+        hGrad.addColorStop(0.5, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha * 1.5})`);
+        hGrad.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${rayAlpha})`);
+        hGrad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
+        ctx.strokeStyle = hGrad;
+        ctx.beginPath(); ctx.moveTo(fx - rayLen, fy); ctx.lineTo(fx + rayLen, fy); ctx.stroke();
+      }
+
+      // Diamond shape (rotated square) — the core gem
+      ctx.save();
+      ctx.translate(fx, fy);
+      ctx.rotate(Math.PI / 4);
+      const gemSize = r * 0.75;
+
+      // Fill with gradient
+      if (rgb) {
+        const gemGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, gemSize);
+        gemGrad.addColorStop(0, `rgba(${Math.min(255, rgb.r + 60)},${Math.min(255, rgb.g + 60)},${Math.min(255, rgb.b + 60)},${alpha})`);
+        gemGrad.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`);
+        gemGrad.addColorStop(1, `rgba(${Math.max(0, rgb.r - 30)},${Math.max(0, rgb.g - 30)},${Math.max(0, rgb.b - 30)},${alpha * 0.8})`);
+        ctx.fillStyle = gemGrad;
+      } else {
+        ctx.fillStyle = baseColor;
+      }
+
+      // Rounded diamond path
+      const cr = gemSize * 0.2; // corner radius
+      ctx.beginPath();
+      ctx.moveTo(0, -gemSize + cr);
+      ctx.quadraticCurveTo(0, -gemSize, cr, -gemSize + cr);
+      ctx.lineTo(gemSize - cr, 0);
+      ctx.quadraticCurveTo(gemSize, 0, gemSize - cr, cr);
+      ctx.lineTo(cr, gemSize - cr);
+      ctx.quadraticCurveTo(0, gemSize, 0, gemSize - cr);
+      ctx.lineTo(-gemSize + cr, cr);
+      ctx.quadraticCurveTo(-gemSize, 0, -gemSize + cr, -cr);
+      ctx.lineTo(-cr, -gemSize + cr);
+      ctx.quadraticCurveTo(0, -gemSize, 0, -gemSize + cr);
+      ctx.closePath();
+      ctx.fill();
+
+      // Highlight line across top facet (gem reflection)
+      if (rgb && r > 5) {
+        ctx.beginPath();
+        ctx.moveTo(-gemSize * 0.5, -gemSize * 0.1);
+        ctx.lineTo(gemSize * 0.1, -gemSize * 0.5);
+        ctx.strokeStyle = `rgba(255,255,255,${alpha * 0.3})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      // Border on hover/select
+      if (isHovered || isSelected) {
+        ctx.strokeStyle = dark ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.7)";
+        ctx.lineWidth = 2;
+        // Retrace the diamond path for stroke
+        ctx.beginPath();
+        ctx.moveTo(0, -gemSize + cr);
+        ctx.quadraticCurveTo(0, -gemSize, cr, -gemSize + cr);
+        ctx.lineTo(gemSize - cr, 0);
+        ctx.quadraticCurveTo(gemSize, 0, gemSize - cr, cr);
+        ctx.lineTo(cr, gemSize - cr);
+        ctx.quadraticCurveTo(0, gemSize, 0, gemSize - cr);
+        ctx.lineTo(-gemSize + cr, cr);
+        ctx.quadraticCurveTo(-gemSize, 0, -gemSize + cr, -cr);
+        ctx.lineTo(-cr, -gemSize + cr);
+        ctx.quadraticCurveTo(0, -gemSize, 0, -gemSize + cr);
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      ctx.restore();
       ctx.globalAlpha = 1;
 
       // Label
