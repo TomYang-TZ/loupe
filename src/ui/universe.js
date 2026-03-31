@@ -2,6 +2,10 @@
 const Universe = (function () {
   "use strict";
 
+  console.log("[Universe] IIFE evaluating. THREE defined:", typeof THREE !== "undefined",
+    "OrbitControls:", typeof THREE !== "undefined" && typeof THREE.OrbitControls !== "undefined",
+    "EffectComposer:", typeof THREE !== "undefined" && typeof THREE.EffectComposer !== "undefined");
+
   // ── Constants ──
   const GLOW_DURATION = 30000;       // 30s — "active"
   const WARM_DURATION = 120000;      // 2min — "warm"
@@ -430,7 +434,17 @@ const Universe = (function () {
         return sc.maxSize + 2;
       }))
       .force("cluster", clusterForce(0.15))
-      .force("z", d3.forceZ(0).strength(0.01))
+      .force("z", (function() {
+        // Custom z-force (d3-force only supports 2D)
+        let ns;
+        function force(alpha) {
+          for (const n of ns) {
+            n.vz = ((n.vz || 0) - (n.z || 0) * 0.01) * alpha + (n.vz || 0) * (1 - alpha);
+          }
+        }
+        force.initialize = function(nodes) { ns = nodes; };
+        return force;
+      })())
       .alphaDecay(0.02)
       .velocityDecay(0.3)
       .on("tick", () => {
@@ -1150,12 +1164,19 @@ const Universe = (function () {
 
   // ── Public API ──
   function init(el) {
+    try {
+    console.log("[Universe] init called, container:", el, "size:", el.clientWidth, "x", el.clientHeight);
     createScene(el);
+    console.log("[Universe] scene created OK");
     animate();
+    console.log("[Universe] animate started OK");
     // Load history
     fetch("/api/file-accesses").then(r => r.json()).then(list => {
       if (Array.isArray(list)) addEntries(list);
     }).catch(() => {});
+    } catch (err) {
+      console.error("[Universe] init FAILED:", err);
+    }
   }
 
   let rebuildTimer = null;
