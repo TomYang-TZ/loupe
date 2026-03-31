@@ -4,3 +4,5 @@ Logstream.app/
 native/loupe
 native/logstream-app
 *.log
+.superpowers/
+docs/superpowers/
