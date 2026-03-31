@@ -1080,26 +1080,36 @@ const Universe = (function () {
   }
 
   // ── Data Processing (preserved from gravity.js) ──
-  function extractFilePath(entry) {
+  // Unwrap the hook envelope: { _logstream_type, data: { tool_name, tool_input, ... } }
+  function unwrapEntry(entry) {
     try {
       const j = typeof entry.json === "string" ? JSON.parse(entry.json) : entry.json;
-      const ti = j.tool_input || j.input || {};
-      if (ti.file_path) return ti.file_path;
-      if (ti.path) return ti.path;
-      if (ti.command) {
-        const m = ti.command.match(/(?:^|\s)(\/[^\s;|&]+)/);
-        if (m) return m[1];
-      }
-    } catch (_) {}
+      if (!j) return null;
+      // Hook format: { _logstream_type: "PreToolUse", data: { tool_name, tool_input, ... } }
+      if (j._logstream_type && j.data) return { hookType: j._logstream_type, inner: j.data };
+      // Legacy/direct format: { hook: "PreToolUse", tool_name, tool_input, ... }
+      if (j.hook) return { hookType: j.hook, inner: j };
+      return null;
+    } catch (_) { return null; }
+  }
+
+  function extractFilePath(entry) {
+    const u = unwrapEntry(entry);
+    if (!u) return null;
+    const ti = u.inner.tool_input || u.inner.input || {};
+    if (ti.file_path) return ti.file_path;
+    if (ti.path) return ti.path;
+    if (ti.command) {
+      const m = ti.command.match(/(?:^|\s)(\/[^\s;|&]+)/);
+      if (m) return m[1];
+    }
     return null;
   }
 
   function extractToolName(entry) {
-    try {
-      const j = typeof entry.json === "string" ? JSON.parse(entry.json) : entry.json;
-      return j.tool_name || null;
-    } catch (_) {}
-    return null;
+    const u = unwrapEntry(entry);
+    if (!u) return null;
+    return u.inner.tool_name || null;
   }
 
   function toolToAction(tool) {
@@ -1119,10 +1129,8 @@ const Universe = (function () {
   }
 
   function processEntry(entry) {
-    try {
-      const j = typeof entry.json === "string" ? JSON.parse(entry.json) : entry.json;
-      if (j.hook !== "PreToolUse") return;
-    } catch (_) { return; }
+    const u = unwrapEntry(entry);
+    if (!u || u.hookType !== "PreToolUse") return;
 
     const fp = extractFilePath(entry);
     if (!fp || !fp.startsWith("/") || fp.includes("node_modules/") || fp.includes(".git/")) return;
