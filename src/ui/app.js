@@ -61,6 +61,7 @@ const gridSep = document.getElementById("grid-sep");
 // Pane management
 const panes = new Map();
 let mainContainer = null;
+const MAP_SESSION_ID = "__gravity_map__";
 
 const SESSION_COLORS = ["#8b5cf6", "#3b82f6", "#4ade80", "#f97316", "#ec4899", "#06b6d4", "#eab308", "#a78bfa"];
 let colorIdx = 0;
@@ -130,31 +131,17 @@ function createPane(sessionId, label, color) {
     closeBtn.onclick = (e) => { e.stopPropagation(); removeSession(sessionId); };
     header.appendChild(closeBtn);
 
-    // Drag reorder
+    // Drag for tiling: set session-id data type for Tiling drop zones
     header.draggable = true;
     header.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/session-id", sessionId);
       e.dataTransfer.setData("text/plain", sessionId);
       e.dataTransfer.effectAllowed = "move";
       pane.classList.add("pane-dragging");
     });
     header.addEventListener("dragend", () => {
       pane.classList.remove("pane-dragging");
-      paneContainer.querySelectorAll(".pane-drop-target").forEach(el => el.classList.remove("pane-drop-target"));
-    });
-    pane.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; pane.classList.add("pane-drop-target"); });
-    pane.addEventListener("dragleave", () => pane.classList.remove("pane-drop-target"));
-    pane.addEventListener("drop", (e) => {
-      e.preventDefault();
-      pane.classList.remove("pane-drop-target");
-      const draggedId = e.dataTransfer.getData("text/plain");
-      if (draggedId === sessionId || !draggedId) return;
-      const fromIdx = sessionOrder.indexOf(draggedId);
-      const toIdx = sessionOrder.indexOf(sessionId);
-      if (fromIdx === -1 || toIdx === -1) return;
-      sessionOrder.splice(fromIdx, 1);
-      sessionOrder.splice(toIdx, 0, draggedId);
-      rebuildTabs();
-      rebuildView();
+      document.querySelectorAll(".tile-drop-indicator").forEach(el => el.remove());
     });
   }
 
@@ -186,112 +173,18 @@ function updatePaneIdleLabels() {
 }
 setInterval(updatePaneIdleLabels, 5000);
 
-let gridCols = 4;
-
-// ===== Pane resize (edge-detect on grid gaps) =====
-const EDGE_ZONE = 5; // px from pane edge to trigger resize
-
-function detectEdge(e) {
-  const paneList = [...panes.values()];
-  for (let i = 0; i < paneList.length; i++) {
-    const rect = paneList[i].el.getBoundingClientRect();
-    // Right edge → col resize (if there's a pane to the right)
-    if (Math.abs(e.clientX - rect.right) < EDGE_ZONE && e.clientY >= rect.top && e.clientY <= rect.bottom) {
-      const rightNeighbor = paneList.find(p => {
-        const r = p.el.getBoundingClientRect();
-        return r.left > rect.right - 10 && r.left < rect.right + 10 && r.top < rect.bottom && r.bottom > rect.top;
-      });
-      if (rightNeighbor) return { type: "col", left: paneList[i], right: rightNeighbor };
-    }
-    // Bottom edge → row resize (if there's a pane below)
-    if (Math.abs(e.clientY - rect.bottom) < EDGE_ZONE && e.clientX >= rect.left && e.clientX <= rect.right) {
-      const belowNeighbor = paneList.find(p => {
-        const r = p.el.getBoundingClientRect();
-        return r.top > rect.bottom - 10 && r.top < rect.bottom + 10 && r.left < rect.right && r.right > rect.left;
-      });
-      if (belowNeighbor) return { type: "row", above: paneList[i], below: belowNeighbor };
-    }
-  }
-  return null;
-}
-
-paneContainer.addEventListener("mousemove", (e) => {
-  if (paneContainer._resizing) return;
-  const edge = detectEdge(e);
-  paneContainer.style.cursor = edge ? (edge.type === "col" ? "col-resize" : "row-resize") : "";
-});
-
-paneContainer.addEventListener("mousedown", (e) => {
-  const edge = detectEdge(e);
-  if (!edge) return;
-  e.preventDefault();
-  paneContainer._resizing = true;
-  document.body.style.userSelect = "none";
-
-  if (edge.type === "col") {
-    const leftW = edge.left.el.offsetWidth;
-    const rightW = edge.right.el.offsetWidth;
-    const leftIdx = [...panes.values()].indexOf(edge.left);
-    const rightIdx = [...panes.values()].indexOf(edge.right);
-    const cols = Math.min(gridCols, panes.size);
-    const leftCol = leftIdx % cols;
-    const rightCol = rightIdx % cols;
-    const startX = e.clientX;
-    const colWidths = getComputedStyle(paneContainer).gridTemplateColumns.split(" ").map(parseFloat);
-
-    document.body.style.cursor = "col-resize";
-    function onMove(ev) {
-      const delta = ev.clientX - startX;
-      const nw = [...colWidths];
-      nw[leftCol] = Math.max(80, leftW + delta);
-      nw[rightCol] = Math.max(80, rightW - delta);
-      paneContainer.style.gridTemplateColumns = nw.map(w => w + "px").join(" ");
-      edge.left.scrollEl.scrollTop = edge.left.scrollEl.scrollHeight;
-      edge.right.scrollEl.scrollTop = edge.right.scrollEl.scrollHeight;
-    }
-    function onUp() {
-      paneContainer._resizing = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  } else {
-    const aboveH = edge.above.el.offsetHeight;
-    const belowH = edge.below.el.offsetHeight;
-    const aboveIdx = [...panes.values()].indexOf(edge.above);
-    const belowIdx = [...panes.values()].indexOf(edge.below);
-    const cols = Math.min(gridCols, panes.size);
-    const aboveRow = Math.floor(aboveIdx / cols);
-    const belowRow = Math.floor(belowIdx / cols);
-    const startY = e.clientY;
-
-    // Initialize grid-template-rows from actual computed sizes if not set yet
-    const rowHeights = getComputedStyle(paneContainer).gridTemplateRows.split(" ").map(parseFloat);
-
-    document.body.style.cursor = "row-resize";
-    function onMove(ev) {
-      const delta = ev.clientY - startY;
-      const nh = [...rowHeights];
-      nh[aboveRow] = Math.max(60, aboveH + delta);
-      nh[belowRow] = Math.max(60, belowH - delta);
-      paneContainer.style.gridTemplateRows = nh.map(h => h + "px").join(" ");
-      // Keep content flush with separator
-      edge.above.scrollEl.scrollTop = edge.above.scrollEl.scrollHeight;
-      edge.below.scrollEl.scrollTop = edge.below.scrollEl.scrollHeight;
-    }
-    function onUp() {
-      paneContainer._resizing = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-  }
+// ===== Tiling integration =====
+// Initialize tiling with a callback that creates pane elements
+Tiling.init(paneContainer, (sessionId) => {
+  const info = sessions.get(sessionId);
+  if (!info) return null;
+  if (!info.color) info.color = nextSessionColor();
+  const p = createPane(sessionId, info.label, info.color);
+  panes.set(sessionId, p);
+  return p.el;
+}, {
+  onBeforeRebuild: () => { panes.clear(); },
+  onRebuild: () => { rebuildAllPaneContents(); },
 });
 
 function rebuildPanes() {
@@ -308,41 +201,25 @@ function rebuildPanes() {
     paneContainer.appendChild(p.el);
     panes.set("main", p);
     mainContainer = p.scrollEl;
+    Tiling.clear();
   } else {
     syncSessionOrder();
-    paneContainer.classList.add("multi-pane");
-    paneContainer.classList.add("grid-layout");
-    paneContainer.style.removeProperty("flex-direction");
-    paneContainer.style.removeProperty("flex-wrap");
+    paneContainer.classList.remove("grid-layout");
 
-    for (const id of sessionOrder) {
-      const info = sessions.get(id);
-      if (!info) continue;
-      if (!info.color) info.color = nextSessionColor();
-      const p = createPane(id, info.label, info.color);
-      paneContainer.appendChild(p.el);
-      panes.set(id, p);
+    // Build tiling tree from session order (preserves existing tree if sessions match)
+    const tilingIds = Tiling.getSessionIds();
+    const currentIds = new Set(sessionOrder.filter(id => sessions.has(id)));
+    const tilingSet = new Set(tilingIds);
+
+    // Batch add/remove without per-op rebuilds
+    for (const id of currentIds) {
+      if (!tilingSet.has(id)) Tiling.addSession(id, false);
+    }
+    for (const id of tilingIds) {
+      if (!currentIds.has(id)) Tiling.removeSession(id, false);
     }
 
-    const paneList = [...panes.values()];
-    const cols = Math.min(gridCols, paneList.length);
-    const rows = Math.ceil(paneList.length / cols);
-    paneContainer.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-    paneContainer.style.removeProperty("grid-template-rows");
-
-    // Make panes that are last in their column span remaining rows
-    if (rows > 1) {
-      const lastRowCount = paneList.length % cols || cols;
-      for (let i = 0; i < paneList.length; i++) {
-        const col = i % cols;
-        const row = Math.floor(i / cols);
-        const panesInThisCol = col < lastRowCount ? rows : rows - 1;
-        const isLastInCol = row === panesInThisCol - 1;
-        if (isLastInCol && panesInThisCol < rows) {
-          paneList[i].el.style.gridRow = `span ${rows - panesInThisCol + 1}`;
-        }
-      }
-    }
+    Tiling.rebuild();
   }
 
   // Apply saved zoom
@@ -350,16 +227,13 @@ function rebuildPanes() {
   if (z) applyZoom(parseFloat(z));
 }
 
-window.setGridCols = (n) => {
-  gridCols = Math.max(1, Math.min(8, n));
-  if (gridLabel) gridLabel.textContent = `${gridCols} col`;
-  if (activeSession === "all" && sessions.size > 1) rebuildView();
-};
+// Grid controls no longer needed — tiling handles layout
+window.setGridCols = () => {};
+let gridCols = 4; // kept for backwards compat with HTML onclick
 
 function updateGridControlsVisibility() {
-  const show = activeSession === "all";
-  if (gridControls) gridControls.style.display = show ? "" : "none";
-  if (gridSep) gridSep.style.display = show ? "" : "none";
+  if (gridControls) gridControls.style.display = "none";
+  if (gridSep) gridSep.style.display = "none";
 }
 
 function getContainerFor(entry) {
@@ -588,9 +462,12 @@ function handleLine(msg) {
 
   let newSession = false;
   if (sessionId && !sessions.has(sessionId)) {
-    sessions.set(sessionId, { label: sessionLabel || sessionId.slice(0, 8), count: 0, color: nextSessionColor(), lastEventTs: msg.ts });
+    const sColor = nextSessionColor();
+    const sLabel = sessionLabel || sessionId.slice(0, 8);
+    sessions.set(sessionId, { label: sLabel, count: 0, color: sColor, lastEventTs: msg.ts });
     newSession = true;
     rebuildTabs();
+    if (Gravity.registerSession) Gravity.registerSession(sessionId, sLabel, sColor);
   }
   if (sessionId && sessions.has(sessionId)) {
     const sInfo = sessions.get(sessionId);
@@ -1094,7 +971,7 @@ function rebuildTabs() {
     tab.querySelector(".tab-close").onclick = (e) => { e.stopPropagation(); removeSession(id); };
 
     // Drag
-    tab.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", id); tab.classList.add("tab-dragging"); e.dataTransfer.effectAllowed = "move"; });
+    tab.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", id); e.dataTransfer.setData("text/session-id", id); tab.classList.add("tab-dragging"); e.dataTransfer.effectAllowed = "move"; });
     tab.addEventListener("dragend", () => { tab.classList.remove("tab-dragging"); tabBar.querySelectorAll(".tab-drop-target").forEach(el => el.classList.remove("tab-drop-target")); });
     tab.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; tab.classList.add("tab-drop-target"); });
     tab.addEventListener("dragleave", () => tab.classList.remove("tab-drop-target"));
@@ -1121,6 +998,8 @@ function switchSession(id) {
   activeSession = id;
   const dot = tabBar.querySelector(`[data-session="${id}"] .tab-dot`);
   if (dot) dot.classList.remove("has-activity");
+  // Sync gravity map session filter with active tab
+  if (Gravity.setSessionFilter) Gravity.setSessionFilter(id === "all" ? "all" : id);
   rebuildTabs();
   rebuildView();
   updateGridControlsVisibility();
@@ -1131,6 +1010,7 @@ function removeSession(id) {
   sessionOrder = sessionOrder.filter(s => s !== id);
   for (let i = entries.length - 1; i >= 0; i--) { if (entries[i].sessionId === id) entries.splice(i, 1); }
   if (activeSession === id) activeSession = "all";
+  if (Gravity.unregisterSession) Gravity.unregisterSession(id);
   rebuildTabs();
   rebuildView();
 }
@@ -1152,13 +1032,16 @@ function reconcileSessions(serverList) {
       sessions.delete(id);
       sessionOrder = sessionOrder.filter(s => s !== id);
       if (activeSession === id) activeSession = "all";
+      if (Gravity.unregisterSession) Gravity.unregisterSession(id);
       changed = true;
     }
   }
   // Add missing sessions from server
   for (const s of serverList) {
     if (!sessions.has(s.id)) {
-      sessions.set(s.id, { label: s.label, count: 0, color: nextSessionColor(), lastEventTs: null });
+      const sColor = nextSessionColor();
+      sessions.set(s.id, { label: s.label, count: 0, color: sColor, lastEventTs: null });
+      if (Gravity.registerSession) Gravity.registerSession(s.id, s.label, sColor);
       changed = true;
     }
   }
@@ -1287,8 +1170,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "?" && !inSearch) { toggleHelp(); return; }
   if (e.key === "m" && !inSearch) { toggleView(); return; }
   if (e.key === "t" && e.metaKey) { e.preventDefault(); toggleTheme(); return; }
-  if ((e.key === "=" || e.key === "+") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(1.2); else setGridCols(gridCols + 1); return; }
-  if ((e.key === "-" || e.key === "_") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(0.8); else setGridCols(gridCols - 1); return; }
+  if ((e.key === "=" || e.key === "+") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(1.2); return; }
+  if ((e.key === "-" || e.key === "_") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(0.8); return; }
   if ((e.key === "=" || e.key === "+") && e.metaKey) { e.preventDefault(); adjustFontSize(1); return; }
   if (e.key === "-" && e.metaKey) { e.preventDefault(); adjustFontSize(-1); return; }
   if (e.key === "Escape") {
@@ -1402,23 +1285,74 @@ const gravityContainer = document.getElementById("gravity-container");
 const gravityTooltip = document.getElementById("gravity-tooltip");
 const viewToggleBtn = document.getElementById("view-toggle-btn");
 
+let mapPopoverOpen = false;
+const mapDivider = document.getElementById("map-divider");
+
 window.toggleView = () => {
   gravityView = !gravityView;
   viewToggleBtn.classList.toggle("active", gravityView);
   if (gravityView) {
-    paneContainer.style.display = "none";
-    gravityContainer.style.display = "";
-    if (gridControls) gridControls.style.display = "none";
-    if (gridSep) gridSep.style.display = "none";
     if (!gravityInitialized) {
       Gravity.init(gravityCanvas);
       Gravity.addEntries(entries);
       gravityInitialized = true;
     }
+    gravityContainer.style.display = "";
+    gravityContainer.style.flex = "0 0 35%";
+    gravityContainer.style.minHeight = "120px";
+    mapDivider.style.display = "";
   } else {
+    if (mapPopoverOpen) toggleMapPopover();
     gravityContainer.style.display = "none";
-    paneContainer.style.display = "";
-    updateGridControlsVisibility();
+    mapDivider.style.display = "none";
+  }
+};
+
+// Map-session divider drag
+mapDivider.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  document.body.style.userSelect = "none";
+  document.body.style.cursor = "row-resize";
+  const app = document.getElementById("app");
+  const appRect = app.getBoundingClientRect();
+  // Header height = top of gravityContainer relative to app
+  const headerH = gravityContainer.getBoundingClientRect().top - appRect.top;
+
+  function onMove(ev) {
+    const mapH = Math.max(120, Math.min(ev.clientY - appRect.top - headerH, appRect.height - headerH - 100));
+    gravityContainer.style.flex = `0 0 ${mapH}px`;
+  }
+  function onUp() {
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
+
+window.toggleMapPopover = () => {
+  const overlay = document.getElementById("map-popover-overlay");
+  const popover = document.getElementById("map-popover");
+  mapPopoverOpen = !mapPopoverOpen;
+
+  if (mapPopoverOpen) {
+    // Move gravity container into popover
+    popover.insertBefore(gravityContainer, popover.firstChild);
+    gravityContainer.style.flex = "1";
+    gravityContainer.style.minHeight = "";
+    gravityContainer.style.display = "";
+    overlay.style.display = "";
+    mapDivider.style.display = "none";
+  } else {
+    // Move gravity container back to #app (before divider)
+    const app = document.getElementById("app");
+    app.insertBefore(gravityContainer, mapDivider);
+    gravityContainer.style.flex = "0 0 35%";
+    gravityContainer.style.minHeight = "120px";
+    overlay.style.display = "none";
+    mapDivider.style.display = "";
   }
 };
 
@@ -1428,8 +1362,7 @@ setInterval(() => {
   const info = Gravity.getTooltip();
   if (info) {
     gravityTooltip.innerHTML = `<span class="gt-file">${info.label}</span> <span class="gt-dir">${info.dir}</span><br>` +
-      `<span class="gt-stat">Read ${info.readCount}</span> <span class="gt-stat">Edit ${info.editCount}</span> <span class="gt-stat">Exec ${info.execCount}</span><br>` +
-      `<span class="gt-class">${info.classification} · Importance ${info.importance}</span>`;
+      `<span class="gt-stat">R:${info.readCount} E:${info.editCount} X:${info.execCount}</span> · imp:${info.importance}`;
     gravityTooltip.classList.add("visible");
   } else {
     gravityTooltip.classList.remove("visible");

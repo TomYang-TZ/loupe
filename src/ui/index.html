@@ -90,21 +90,43 @@
     </div>
   </div>
 
-  <div class="pane-container" id="pane-container"></div>
-
   <div class="gravity-container" id="gravity-container" style="display:none">
+    <button class="gravity-enlarge-btn" id="gravity-enlarge-btn" onclick="toggleMapPopover()" title="Enlarge map">⤢</button>
     <canvas id="gravity-canvas"></canvas>
     <div class="gravity-tooltip" id="gravity-tooltip"></div>
-    <div class="universe-filter-bar" id="universe-filter-bar">
-      <button class="filter-btn active" data-filter="all" onclick="Gravity.setFilter && Gravity.setFilter('all')">All</button>
-      <button class="filter-btn" data-filter="read" onclick="Gravity.setFilter && Gravity.setFilter('read')">Read</button>
-      <button class="filter-btn" data-filter="edit" onclick="Gravity.setFilter && Gravity.setFilter('edit')">Edit</button>
-      <button class="filter-btn" data-filter="exec" onclick="Gravity.setFilter && Gravity.setFilter('exec')">Exec</button>
+    <div class="gravity-filter-row">
+      <div class="universe-filter-bar" id="universe-filter-bar">
+        <button class="filter-btn active" data-filter="all" onclick="Gravity.setFilter && Gravity.setFilter('all')">All</button>
+        <button class="filter-btn" data-filter="read" onclick="Gravity.setFilter && Gravity.setFilter('read')">Read</button>
+        <button class="filter-btn" data-filter="edit" onclick="Gravity.setFilter && Gravity.setFilter('edit')">Edit</button>
+        <button class="filter-btn" data-filter="exec" onclick="Gravity.setFilter && Gravity.setFilter('exec')">Exec</button>
+      </div>
+      <div class="recency-filter-bar">
+        <button class="recency-filter-btn active" data-recency="all" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('all')">All</button>
+        <button class="recency-filter-btn" data-recency="active" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('active')">Live</button>
+        <button class="recency-filter-btn" data-recency="warm" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('warm')">Warm</button>
+        <button class="recency-filter-btn" data-recency="stale" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('stale')">Stale</button>
+      </div>
+    </div>
+    <div class="session-filter-bar" id="session-filter-bar" style="display:none"></div>
+    <div class="gravity-sliders">
+      <label><span>Spread</span><input type="range" min="10" max="300" value="100" oninput="Gravity.setEdgeLengthScale(this.value/100)"></label>
     </div>
     <div class="universe-vignette"></div>
   </div>
 
+  <div class="map-divider" id="map-divider" style="display:none"></div>
+
+  <div class="pane-container" id="pane-container"></div>
+
   <button id="scroll-fab" onclick="jumpToBottom()">&#8595;</button>
+</div>
+
+<!-- Map Popover -->
+<div class="map-popover-overlay" id="map-popover-overlay" style="display:none" onclick="if(event.target===this)toggleMapPopover()">
+  <div class="map-popover" id="map-popover">
+    <button class="map-popover-close" onclick="toggleMapPopover()">&times;</button>
+  </div>
 </div>
 
 <!-- Detail Modal -->
@@ -122,6 +144,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="gravity.js"></script>
+<script src="tiling.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

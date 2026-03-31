@@ -1,7 +1,9 @@
 "use strict";
 
 // ===== File Gravity Map =====
-// Force-directed graph with directory ring layout, fisheye lens, and ray pulses.
+// Force-directed behavioral dependency graph.
+// Dark mode: Observatory (bright point nodes, soft halos, sparse stars)
+// Light mode: Blueprint (hollow circles, dash patterns, architectural)
 
 const Gravity = (() => {
   // --- State ---
@@ -12,7 +14,6 @@ const Gravity = (() => {
   let edges = new Map();
   let lastToolBySession = new Map();
   let activeFiles = new Map();
-  let pulses = [];
   let labelCounts = new Map();
 
   // Camera
@@ -23,32 +24,29 @@ const Gravity = (() => {
   let selectedNode = null;
   let draggingNode = null;
 
-  // Claude presence — tracks where Claude is right now (current files only, no fade)
-  let claudeCurrentFiles = new Set(); // files Claude is currently at
-  let claudeTrail = []; // [{fromFile, toFile, ts}] — most recent movement
-  const TRAIL_DURATION = 1500; // comet travel time
-  const MAX_TRAIL = 1;
-  // Comet particle system — particles that fly from source to destination
-  let cometParticles = []; // [{x, y, targetX, targetY, born, life, size, angle}]
-
-  // Fisheye (subtle)
-  let fisheyeX = 0, fisheyeY = 0;
-  let fisheyeActive = false;
-  let fisheyeStrength = 0; // animated 0→1
-  const FISHEYE_RADIUS = 180;
-  const FISHEYE_DISTORTION = 1.8;
-  const FISHEYE_MAX_SCALE = 1.6;
+  // Claude presence
+  let claudeCurrentFiles = new Set();
 
   // Animation
   let animFrame = null;
   let lastRenderTime = 0;
 
   // Config
-  const GLOW_DURATION = 30000;
-  const WARM_DURATION = 120000;
-  const STALE_CUTOFF = 30 * 60 * 1000; // 30 min — hide nodes older than this
+  const GLOW_DURATION = 60000;
+  const WARM_DURATION = 5 * 60000;
+  const STALE_CUTOFF = 60 * 60 * 1000;
   const NODE_MIN_R = 3;
   const NODE_MAX_R = 20;
+
+  // Slider scales (0.1 → 3.0, default 1.0)
+  let edgeLengthScale = 1.0;
+  let nodeSizeScale = 1.0;
+
+  // Spread center of mass (updated each frame)
+  let spreadCX = 0, spreadCY = 0;
+
+  function spX(node) { return spreadCX + (node.x - spreadCX) * edgeLengthScale; }
+  function spY(node) { return spreadCY + (node.y - spreadCY) * edgeLengthScale; }
   const EDGE_MIN_W = 0.3;
   const EDGE_MAX_W = 3;
   const LABEL_MIN_ACCESS = 3;
@@ -68,56 +66,55 @@ const Gravity = (() => {
     return "sequence";
   }
 
-  // --- Star Classification ---
-  const STAR_CLASSES = [
-    { name: "Red Dwarf",    minImp: 1,  maxImp: 3,  dark: "#ff6b4a", light: "#d4937a" },
-    { name: "Orange Dwarf", minImp: 4,  maxImp: 8,  dark: "#ff9f43", light: "#c8a47a" },
-    { name: "Yellow Star",  minImp: 9,  maxImp: 15, dark: "#ffd93d", light: "#b0a070" },
-    { name: "White Star",   minImp: 16, maxImp: 25, dark: "#f0f0ff", light: "#8898a8" },
-    { name: "Blue Giant",   minImp: 26, maxImp: Infinity, dark: "#7eb8ff", light: "#6a8faa" },
-  ];
-
+  // --- Importance ---
   function getImportance(n) {
     return (n.editCount || 0) * 3 + (n.execCount || 0) * 2 + (n.readCount || 0);
   }
 
-  function getStarClass(node) {
-    const imp = getImportance(node);
-    for (const sc of STAR_CLASSES) {
-      if (imp >= sc.minImp && imp <= sc.maxImp) return sc;
-    }
-    return STAR_CLASSES[0];
-  }
-
   // --- Filter ---
   let activeFilter = "all";
+  let recencyFilter = "all"; // "all", "active", "warm", "stale"
+  let sessionFilter = "all"; // "all" or a sessionId
+  let knownSessions = new Map(); // sessionId → { label, color }
 
   // --- Colors ---
-  function getNodeColor(node, theme) {
-    const dark = theme === "dark";
-    const sc = getStarClass(node);
-    return dark ? sc.dark : sc.light;
+  // Observatory (dark): blue-white palette based on importance brightness
+  // Blueprint (light): ink tones with stroke weight for importance
+  function getNodeColor(node, dark) {
+    const imp = getImportance(node);
+    if (dark) {
+      // Blue-white spectrum: dim nodes are muted blue, bright nodes are near-white
+      const t = Math.min(1, imp / 30);
+      const r = Math.round(140 + t * 115); // 140 → 255
+      const g = Math.round(170 + t * 75);  // 170 → 245
+      const b = Math.round(220 + t * 35);  // 220 → 255
+      return `rgb(${r},${g},${b})`;
+    } else {
+      // Ink tones: all nodes are the same muted color, importance shown via stroke
+      return "rgb(50,70,90)";
+    }
   }
 
-  function getEdgeColor(edge, theme, solid) {
-    const dark = theme === "dark";
+  function getEdgeColor(edge, dark, solid) {
     if (solid) {
       return ({
-        prerequisite: dark ? "#8b5cf6" : "#9a7ab8",
-        coupling: dark ? "#f97316" : "#c49a6c",
-        validation: dark ? "#4ade80" : "#7aaa88",
-        discovery: dark ? "#3b82f6" : "#7a94b0",
-        sequence: dark ? "#475569" : "#b0a898",
-      })[edge.type] || (dark ? "#475569" : "#b0a898");
+        prerequisite: dark ? "#a0b4d0" : "#3a5a7a",
+        coupling:     dark ? "#c0a080" : "#6a5040",
+        validation:   dark ? "#80c0a0" : "#3a6a50",
+        discovery:    dark ? "#8090c0" : "#4a5a8a",
+        sequence:     dark ? "#506070" : "#a0a8b0",
+      })[edge.type] || (dark ? "#506070" : "#a0a8b0");
     }
     return ({
-      prerequisite: dark ? "rgba(139,92,246,0.4)" : "rgba(154,122,184,0.3)",
-      coupling: dark ? "rgba(249,115,22,0.4)" : "rgba(196,154,108,0.3)",
-      validation: dark ? "rgba(74,222,128,0.4)" : "rgba(122,170,136,0.3)",
-      discovery: dark ? "rgba(59,130,246,0.3)" : "rgba(122,148,176,0.25)",
-      sequence: dark ? "rgba(100,116,139,0.08)" : "rgba(160,150,135,0.12)",
-    })[edge.type] || (dark ? "rgba(100,116,139,0.08)" : "rgba(160,150,135,0.12)");
+      prerequisite: dark ? "rgba(160,180,208,0.25)" : "rgba(58,90,122,0.15)",
+      coupling:     dark ? "rgba(192,160,128,0.2)"  : "rgba(106,80,64,0.12)",
+      validation:   dark ? "rgba(128,192,160,0.2)"  : "rgba(58,106,80,0.12)",
+      discovery:    dark ? "rgba(128,144,192,0.15)"  : "rgba(74,90,138,0.1)",
+      sequence:     dark ? "rgba(80,96,112,0.06)"   : "rgba(160,168,176,0.08)",
+    })[edge.type] || (dark ? "rgba(80,96,112,0.06)" : "rgba(160,168,176,0.08)");
   }
+
+  // No dash patterns — all edges are solid lines in both themes
 
   // --- Helpers ---
   function shortName(fp) { if (!fp) return "?"; const p = fp.split("/"); return p[p.length - 1] || p[p.length - 2] || fp; }
@@ -150,12 +147,23 @@ const Gravity = (() => {
     return r ? { r: parseInt(r[1], 16), g: parseInt(r[2], 16), b: parseInt(r[3], 16) } : null;
   }
 
+  function parseRgb(str) {
+    const m = str.match(/rgb\((\d+),(\d+),(\d+)\)/);
+    return m ? { r: +m[1], g: +m[2], b: +m[3] } : null;
+  }
+
   // --- Graph building ---
-  function getOrCreateNode(fp) {
+  function getOrCreateNode(fp, nearFp) {
     if (nodes.has(fp)) return nodes.get(fp);
-    // blobSeed: 8 random offsets for organic blob shape (consistent per node)
-    const blobSeed = Array.from({length: 8}, () => 0.92 + Math.random() * 0.16);
-    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, x: width / 2 + (Math.random() - 0.5) * 300, y: height / 2 + (Math.random() - 0.5) * 300, vx: 0, vy: 0, fx: null, fy: null, blobSeed };
+    // Place new node near its connected neighbor (if known) for smooth introduction
+    let startX = width / 2 + (Math.random() - 0.5) * 100;
+    let startY = height / 2 + (Math.random() - 0.5) * 100;
+    if (nearFp && nodes.has(nearFp)) {
+      const near = nodes.get(nearFp);
+      startX = near.x + (Math.random() - 0.5) * 60;
+      startY = near.y + (Math.random() - 0.5) * 60;
+    }
+    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, sessions: new Set(), createdAt: Date.now(), x: startX, y: startY, vx: 0, vy: 0, fx: null, fy: null };
     nodes.set(fp, n);
     return n;
   }
@@ -163,7 +171,7 @@ const Gravity = (() => {
   function getOrCreateEdge(src, dst, type) {
     const key = `${src}|${dst}|${type}`;
     if (edges.has(key)) return edges.get(key);
-    const e = { key, source: src, target: dst, type, weight: 0, lastTs: 0 };
+    const e = { key, source: src, target: dst, type, weight: 0, lastTs: 0, sessions: new Set() };
     edges.set(key, e);
     return e;
   }
@@ -195,131 +203,37 @@ const Gravity = (() => {
     const action = TOOL_ACTIONS[toolName] || "read";
     const sessionId = entry.sessionId || "default";
     const ts = entry.ts || Date.now();
-    const node = getOrCreateNode(fp);
+    const prev = lastToolBySession.get(sessionId);
+    const node = getOrCreateNode(fp, prev?.file);
     node.accessCount++;
     node.lastAction = action;
     node.lastAccessTs = ts;
+    node.sessions.add(sessionId);
     if (action === "read") node.readCount++;
     else if (action === "edit") node.editCount++;
     else if (action === "exec") node.execCount++;
     activeFiles.set(fp, ts);
 
-    const prev = lastToolBySession.get(sessionId);
     if (prev && prev.file !== fp && (ts - prev.ts) < 60000) {
       const et = classifyEdge(prev.action, prev.file, action, fp);
       const edge = getOrCreateEdge(prev.file, fp, et);
       edge.weight++;
       edge.lastTs = ts;
-      getOrCreateNode(prev.file);
-      if (Date.now() - ts < 5000) spawnPulse(edge);
+      edge.sessions.add(sessionId);
+      getOrCreateNode(prev.file, fp);
     }
     lastToolBySession.set(sessionId, { tool: toolName, action, file: fp, ts });
 
-    // Track Claude's presence — clear old, set new
-    const prevFiles = new Set(claudeCurrentFiles);
+    // Track Claude's presence
     claudeCurrentFiles.clear();
     claudeCurrentFiles.add(fp);
-    // Trail line from previous location
-    if (prevFiles.size > 0) {
-      const prevFile = [...prevFiles][0];
-      if (prevFile !== fp) {
-        claudeTrail.push({ fromFile: prevFile, toFile: fp, ts: Date.now() });
-      }
-    }
 
     return true;
   }
 
-  // --- Ray pulses ---
-  const PULSE_DURATION = 800;
-  const RAY_LENGTH = 0.18; // fraction of edge length for the ray tail
-
-  function spawnPulse(edge) {
-    pulses.push({ source: edge.source, target: edge.target, type: edge.type, startTime: Date.now(), duration: PULSE_DURATION });
-  }
-
-  let ambientPulseTimer = null;
-  function startAmbientPulses() {
-    if (ambientPulseTimer) return;
-    ambientPulseTimer = setInterval(() => {
-      for (const edge of edges.values()) {
-        if (edge.weight < 5) continue;
-        // Only pulse between visible nodes
-        const srcN = nodes.get(edge.source);
-        const dstN = nodes.get(edge.target);
-        if (!srcN || !dstN || !nodeVisible(srcN) || !nodeVisible(dstN)) continue;
-        if (Math.random() < 0.025 * Math.min(edge.weight / 10, 1)) spawnPulse(edge);
-      }
-      pulses = pulses.filter(p => Date.now() - p.startTime < p.duration);
-    }, 200);
-  }
-
-  function drawRayPulse(src, dst, t, color, theme) {
-    const dark = (theme === "dark");
-    const rgb = hexToRgb(color);
-    if (!rgb) return;
-
-    // Ray head position
-    const headT = t;
-    const tailT = Math.max(0, t - RAY_LENGTH);
-
-    const hx = src.x + (dst.x - src.x) * headT;
-    const hy = src.y + (dst.y - src.y) * headT;
-    const tx = src.x + (dst.x - src.x) * tailT;
-    const ty = src.y + (dst.y - src.y) * tailT;
-
-    // Fade in at start, fade out at end
-    const intensity = t < 0.1 ? t / 0.1 : t > 0.85 ? (1 - t) / 0.15 : 1;
-
-    // Draw ray as gradient line
-    const grad = ctx.createLinearGradient(tx, ty, hx, hy);
-    grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
-    grad.addColorStop(0.3, `rgba(${rgb.r},${rgb.g},${rgb.b},${intensity * 0.4})`);
-    grad.addColorStop(0.8, `rgba(${rgb.r},${rgb.g},${rgb.b},${intensity * 0.8})`);
-    grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},${intensity})`);
-
-    ctx.beginPath();
-    ctx.moveTo(tx, ty);
-    ctx.lineTo(hx, hy);
-    ctx.strokeStyle = grad;
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = "round";
-    ctx.stroke();
-
-    // Bright head glow
-    ctx.beginPath();
-    ctx.arc(hx, hy, 4, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${intensity * 0.3})`;
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(hx, hy, 1.5, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255,255,255,${intensity * 0.9})`;
-    ctx.fill();
-  }
-
-  // --- Fisheye (subtle, smooth) ---
-  function fisheyeTransform(node) {
-    if (fisheyeStrength < 0.01) return { x: node.x, y: node.y, scale: 1 };
-    const dx = node.x - fisheyeX;
-    const dy = node.y - fisheyeY;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist === 0) return { x: node.x, y: node.y, scale: 1 + fisheyeStrength * (FISHEYE_MAX_SCALE - 1) };
-    if (dist > FISHEYE_RADIUS) return { x: node.x, y: node.y, scale: 1 };
-
-    const norm = dist / FISHEYE_RADIUS;
-    const k = FISHEYE_DISTORTION * fisheyeStrength;
-    const distorted = (1 - Math.exp(-k * norm)) / (1 - Math.exp(-k));
-    const newDist = distorted * FISHEYE_RADIUS;
-    const scale = 1 + (1 - norm) * (FISHEYE_MAX_SCALE - 1) * fisheyeStrength;
-
-    return {
-      x: fisheyeX + (dx / dist) * newDist,
-      y: fisheyeY + (dy / dist) * newDist,
-      scale,
-    };
-  }
-
   // --- Force simulation ---
+  let isFirstBuild = true;
+
   function rebuildSimulation() {
     rebuildLabelCounts();
 
@@ -335,24 +249,41 @@ const Gravity = (() => {
       dirGroups.get(d).push(n);
     }
 
+    // Build adjacency for angular separation force
+    const adjacency = new Map();
+    for (const e of edgeArray) {
+      if (!adjacency.has(e.source)) adjacency.set(e.source, []);
+      if (!adjacency.has(e.target)) adjacency.set(e.target, []);
+      adjacency.get(e.source).push(e.target);
+      adjacency.get(e.target).push(e.source);
+    }
+
     if (simulation) simulation.stop();
 
     simulation = d3.forceSimulation(nodeArray)
-      .force("charge", d3.forceManyBody().strength(-120).distanceMax(350))
+      .force("charge", d3.forceManyBody().strength(-220).distanceMax(500))
       .force("link", d3.forceLink(edgeArray).id(d => d.id).distance(d => {
-        // Scale link distance based on node sizes so bigger nodes push further apart
         const sr = nodeRadius(d.source), tr = nodeRadius(d.target);
-        return 60 + sr + tr;
-      }).strength(e => 0.12 + e.weight * 0.01))
-      .force("center", d3.forceCenter(width / 2, height / 2).strength(0.015))
-      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) * 1.8 + 8).strength(0.9))
-      .force("cluster", clusterForce(dirGroups, 0.08))
-      .velocityDecay(0.25)
-      .alphaDecay(0.02)
+        return 100 + sr + tr;
+      }).strength(e => 0.08 + e.weight * 0.008))
+      .force("center", d3.forceCenter(width / 2, height / 2).strength(0.012))
+      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) * 2.5 + 20).strength(0.9))
+      .force("cluster", clusterForce(dirGroups, 0.05))
+      .force("angular", angularSeparationForce(adjacency, 0.4))
+      .velocityDecay(0.4)
+      .alphaDecay(0.05)
       .on("tick", () => {});
 
-    for (let i = 0; i < 60; i++) simulation.tick();
-    startAmbientPulses();
+    if (isFirstBuild) {
+      // Full warm-up only on initial load
+      for (let i = 0; i < 80; i++) simulation.tick();
+      isFirstBuild = false;
+    } else {
+      // Incremental update: gentle nudge, not a full restart
+      // Kill existing velocities so settled nodes don't fly
+      for (const n of nodeArray) { n.vx = 0; n.vy = 0; }
+      simulation.alpha(0.15).restart();
+    }
   }
 
   function clusterForce(dirGroups, strength) {
@@ -370,15 +301,56 @@ const Gravity = (() => {
     };
   }
 
+  // Angular separation: push neighbors apart when edges from a hub are too close in angle
+  const DESIRED_MIN_ANGLE = Math.PI / 6; // 30 degrees ideal
+
+  function angularSeparationForce(adjacency, strength) {
+    return function(alpha) {
+      for (const [hub, neighbors] of adjacency) {
+        if (neighbors.length < 2) continue;
+
+        // Scale min angle to what's achievable: can't exceed uniform spacing
+        const uniformAngle = (Math.PI * 2) / neighbors.length;
+        const minAngle = Math.min(DESIRED_MIN_ANGLE, uniformAngle * 0.85);
+
+        // Compute angles from hub to each neighbor
+        const angled = neighbors.map(n => ({
+          node: n,
+          angle: Math.atan2(n.y - hub.y, n.x - hub.x),
+        }));
+        angled.sort((a, b) => a.angle - b.angle);
+
+        for (let i = 0; i < angled.length; i++) {
+          const curr = angled[i];
+          const next = angled[(i + 1) % angled.length];
+
+          let diff = next.angle - curr.angle;
+          if (i === angled.length - 1) diff += Math.PI * 2;
+          if (diff < 0) diff += Math.PI * 2;
+
+          if (diff < minAngle) {
+            const push = (minAngle - diff) * strength * alpha;
+
+            // Push tangentially: curr clockwise, next counterclockwise
+            curr.node.vx +=  Math.sin(curr.angle) * push;
+            curr.node.vy += -Math.cos(curr.angle) * push;
+            next.node.vx += -Math.sin(next.angle) * push;
+            next.node.vy +=  Math.cos(next.angle) * push;
+          }
+        }
+      }
+    };
+  }
+
   function nodeImportance(node) {
     return node.editCount * 3 + node.execCount * 2 + node.readCount;
   }
 
   function nodeRadius(node) {
-    return Math.min(NODE_MAX_R, NODE_MIN_R + Math.sqrt(nodeImportance(node)) * 2.2);
+    return Math.min(NODE_MAX_R, NODE_MIN_R + Math.sqrt(nodeImportance(node)) * 2.2) * nodeSizeScale;
   }
 
-  // --- Camera (only auto-pans to active files; respects manual drag) ---
+  // --- Camera ---
   let userDragged = false;
 
   function updateCamera() {
@@ -390,7 +362,6 @@ const Gravity = (() => {
       const w = age < GLOW_DURATION ? 3 : 1;
       cx += node.x * w; cy += node.y * w; tw += w;
     }
-    // Only auto-pan when active files exist AND user hasn't manually panned
     if (tw > 0 && !userDragged) {
       targetCamX = cx / tw - width / 2;
       targetCamY = cy / tw - height / 2;
@@ -404,9 +375,14 @@ const Gravity = (() => {
   // --- Semantic zoom ---
   function nodeVisible(node) {
     if (node === hoveredNode || node === selectedNode) return true;
-    // Hide nodes older than 30 min
+    // Session filter: hide nodes not in selected session
+    if (sessionFilter !== "all" && !node.sessions.has(sessionFilter)) return false;
     const age = Date.now() - node.lastAccessTs;
     if (age > STALE_CUTOFF) return false;
+    // Recency filter
+    if (recencyFilter === "active" && age >= GLOW_DURATION) return false;
+    if (recencyFilter === "warm" && (age < GLOW_DURATION || age >= WARM_DURATION)) return false;
+    if (recencyFilter === "stale" && age < WARM_DURATION) return false;
     if (camZoom < 0.5) return node.accessCount >= 5;
     if (camZoom < 0.8) return node.accessCount >= 2;
     return true;
@@ -418,130 +394,46 @@ const Gravity = (() => {
     return edge.weight >= EDGE_MIN_WEIGHT || edge.type !== "sequence";
   }
 
-  function shouldShowLabel(node, r, isGlowing, isWarm, isHovered, isSelected, fs) {
+  function shouldShowLabel(node, r, isGlowing, isWarm, isHovered, isSelected) {
     if (isHovered || isSelected) return true;
     if (isGlowing || isWarm) return node.accessCount >= 2;
-    const er = r * fs;
-    if (camZoom < 0.5) return node.accessCount >= 8 && er > 5;
+    if (camZoom < 0.5) return node.accessCount >= 8 && r > 5;
     if (camZoom < 0.8) return node.accessCount >= LABEL_MIN_ACCESS;
-    return node.accessCount >= LABEL_MIN_ACCESS || er > 7;
+    return node.accessCount >= LABEL_MIN_ACCESS || r > 7;
   }
 
-  // --- Universe Background ---
+  // --- Background ---
   let bgStars = null;
-  let nebulaCache = null;
 
   function initBackground() {
-    // Generate star positions once
     bgStars = [];
-    const layers = [
-      { count: 600, sizeRange: [0.4, 1.0], opRange: [0.15, 0.35] },
-      { count: 150, sizeRange: [0.8, 1.5], opRange: [0.3, 0.6] },
-      { count: 40,  sizeRange: [1.2, 2.2], opRange: [0.5, 0.9] },
-    ];
-    const colors = ["#ffffff","#ffffff","#ffffff","#ffffff","#ccd4ff","#ccd4ff","#ffe8c0","#ffcca0"];
-    for (const cfg of layers) {
-      for (let i = 0; i < cfg.count; i++) {
-        bgStars.push({
-          x: Math.random(), y: Math.random(),
-          size: cfg.sizeRange[0] + Math.random() * (cfg.sizeRange[1] - cfg.sizeRange[0]),
-          opacity: cfg.opRange[0] + Math.random() * (cfg.opRange[1] - cfg.opRange[0]),
-          color: colors[Math.floor(Math.random() * colors.length)],
-          lightColor: ["#8890a0","#808898","#a09888","#988880","#707888"][Math.floor(Math.random() * 5)],
-          twinkle: Math.random() < 0.08 ? Math.random() * Math.PI * 2 : -1,
-          twinkleSpeed: 2 + Math.random() * 3,
-          drift: cfg === layers[0] ? 0.0003 : cfg === layers[1] ? 0.0008 : 0.002,
-        });
-      }
+    // Sparse, tiny stars for dark mode only
+    for (let i = 0; i < 50; i++) {
+      bgStars.push({
+        x: Math.random(), y: Math.random(),
+        size: 0.3 + Math.random() * 0.5,
+        opacity: 0.08 + Math.random() * 0.12,
+      });
     }
   }
 
-  function drawBackground(dark, now) {
+  function drawBackground(dark) {
     if (!bgStars) initBackground();
-    const t = now / 1000;
-
     if (dark) {
-      // Nebula clouds
-      const nebulae = [
-        { x: 0.2, y: 0.3, rx: width * 0.25, ry: width * 0.15, color: [60, 40, 120, 0.06] },
-        { x: 0.75, y: 0.65, rx: width * 0.2, ry: width * 0.18, color: [30, 60, 100, 0.05] },
-        { x: 0.5, y: 0.8, rx: width * 0.18, ry: width * 0.1, color: [80, 30, 50, 0.04] },
-      ];
-      for (const n of nebulae) {
-        const breathe = 1 + 0.05 * Math.sin(t / 20 * Math.PI * 2);
-        const cx = n.x * width + Math.sin(t / 30) * 3;
-        const cy = n.y * height + Math.cos(t / 25) * 2;
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, n.rx * breathe);
-        grad.addColorStop(0, `rgba(${n.color[0]},${n.color[1]},${n.color[2]},${n.color[3]})`);
-        grad.addColorStop(0.5, `rgba(${n.color[0]},${n.color[1]},${n.color[2]},${n.color[3] * 0.4})`);
-        grad.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, width, height);
-      }
-
-      // Stars
+      // Very sparse tiny dots
       for (const s of bgStars) {
-        let op = s.opacity * 0.7;
-        if (s.twinkle >= 0) op *= (0.5 + 0.5 * Math.sin(t / s.twinkleSpeed * Math.PI * 2 + s.twinkle));
-        ctx.globalAlpha = op;
-        ctx.fillStyle = s.color;
-        const sx = ((s.x * width + camX * s.drift * width) % width + width) % width;
-        const sy = ((s.y * height + camY * s.drift * height) % height + height) % height;
         ctx.beginPath();
+        const sx = ((s.x * width + camX * 0.0003 * width) % width + width) % width;
+        const sy = ((s.y * height + camY * 0.0003 * height) % height + height) % height;
         ctx.arc(sx, sy, s.size, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(180,190,220,${s.opacity})`;
         ctx.fill();
       }
-      ctx.globalAlpha = 1;
-    } else {
-      // Light mode: warm watercolor washes
-      const lightWashes = [
-        { x: 0.15, y: 0.25, rx: width * 0.3, color: [210, 180, 160, 0.045] },
-        { x: 0.7, y: 0.2, rx: width * 0.25, color: [170, 185, 200, 0.04] },
-        { x: 0.8, y: 0.7, rx: width * 0.28, color: [190, 175, 165, 0.035] },
-        { x: 0.3, y: 0.75, rx: width * 0.22, color: [175, 195, 180, 0.03] },
-        { x: 0.5, y: 0.5, rx: width * 0.35, color: [200, 190, 175, 0.025] },
-      ];
-      for (const w of lightWashes) {
-        const breathe = 1 + 0.03 * Math.sin(t / 25 * Math.PI * 2);
-        const cx = w.x * width + Math.sin(t / 40) * 2;
-        const cy = w.y * height + Math.cos(t / 35) * 2;
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, w.rx * breathe);
-        grad.addColorStop(0, `rgba(${w.color[0]},${w.color[1]},${w.color[2]},${w.color[3]})`);
-        grad.addColorStop(0.6, `rgba(${w.color[0]},${w.color[1]},${w.color[2]},${w.color[3] * 0.3})`);
-        grad.addColorStop(1, `rgba(${w.color[0]},${w.color[1]},${w.color[2]},0)`);
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, width, height);
-      }
-      // Subtle speckle texture (like paper grain)
-      for (const s of bgStars) {
-        if (s.opacity < 0.3) continue; // only some speckles
-        ctx.globalAlpha = s.opacity * 0.08;
-        ctx.fillStyle = "#a09080";
-        const sx = ((s.x * width + camX * s.drift * 0.3 * width) % width + width) % width;
-        const sy = ((s.y * height + camY * s.drift * 0.3 * height) % height + height) % height;
-        ctx.beginPath();
-        ctx.arc(sx, sy, s.size * 0.4, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-      // Skip the dark-mode nebula block
-      const lightNebulae = [];
-      for (const n of lightNebulae) {
-        const breathe = 1 + 0.04 * Math.sin(t / 22 * Math.PI * 2);
-        const cx = n.x * width;
-        const cy = n.y * height;
-        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, n.rx * breathe);
-        grad.addColorStop(0, `rgba(${n.color[0]},${n.color[1]},${n.color[2]},${n.color[3]})`);
-        grad.addColorStop(0.6, `rgba(${n.color[0]},${n.color[1]},${n.color[2]},${n.color[3] * 0.3})`);
-        grad.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, width, height);
-      }
-      ctx.globalAlpha = 1;
     }
+    // Light mode: clean flat background, no decoration
   }
 
-  // --- Edge Hover Detection & Label ---
+  // --- Edge Hover Detection ---
   let hoveredEdge = null;
 
   function findEdgeAtMouse(mx, my) {
@@ -556,10 +448,7 @@ const Gravity = (() => {
       const srcN = nodes.get(edge.source);
       const dstN = nodes.get(edge.target);
       if (!srcN || !dstN || !nodeVisible(srcN) || !nodeVisible(dstN)) continue;
-
-      const fs = fisheyeTransform(srcN);
-      const fd = fisheyeTransform(dstN);
-      const d = pointToSegmentDist(worldX, worldY, fs.x, fs.y, fd.x, fd.y);
+      const d = pointToSegmentDist(worldX, worldY, spX(srcN), spY(srcN), spX(dstN), spY(dstN));
       if (d < closestDist) { closestDist = d; closest = edge; }
     }
     return closest;
@@ -575,36 +464,31 @@ const Gravity = (() => {
   }
 
   const EDGE_TYPE_LABELS = {
-    prerequisite: "Read \u2192 Edit",
-    coupling: "Edit \u2192 Edit",
-    validation: "Edit \u2192 Exec",
-    discovery: "Search \u2192 Read",
+    prerequisite: "Read → Edit",
+    coupling: "Edit → Edit",
+    validation: "Edit → Exec",
+    discovery: "Search → Read",
     sequence: "Sequential",
   };
 
-  function drawEdgeLabel(edge, dark) {
+  function drawEdgeLabel(edge, dark, mx, my) {
     const srcN = nodes.get(edge.source);
     const dstN = nodes.get(edge.target);
     if (!srcN || !dstN) return;
-    const fs = fisheyeTransform(srcN);
-    const fd = fisheyeTransform(dstN);
-    const mx = (fs.x + fd.x) / 2;
-    const my = (fs.y + fd.y) / 2;
     const label = EDGE_TYPE_LABELS[edge.type] || edge.type;
-    const srcLabel = shortName(edge.source);
-    const dstLabel = shortName(edge.target);
-    const fullLabel = `${srcLabel}  ${label}  ${dstLabel}`;
+    const x = mx !== undefined ? mx : (srcN.x + dstN.x) / 2;
+    const y = my !== undefined ? my : (srcN.y + dstN.y) / 2;
 
     ctx.font = '500 9px "SF Mono","JetBrains Mono",Menlo,monospace';
-    const tw = ctx.measureText(fullLabel).width;
-    const pad = 6;
+    const tw = ctx.measureText(label).width;
+    const pad = 5;
     const bw = tw + pad * 2;
-    const bh = 20;
+    const bh = 18;
 
     // Background pill
     ctx.fillStyle = dark ? "rgba(5,5,16,0.85)" : "rgba(255,255,255,0.9)";
     ctx.beginPath();
-    const rx = mx - bw / 2, ry = my - bh / 2, cr = 4;
+    const rx = x - bw / 2, ry = y - bh / 2, cr = 3;
     ctx.moveTo(rx + cr, ry);
     ctx.lineTo(rx + bw - cr, ry);
     ctx.quadraticCurveTo(rx + bw, ry, rx + bw, ry + cr);
@@ -616,27 +500,148 @@ const Gravity = (() => {
     ctx.quadraticCurveTo(rx, ry, rx + cr, ry);
     ctx.fill();
 
-    // Border
-    ctx.strokeStyle = dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)";
+    ctx.strokeStyle = dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.08)";
     ctx.lineWidth = 0.5;
     ctx.stroke();
 
-    // Text
-    ctx.fillStyle = dark ? "rgba(255,255,255,0.8)" : "rgba(0,0,0,0.7)";
+    ctx.fillStyle = dark ? "rgba(200,215,240,0.75)" : "rgba(50,70,90,0.7)";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(fullLabel, mx, my);
+    ctx.fillText(label, x, y);
   }
 
   // --- Neighbor check (cached per frame) ---
   let hoverNeighbors = new Set();
   function buildHoverNeighbors() {
     hoverNeighbors.clear();
-    if (!hoveredNode) return;
-    hoverNeighbors.add(hoveredNode.id);
+    const focus = hoveredNode || selectedNode;
+    if (!focus) return;
+    hoverNeighbors.add(focus.id);
     for (const e of edges.values()) {
-      if (e.source === hoveredNode.id) hoverNeighbors.add(e.target);
-      if (e.target === hoveredNode.id) hoverNeighbors.add(e.source);
+      if (e.source === focus.id) hoverNeighbors.add(e.target);
+      if (e.target === focus.id) hoverNeighbors.add(e.source);
+    }
+  }
+
+  // --- Click info card ---
+  let infoCard = null; // { node, x, y }
+
+  function buildInfoCard(node) {
+    const now = Date.now();
+    const imp = getImportance(node);
+    const age = now - node.lastAccessTs;
+    const connEdges = [];
+    for (const e of edges.values()) {
+      if (e.source === node.id || e.target === node.id) connEdges.push(e);
+    }
+    const connFiles = new Set();
+    for (const e of connEdges) {
+      if (e.source !== node.id) connFiles.add(e.source);
+      if (e.target !== node.id) connFiles.add(e.target);
+    }
+
+    let lastActionStr = node.lastAction;
+    if (age < 30000) lastActionStr += " · just now";
+    else if (age < 60000) lastActionStr += " · <1m ago";
+    else if (age < WARM_DURATION) lastActionStr += ` · ${Math.round(age / 60000)}m ago`;
+    else lastActionStr += ` · ${Math.round(age / 60000)}m ago`;
+
+    const edgeTypes = {};
+    for (const e of connEdges) {
+      const dir = e.source === node.id ? "→" : "←";
+      const other = e.source === node.id ? shortName(e.target) : shortName(e.source);
+      const label = `${dir} ${other}`;
+      edgeTypes[label] = EDGE_TYPE_LABELS[e.type] || e.type;
+    }
+
+    return {
+      file: node.id,
+      lastAction: lastActionStr,
+      edgeTypes,
+      connections: [...connFiles].map(shortName),
+      reads: node.readCount,
+      edits: node.editCount,
+      execs: node.execCount,
+      importance: imp,
+    };
+  }
+
+  function drawInfoCard(dark) {
+    if (!infoCard) return;
+    const card = infoCard;
+    const node = card.node;
+
+    // Position card near the node in screen space (with spread applied)
+    const sx = (spX(node) - camX) * camZoom;
+    const sy = (spY(node) - camY) * camZoom;
+    const r = nodeRadius(node) * camZoom;
+
+    const cardX = sx + r + 14;
+    const cardY = sy - 20;
+    const cardW = 220;
+
+    const info = buildInfoCard(node);
+    const lines = [];
+    lines.push({ text: info.file, bold: true, size: 10 });
+    lines.push({ text: info.lastAction, bold: false, size: 9, dim: true });
+    lines.push({ text: "", size: 4 }); // spacer
+
+    // Edge types
+    const edgeEntries = Object.entries(info.edgeTypes);
+    if (edgeEntries.length > 0) {
+      for (const [label, type] of edgeEntries.slice(0, 5)) {
+        lines.push({ text: `${label}  ${type}`, bold: false, size: 8, dim: true });
+      }
+      if (edgeEntries.length > 5) lines.push({ text: `+${edgeEntries.length - 5} more`, size: 8, dim: true });
+      lines.push({ text: "", size: 4 });
+    }
+
+    // Connected files
+    if (info.connections.length > 0) {
+      lines.push({ text: `${info.connections.length} connected: ${info.connections.slice(0, 4).join(", ")}${info.connections.length > 4 ? "…" : ""}`, size: 8, dim: true });
+      lines.push({ text: "", size: 4 });
+    }
+
+    // Stats
+    lines.push({ text: `R:${info.reads} E:${info.edits} X:${info.execs} · imp:${info.importance}`, size: 8, dim: true });
+
+    // Calculate card height
+    let totalH = 16; // padding
+    for (const l of lines) totalH += (l.size || 10) + 4;
+    totalH += 8;
+
+    // Keep card on screen
+    let cx = cardX, cy = cardY;
+    if (cx + cardW > width - 10) cx = sx - r - cardW - 14;
+    if (cy + totalH > height - 10) cy = height - totalH - 10;
+    if (cy < 10) cy = 10;
+
+    // Draw card
+    ctx.fillStyle = dark ? "rgba(10,12,20,0.92)" : "rgba(255,255,255,0.95)";
+    ctx.strokeStyle = dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.1)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(cx, cy, cardW, totalH, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    // Draw lines
+    let ly = cy + 10;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    for (const l of lines) {
+      if (!l.text) { ly += l.size + 2; continue; }
+      const sz = l.size || 10;
+      ctx.font = `${l.bold ? "600" : "400"} ${sz}px "SF Mono","JetBrains Mono",Menlo,monospace`;
+      const alpha = l.dim ? 0.5 : 0.9;
+      ctx.fillStyle = dark ? `rgba(200,215,240,${alpha})` : `rgba(30,40,50,${alpha})`;
+      // Truncate long text
+      let text = l.text;
+      while (ctx.measureText(text).width > cardW - 20 && text.length > 10) {
+        text = text.slice(0, -4) + "…";
+      }
+      ctx.fillText(text, cx + 10, ly);
+      ly += sz + 4;
     }
   }
 
@@ -653,357 +658,401 @@ const Gravity = (() => {
     const rect = canvas.parentElement.getBoundingClientRect();
     if (Math.round(rect.width) !== Math.round(width) || Math.round(rect.height) !== Math.round(height)) resizeCanvas();
 
-    // Smooth fisheye transition
-    const targetStr = fisheyeActive ? 1 : 0;
-    fisheyeStrength += (targetStr - fisheyeStrength) * 0.12;
-
     buildHoverNeighbors();
     updateCamera();
 
-    ctx.fillStyle = dark ? "#050510" : "#f7f5f0";
+    // Background
+    ctx.fillStyle = dark ? "#050510" : "#f4f3f0";
     ctx.fillRect(0, 0, width, height);
-    drawBackground(dark, now);
+    drawBackground(dark);
 
     ctx.save();
     ctx.translate(-camX * camZoom, -camY * camZoom);
     ctx.scale(camZoom, camZoom);
 
+    const focusNode = hoveredNode || selectedNode;
+
+    // --- Compute spread center of mass (once per frame) ---
+    spreadCX = 0; spreadCY = 0;
+    let spreadCount = 0;
+    for (const n of nodes.values()) {
+      if (!nodeVisible(n)) continue;
+      spreadCX += n.x; spreadCY += n.y; spreadCount++;
+    }
+    if (spreadCount > 0) { spreadCX /= spreadCount; spreadCY /= spreadCount; }
+
+    function sp(node) { return { x: spX(node), y: spY(node) }; }
+
     // --- Edges ---
     for (const edge of edges.values()) {
       if (!edgeVisible(edge)) continue;
+      if (!edgeFilterMatch(edge)) continue;
       const srcN = nodes.get(edge.source);
       const dstN = nodes.get(edge.target);
       if (!srcN || !dstN || !nodeVisible(srcN) || !nodeVisible(dstN)) continue;
 
-      const fs = fisheyeTransform(srcN);
-      const fd = fisheyeTransform(dstN);
       const lw = Math.min(EDGE_MAX_W, EDGE_MIN_W + edge.weight * 0.35);
       const age = now - edge.lastTs;
       let opacity = age < GLOW_DURATION ? 0.8 : age < WARM_DURATION ? 0.5 : 0.3;
 
-      const connected = fisheyeStrength > 0.01 && hoveredNode &&
-        (edge.source === hoveredNode.id || edge.target === hoveredNode.id);
-      if (fisheyeStrength > 0.01 && hoveredNode && !connected) opacity *= (1 - fisheyeStrength * 0.7);
-      if (connected) opacity = Math.min(1, opacity * 1.5);
+      const connected = focusNode &&
+        (edge.source === focusNode.id || edge.target === focusNode.id);
+      const hasFocus = !!focusNode;
+
+      if (hasFocus && !connected) opacity *= 0.15;
+      if (connected) opacity = Math.min(1, opacity * 1.8);
+
+      // Apply filter dimming
+      if (activeFilter !== "all") {
+        const srcMatch = filterMatchAction(srcN);
+        const dstMatch = filterMatchAction(dstN);
+        if (!srcMatch || !dstMatch) opacity *= 0.15;
+      }
 
       ctx.globalAlpha = opacity;
+      const sSrc = sp(srcN), sDst = sp(dstN);
       ctx.beginPath();
-      ctx.moveTo(fs.x, fs.y);
-      ctx.lineTo(fd.x, fd.y);
-      ctx.strokeStyle = getEdgeColor(edge, theme, false);
+      ctx.moveTo(sSrc.x, sSrc.y);
+      ctx.lineTo(sDst.x, sDst.y);
+
+      ctx.strokeStyle = connected ? getEdgeColor(edge, dark, true) : getEdgeColor(edge, dark, false);
       ctx.lineWidth = connected ? lw * 1.5 : lw;
       ctx.lineCap = "round";
       ctx.stroke();
+
+      // Direction arrow at midpoint
+      if (connected || (!hasFocus && opacity > 0.2)) {
+        const mx = (sSrc.x + sDst.x) / 2;
+        const my = (sSrc.y + sDst.y) / 2;
+        const angle = Math.atan2(sDst.y - sSrc.y, sDst.x - sSrc.x);
+        ctx.save();
+        ctx.translate(mx, my);
+        ctx.rotate(angle);
+        ctx.beginPath();
+        ctx.moveTo(5, 0);
+        ctx.lineTo(-2.5, -2.5);
+        ctx.lineTo(-2.5, 2.5);
+        ctx.closePath();
+        ctx.fillStyle = connected
+          ? getEdgeColor(edge, dark, true)
+          : (dark ? `rgba(120,140,170,${opacity * 0.5})` : `rgba(50,70,90,${opacity * 0.5})`);
+        ctx.fill();
+        ctx.restore();
+      }
+
       ctx.globalAlpha = 1;
     }
 
-    // --- Ray pulses ---
-    for (const pulse of pulses) {
-      const srcN = nodes.get(pulse.source);
-      const dstN = nodes.get(pulse.target);
-      if (!srcN || !dstN || !nodeVisible(srcN) || !nodeVisible(dstN)) continue;
-      const fs = fisheyeTransform(srcN);
-      const fd = fisheyeTransform(dstN);
-      const t = Math.min(1, (now - pulse.startTime) / pulse.duration);
-      const eased = t * t * (3 - 2 * t);
-      drawRayPulse(fs, fd, eased, getEdgeColor(pulse, theme, true), theme);
-    }
-
-    // --- Claude Trail (movement path) ---
-    // --- Claude Comet Trail ---
-    // Spawn comet particles from new trails
-    claudeTrail = claudeTrail.filter(t => now - t.ts < TRAIL_DURATION).slice(-MAX_TRAIL);
-    for (const trail of claudeTrail) {
-      const fromN = nodes.get(trail.fromFile);
-      const toN = nodes.get(trail.toFile);
-      if (!fromN || !toN) continue;
-      const fs = fisheyeTransform(fromN);
-      const fd = fisheyeTransform(toN);
-      const progress = Math.min(1, (now - trail.ts) / TRAIL_DURATION);
-      const eased = progress * progress * (3 - 2 * progress); // smoothstep
-
-      // Comet head position
-      const headX = fs.x + (fd.x - fs.x) * eased;
-      const headY = fs.y + (fd.y - fs.y) * eased;
-
-      // Draw comet tail — a gradient trail behind the head
-      if (progress < 1) {
-        const tailLen = 0.25; // tail covers 25% of the path
-        const tailStart = Math.max(0, eased - tailLen);
-        const tailX = fs.x + (fd.x - fs.x) * tailStart;
-        const tailY = fs.y + (fd.y - fs.y) * tailStart;
-
-        const tailGrad = ctx.createLinearGradient(tailX, tailY, headX, headY);
-        if (dark) {
-          tailGrad.addColorStop(0, "rgba(255,255,255,0)");
-          tailGrad.addColorStop(0.7, "rgba(255,255,255,0.15)");
-          tailGrad.addColorStop(1, "rgba(255,255,255,0.5)");
-        } else {
-          tailGrad.addColorStop(0, "rgba(106,143,170,0)");
-          tailGrad.addColorStop(0.7, "rgba(106,143,170,0.12)");
-          tailGrad.addColorStop(1, "rgba(106,143,170,0.35)");
-        }
-        ctx.beginPath();
-        ctx.moveTo(tailX, tailY);
-        ctx.lineTo(headX, headY);
-        ctx.strokeStyle = tailGrad;
-        ctx.lineWidth = 3;
-        ctx.lineCap = "round";
-        ctx.stroke();
-
-        // Comet head glow
-        const glowR = 6;
-        const glowGrad = ctx.createRadialGradient(headX, headY, 0, headX, headY, glowR);
-        if (dark) {
-          glowGrad.addColorStop(0, "rgba(255,255,255,0.8)");
-          glowGrad.addColorStop(0.4, "rgba(200,220,255,0.3)");
-          glowGrad.addColorStop(1, "rgba(200,220,255,0)");
-        } else {
-          glowGrad.addColorStop(0, "rgba(106,143,170,0.7)");
-          glowGrad.addColorStop(0.4, "rgba(106,143,170,0.2)");
-          glowGrad.addColorStop(1, "rgba(106,143,170,0)");
-        }
-        ctx.fillStyle = glowGrad;
-        ctx.beginPath();
-        ctx.arc(headX, headY, glowR, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Sparkle particles scattered behind the head
-        const sparkleCount = 5;
-        for (let i = 0; i < sparkleCount; i++) {
-          const sp = eased - (i / sparkleCount) * tailLen * 0.6;
-          if (sp < 0) continue;
-          const sx = fs.x + (fd.x - fs.x) * sp + (Math.sin(now / 100 + i * 2) * 4);
-          const sy = fs.y + (fd.y - fs.y) * sp + (Math.cos(now / 120 + i * 3) * 4);
-          const sparkleAlpha = (1 - i / sparkleCount) * 0.4;
-          ctx.globalAlpha = sparkleAlpha;
-          ctx.fillStyle = dark ? "#ffffff" : "#6a8faa";
-          ctx.beginPath();
-          ctx.arc(sx, sy, 1.5 - i * 0.2, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.globalAlpha = 1;
-      }
-    }
+    // --- Edge type label: only on the single closest edge to cursor ---
+    // (Showing all edge labels at once creates overlapping noise)
 
     // --- Nodes ---
     for (const node of nodes.values()) {
       if (!nodeVisible(node)) continue;
-      const { x: fx, y: fy, scale: fsc } = fisheyeTransform(node);
+      const { x, y } = sp(node);
       const baseR = nodeRadius(node);
-      const r = baseR * fsc;
       const age = now - node.lastAccessTs;
       const isGlowing = age < GLOW_DURATION;
       const isWarm = age < WARM_DURATION;
       const isHovered = hoveredNode === node;
       const isSelected = selectedNode === node;
-      const baseColor = getNodeColor(node, theme);
       const isNeighbor = hoverNeighbors.has(node.id);
-      const dimmed = fisheyeStrength > 0.01 && hoveredNode && !isNeighbor;
-
-      const rgb = hexToRgb(baseColor);
+      const hasFocus = !!focusNode;
+      const dimmed = hasFocus && !isNeighbor;
       const imp = getImportance(node);
+      const impNorm = Math.min(1, imp / 30);
+
+      // New node intro glow (fades over 5 seconds)
+      const NEW_GLOW_DURATION = 5000;
+      const introAge = now - (node.createdAt || 0);
+      const isNewNode = introAge < NEW_GLOW_DURATION;
+      const introGlow = isNewNode ? 1 - (introAge / NEW_GLOW_DURATION) : 0;
+
       let alpha = isGlowing ? 0.9 : isWarm ? 0.6 : 0.3;
-      if (activeFilter !== "all") {
-        const matchesFilter = (activeFilter === "read" && node.readCount > 0) ||
-          (activeFilter === "edit" && node.editCount > 0) ||
-          (activeFilter === "exec" && node.execCount > 0);
-        if (!matchesFilter) alpha = 0.08;
-      }
-      if (dimmed) alpha *= (1 - fisheyeStrength * 0.65);
+      if (isNewNode) alpha = Math.max(alpha, 0.7 + introGlow * 0.3);
+      if (activeFilter !== "all" && !filterMatchAction(node)) alpha = 0.08;
+      if (dimmed) alpha *= 0.2;
       if (isHovered || isSelected) alpha = 1;
+
       ctx.globalAlpha = alpha;
 
-      // === NODE SHAPE: Organic blob (celestial body) ===
-      const seed = node.blobSeed || [1,1,1,1,1,1,1,1];
-      const nPoints = 8;
+      if (dark) {
+        // === OBSERVATORY: bright core + soft halo ===
+        const coreR = 2.5 + impNorm * 3;
+        const color = getNodeColor(node, true);
+        const rgb = parseRgb(color);
 
-      // Soft aura glow
-      if (rgb && !dimmed) {
-        const auraR = r * 2.5;
-        const auraAlpha = (isGlowing ? 0.18 : isWarm ? 0.08 : 0.04) * alpha;
-        const grad = ctx.createRadialGradient(fx, fy, r * 0.2, fx, fy, auraR);
-        grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${auraAlpha})`);
-        grad.addColorStop(0.5, `rgba(${rgb.r},${rgb.g},${rgb.b},${auraAlpha * 0.25})`);
-        grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(fx, fy, auraR, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      // Pulsing ring for active nodes
-      if (isGlowing && rgb && !dimmed) {
-        const pulseT = ((now % 2500) / 2500);
-        const ringR = r * (1.2 + pulseT * 1.5);
-        const ringAlpha = (1 - pulseT) * 0.25 * alpha;
-        ctx.beginPath();
-        ctx.arc(fx, fy, ringR, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${ringAlpha})`;
-        ctx.lineWidth = 1.2;
-        ctx.stroke();
-      }
-
-      // Build organic blob path using smooth curve through irregular points
-      function blobPath(cx, cy, radius) {
-        const pts = [];
-        for (let i = 0; i < nPoints; i++) {
-          const angle = (i / nPoints) * Math.PI * 2;
-          const wobble = seed[i] * radius;
-          pts.push({ x: cx + Math.cos(angle) * wobble, y: cy + Math.sin(angle) * wobble });
+        // Soft halo (importance glow) — subtle, not overwhelming
+        if (!dimmed && rgb) {
+          const haloR = coreR + 3 + impNorm * 8;
+          const haloAlpha = isHovered ? 0.12 : (0.03 + impNorm * 0.06);
+          const grad = ctx.createRadialGradient(x, y, coreR, x, y, haloR);
+          grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${haloAlpha})`);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(x, y, haloR, 0, Math.PI * 2);
+          ctx.fill();
         }
-        ctx.beginPath();
-        // Smooth closed curve through points using quadratic bezier
-        const last = pts[pts.length - 1];
-        const first = pts[0];
-        ctx.moveTo((last.x + first.x) / 2, (last.y + first.y) / 2);
-        for (let i = 0; i < pts.length; i++) {
-          const curr = pts[i];
-          const next = pts[(i + 1) % pts.length];
-          const midX = (curr.x + next.x) / 2;
-          const midY = (curr.y + next.y) / 2;
-          ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
-        }
-        ctx.closePath();
-      }
 
-      // Fill blob — flat color, clean
-      blobPath(fx, fy, r);
-      ctx.fillStyle = baseColor;
-      ctx.fill();
-
-      // Border on hover/select
-      if (isHovered || isSelected) {
-        blobPath(fx, fy, r);
-        ctx.strokeStyle = dark ? "rgba(255,255,255,0.8)" : "rgba(80,65,50,0.5)";
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-
-      // Claude presence beacon — instant on/off, no fade
-      const isClaudeHere = claudeCurrentFiles.has(node.id);
-      if (isClaudeHere && !dimmed) {
-        // Animated beacon ring
-        const beaconT = ((now % 1200) / 1200);
-        const beaconR = r + 4 + beaconT * 12;
-        const beaconAlpha = (1 - beaconT) * 0.6;
+        // Core dot
         ctx.beginPath();
-        ctx.arc(fx, fy, beaconR, 0, Math.PI * 2);
-        ctx.strokeStyle = dark ? `rgba(255,255,255,${beaconAlpha})` : `rgba(80,65,50,${beaconAlpha * 0.5})`;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        // Second ring, offset timing
-        const beaconT2 = (((now + 600) % 1200) / 1200);
-        const beaconR2 = r + 4 + beaconT2 * 12;
-        const beaconAlpha2 = (1 - beaconT2) * 0.4;
-        ctx.beginPath();
-        ctx.arc(fx, fy, beaconR2, 0, Math.PI * 2);
-        ctx.strokeStyle = dark ? `rgba(255,255,255,${beaconAlpha2})` : `rgba(80,65,50,${beaconAlpha2 * 0.4})`;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        // Small "cursor" dot
-        ctx.beginPath();
-        ctx.arc(fx + r + 3, fy - r - 3, 3, 0, Math.PI * 2);
-        ctx.fillStyle = dark ? "#ffffff" : "#504130";
-        ctx.globalAlpha = 0.6 + 0.4 * Math.sin(now / 300);
+        ctx.arc(x, y, coreR, 0, Math.PI * 2);
+        ctx.fillStyle = color;
         ctx.fill();
-        ctx.globalAlpha = alpha;
+
+        // Active file: subtle breathing pulse ring
+        if (isGlowing && !dimmed && rgb) {
+          const pulseT = ((now % 3000) / 3000);
+          const ringR = coreR + 3 + pulseT * 5;
+          const ringAlpha = (1 - pulseT) * 0.2 * alpha;
+          ctx.beginPath();
+          ctx.arc(x, y, ringR, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${ringAlpha})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+
+        // New node intro glow (expanding ring that fades)
+        if (isNewNode && !dimmed && rgb) {
+          const expandT = introAge / NEW_GLOW_DURATION;
+          const glowR = coreR + 4 + expandT * 10;
+          const glowAlpha = introGlow * 0.4;
+          ctx.beginPath();
+          ctx.arc(x, y, glowR, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${glowAlpha})`;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          // Inner bright flash
+          if (introGlow > 0.5) {
+            const flashAlpha = (introGlow - 0.5) * 2 * 0.2;
+            const flashGrad = ctx.createRadialGradient(x, y, coreR, x, y, coreR + 6);
+            flashGrad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${flashAlpha})`);
+            flashGrad.addColorStop(1, "rgba(0,0,0,0)");
+            ctx.fillStyle = flashGrad;
+            ctx.beginPath();
+            ctx.arc(x, y, coreR + 6, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+
+        // Hover/select ring
+        if (isHovered || isSelected) {
+          ctx.beginPath();
+          ctx.arc(x, y, coreR + 2, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(200,215,240,0.5)";
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+
+        // Claude presence beacon
+        if (claudeCurrentFiles.has(node.id) && !dimmed) {
+          const beaconT = ((now % 2000) / 2000);
+          const beaconR = coreR + 4 + beaconT * 8;
+          const beaconAlpha = (1 - beaconT) * 0.3;
+          ctx.beginPath();
+          ctx.arc(x, y, beaconR, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(200,215,240,${beaconAlpha})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+
+      } else {
+        // === BLUEPRINT: hollow circles, stroke weight = importance ===
+        const r = 5 + impNorm * 5;
+        const strokeW = 1 + impNorm * 1.5;
+        const isActive = claudeCurrentFiles.has(node.id);
+
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+
+        // Active = filled, otherwise hollow
+        if (isActive || isGlowing) {
+          ctx.fillStyle = `rgba(50,90,70,${dimmed ? 0.05 : 0.15})`;
+          ctx.fill();
+          ctx.strokeStyle = dimmed ? "rgba(50,90,70,0.15)" : "rgba(50,90,70,0.6)";
+        } else {
+          ctx.fillStyle = `rgba(50,70,90,${dimmed ? 0.01 : 0.02})`;
+          ctx.fill();
+          ctx.strokeStyle = dimmed ? "rgba(50,70,90,0.08)" : `rgba(50,70,90,${0.15 + impNorm * 0.4})`;
+        }
+        ctx.lineWidth = strokeW;
+        ctx.stroke();
+
+        // Active file: subtle breathing pulse
+        if (isGlowing && !dimmed) {
+          const pulseT = ((now % 3000) / 3000);
+          const ringR = r + 3 + pulseT * 4;
+          const ringAlpha = (1 - pulseT) * 0.15;
+          ctx.beginPath();
+          ctx.arc(x, y, ringR, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(50,90,70,${ringAlpha})`;
+          ctx.lineWidth = 0.8;
+          ctx.stroke();
+        }
+
+        // New node intro glow
+        if (isNewNode && !dimmed) {
+          const expandT = introAge / NEW_GLOW_DURATION;
+          const glowR = r + 3 + expandT * 8;
+          const glowAlpha = introGlow * 0.3;
+          ctx.beginPath();
+          ctx.arc(x, y, glowR, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(50,90,70,${glowAlpha})`;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
+
+        // Hover/select: thicker ring
+        if (isHovered || isSelected) {
+          ctx.beginPath();
+          ctx.arc(x, y, r + 2, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(50,70,90,0.4)";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
+
+        // Recently warm: small center dot
+        if (isWarm && !isGlowing && !dimmed) {
+          ctx.beginPath();
+          ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(50,70,90,0.25)";
+          ctx.fill();
+        }
       }
 
       ctx.globalAlpha = 1;
 
-      // Label
-      if (shouldShowLabel(node, baseR, isGlowing, isWarm, isHovered, isSelected, fsc)) {
+      // --- Labels ---
+      const effectiveR = dark ? (2.5 + impNorm * 3) : (5 + impNorm * 5);
+      if (shouldShowLabel(node, effectiveR, isGlowing, isWarm, isHovered, isSelected)) {
         const dl = disambiguatedLabel(node);
-        const fsz = isHovered || isSelected ? 11 : Math.max(8, Math.min(10, 7 + fsc * 1.5));
+        const fsz = isHovered || isSelected ? 11 : Math.max(8, 10);
         ctx.font = `${isHovered || isSelected ? "600" : "400"} ${fsz}px "SF Mono","JetBrains Mono",Menlo,monospace`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        let la = isGlowing ? 0.85 : isWarm ? 0.55 : 0.3;
-        if (dimmed) la *= (1 - fisheyeStrength * 0.65);
-        if (isHovered || isSelected) la = 1;
-        ctx.fillStyle = dark ? `rgba(241,245,249,${la})` : `rgba(80,65,50,${la})`;
-        ctx.fillText(dl, fx, fy + r + 3);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
 
+        let la;
+        if (dark) {
+          // Observatory: labels fade based on importance
+          la = isGlowing ? 0.7 : isWarm ? 0.45 : (0.15 + impNorm * 0.2);
+          if (dimmed) la *= 0.2;
+          if (isHovered || isSelected) la = 0.9;
+          ctx.fillStyle = `rgba(200,215,240,${la})`;
+        } else {
+          // Blueprint: always visible, alpha scaled to importance
+          la = isGlowing ? 0.7 : isWarm ? 0.5 : (0.2 + impNorm * 0.25);
+          if (dimmed) la *= 0.2;
+          if (isHovered || isSelected) la = 0.85;
+          ctx.fillStyle = `rgba(30,40,50,${la})`;
+        }
+
+        ctx.fillText(dl, x + effectiveR + 8, y);
+
+        // Dir path on hover/select
         if (isHovered || isSelected) {
           ctx.font = '400 8px "SF Mono",Menlo,monospace';
-          ctx.fillStyle = dark ? "rgba(148,163,184,0.7)" : "rgba(100,116,139,0.7)";
-          ctx.fillText(node.dir, fx, fy + r + 15);
+          ctx.fillStyle = dark ? "rgba(200,215,240,0.35)" : "rgba(50,70,90,0.4)";
+          ctx.fillText(node.dir, x + effectiveR + 8, y + 13);
         }
       }
     }
 
-    // Edge hover label (drawn in world space)
+    // Edge hover label (when not hovering a node)
     if (hoveredEdge && !hoveredNode) {
-      drawEdgeLabel(hoveredEdge, dark);
+      const srcN = nodes.get(hoveredEdge.source);
+      const dstN = nodes.get(hoveredEdge.target);
+      if (srcN && dstN) {
+        const sSrc = sp(srcN), sDst = sp(dstN);
+        drawEdgeLabel(hoveredEdge, dark, (sSrc.x + sDst.x) / 2, (sSrc.y + sDst.y) / 2);
+      }
     }
 
     ctx.restore();
+
+    // --- Info card (drawn in screen space) ---
+    drawInfoCard(dark);
+
     drawLegend(dark);
     drawStats(dark, now);
   }
 
+  function filterMatchAction(node) {
+    if (activeFilter === "all") return true;
+    return (activeFilter === "read" && node.readCount > 0) ||
+      (activeFilter === "edit" && node.editCount > 0) ||
+      (activeFilter === "exec" && node.execCount > 0);
+  }
+
+  function edgeFilterMatch(edge) {
+    if (sessionFilter !== "all" && !edge.sessions.has(sessionFilter)) return false;
+    return true;
+  }
+
   function drawLegend(dark) {
-    const x = 12, y = height - 120;
-    const fg = dark ? "rgba(241,245,249,0.5)" : "rgba(80,65,50,0.5)";
+    const x = 12, y = height - 90;
+    const fg = dark ? "rgba(200,215,240,0.4)" : "rgba(50,70,90,0.4)";
     ctx.textAlign = "left"; ctx.textBaseline = "middle";
 
-    [{ c: dark ? "#3b82f6" : "#2563eb", l: "Read" }, { c: dark ? "#4ade80" : "#16a34a", l: "Edited" }, { c: dark ? "#f97316" : "#c2410c", l: "Executed" }].forEach((item, i) => {
-      const iy = y + i * 14;
-      ctx.beginPath(); ctx.arc(x + 4, iy, 4, 0, Math.PI * 2);
-      ctx.fillStyle = item.c; ctx.fill();
-      ctx.fillStyle = fg; ctx.font = '600 8px -apple-system,sans-serif';
-      ctx.fillText(item.l, x + 14, iy);
-    });
-
     const edgeItems = [
-      { c: dark ? "#8b5cf6" : "#7c3aed", l: "Prerequisite (Read\u2192Edit)" },
-      { c: dark ? "#f97316" : "#c2410c", l: "Coupling (Edit\u2192Edit)" },
-      { c: dark ? "#4ade80" : "#16a34a", l: "Validation (Edit\u2192Run)" },
-      { c: dark ? "#3b82f6" : "#2563eb", l: "Discovery (Search\u2192Read)" },
-      { c: dark ? "#475569" : "#94a3b8", l: "Sequential" },
+      { l: "Prerequisite", c: dark ? "#a0b4d0" : "#3a5a7a" },
+      { l: "Coupling", c: dark ? "#c0a080" : "#6a5040" },
+      { l: "Validation", c: dark ? "#80c0a0" : "#3a6a50" },
+      { l: "Discovery", c: dark ? "#8090c0" : "#4a5a8a" },
     ];
 
-    const ey = y + 3 * 14 + 6;
     edgeItems.forEach((item, i) => {
-      const iy = ey + i * 12;
-      const lx = x, rx = x + 14;
-      const rgb = hexToRgb(item.c);
-      if (rgb) {
-        const grad = ctx.createLinearGradient(lx, iy, rx, iy);
-        grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},0)`);
-        grad.addColorStop(0.6, `rgba(${rgb.r},${rgb.g},${rgb.b},0.6)`);
-        grad.addColorStop(1, `rgba(${rgb.r},${rgb.g},${rgb.b},1)`);
-        ctx.beginPath(); ctx.moveTo(lx, iy); ctx.lineTo(rx, iy);
-        ctx.strokeStyle = grad; ctx.lineWidth = 2; ctx.lineCap = "round";
-        ctx.stroke();
-        ctx.beginPath(); ctx.arc(rx, iy, 1.2, 0, Math.PI * 2);
-        ctx.fillStyle = "#fff"; ctx.fill();
-      }
-      ctx.fillStyle = fg; ctx.font = '400 7px -apple-system,sans-serif';
-      ctx.fillText(item.l, x + 20, iy);
+      const iy = y + i * 13;
+      const lx = x, rx = x + 16;
+      ctx.beginPath();
+      ctx.moveTo(lx, iy);
+      ctx.lineTo(rx, iy);
+      ctx.strokeStyle = item.c;
+      ctx.lineWidth = 1.5;
+      ctx.lineCap = "round";
+      ctx.stroke();
+
+      ctx.fillStyle = fg;
+      ctx.font = '400 8px -apple-system,sans-serif';
+      ctx.fillText(item.l, x + 22, iy);
     });
   }
 
   function drawStats(dark, now) {
-    const fg = dark ? "rgba(241,245,249,0.4)" : "rgba(80,65,50,0.4)";
+    const fg = dark ? "rgba(200,215,240,0.3)" : "rgba(50,70,90,0.3)";
     ctx.font = '400 9px "SF Mono",Menlo,monospace'; ctx.textAlign = "right"; ctx.textBaseline = "top";
-    let ac = 0, wc = 0;
-    for (const [, ts] of activeFiles) { const a = now - ts; if (a < GLOW_DURATION) ac++; else if (a < WARM_DURATION) wc++; }
-    const vn = [...nodes.values()].filter(nodeVisible).length;
+
+    let ac = 0, wc = 0, sc = 0, vn = 0;
+    for (const node of nodes.values()) {
+      if (!nodeVisible(node)) continue;
+      vn++;
+      const age = now - node.lastAccessTs;
+      if (age < GLOW_DURATION) ac++;
+      else if (age < WARM_DURATION) wc++;
+      else sc++;
+    }
+
+    let ve = 0;
+    for (const edge of edges.values()) {
+      if (!edgeVisible(edge) || !edgeFilterMatch(edge)) continue;
+      const srcN = nodes.get(edge.source);
+      const dstN = nodes.get(edge.target);
+      if (srcN && dstN && nodeVisible(srcN) && nodeVisible(dstN)) ve++;
+    }
+
     ctx.fillStyle = fg;
-    ctx.fillText(`${vn}/${nodes.size} files \u00b7 ${edges.size} edges`, width - 12, 12);
-    ctx.fillText(`${ac} active \u00b7 ${wc} warm`, width - 12, 24);
+    ctx.fillText(`${vn}/${nodes.size} files · ${ve} edges`, width - 12, 12);
+    ctx.fillText(`${ac} active · ${wc} warm · ${sc} stale`, width - 12, 24);
     if (camZoom !== 1) ctx.fillText(`zoom: ${Math.round(camZoom * 100)}%`, width - 12, 36);
   }
 
-  // --- Hit testing (uses raw node positions, not fisheye-distorted) ---
+  // --- Hit testing (uses spread-adjusted positions) ---
   function nodeAt(mx, my) {
     const wx = mx / camZoom + camX, wy = my / camZoom + camY;
     let closest = null, closestDist = Infinity;
     for (const node of nodes.values()) {
       if (!nodeVisible(node)) continue;
-      const dx = node.x - wx, dy = node.y - wy;
+      const dx = spX(node) - wx, dy = spY(node) - wy;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const r = nodeRadius(node);
       if (dist < r + 6 && dist < closestDist) { closest = node; closestDist = dist; }
@@ -1013,8 +1062,7 @@ const Gravity = (() => {
 
   // --- Interaction ---
   function initInteraction() {
-
-    canvas.addEventListener("mouseleave", () => { fisheyeActive = false; hoveredNode = null; hoveredEdge = null; });
+    canvas.addEventListener("mouseleave", () => { hoveredNode = null; hoveredEdge = null; });
 
     canvas.addEventListener("mousedown", (e) => {
       if (e.button !== 0) return;
@@ -1022,16 +1070,22 @@ const Gravity = (() => {
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
       const hit = nodeAt(mx, my);
       if (hit) {
-        // Start dragging the node
         draggingNode = hit;
-        selectedNode = hit;
-        hit.fx = hit.x;
-        hit.fy = hit.y;
-        if (simulation) simulation.alphaTarget(0.5).restart();
+        // Click: toggle info card
+        if (selectedNode === hit) {
+          selectedNode = null;
+          infoCard = null;
+        } else {
+          selectedNode = hit;
+          infoCard = { node: hit };
+        }
+        // Node position updated directly in mousemove
         canvas.style.cursor = "grabbing";
         return;
       }
+      // Click on empty space: dismiss card
       selectedNode = null;
+      infoCard = null;
       isDragging = true;
       userDragged = true;
       dragStartX = e.clientX; dragStartY = e.clientY;
@@ -1043,10 +1097,15 @@ const Gravity = (() => {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
 
-      // Node dragging
       if (draggingNode) {
-        draggingNode.fx = mx / camZoom + camX;
-        draggingNode.fy = my / camZoom + camY;
+        // Directly set node position (no simulation needed)
+        const wx = mx / camZoom + camX, wy = my / camZoom + camY;
+        const nx = spreadCX + (wx - spreadCX) / edgeLengthScale;
+        const ny = spreadCY + (wy - spreadCY) / edgeLengthScale;
+        draggingNode.x = nx;
+        draggingNode.y = ny;
+        draggingNode.vx = 0;
+        draggingNode.vy = 0;
         return;
       }
 
@@ -1055,21 +1114,16 @@ const Gravity = (() => {
         camY = dragCamY - (e.clientY - dragStartY) / camZoom;
         targetCamX = camX; targetCamY = camY; return;
       }
-      fisheyeX = mx / camZoom + camX;
-      fisheyeY = my / camZoom + camY;
+
       const hit = nodeAt(mx, my);
       hoveredNode = hit;
-      fisheyeActive = !!hit;
       hoveredEdge = hit ? null : findEdgeAtMouse(mx, my);
       canvas.style.cursor = hit ? "pointer" : hoveredEdge ? "crosshair" : "grab";
     });
 
     function releaseNode() {
       if (draggingNode) {
-        draggingNode.fx = null;
-        draggingNode.fy = null;
         draggingNode = null;
-        if (simulation) simulation.alphaTarget(0);
       }
     }
 
@@ -1092,21 +1146,29 @@ const Gravity = (() => {
         canvas.style.cursor = "grab";
       }
     });
+
+    // Escape dismisses card
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        selectedNode = null;
+        infoCard = null;
+      }
+    });
+
     canvas.addEventListener("wheel", (e) => {
-      // Only handle wheel when 2D canvas is visible
       if (canvas.style.display === "none") return;
       e.preventDefault();
       camZoom = Math.min(4, Math.max(0.1, camZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
     }, { passive: false });
-    canvas.addEventListener("dblclick", () => { selectedNode = null; userDragged = false; targetCamX = 0; targetCamY = 0; camZoom = 1; });
+
+    canvas.addEventListener("dblclick", () => { selectedNode = null; infoCard = null; userDragged = false; targetCamX = 0; targetCamY = 0; camZoom = 1; });
   }
 
   function getTooltip() {
     if (!hoveredNode && !selectedNode) return null;
     const n = hoveredNode || selectedNode;
     const imp = getImportance(n);
-    const sc = getStarClass(n);
-    return { file: n.id, label: n.label, dir: n.dir, readCount: n.readCount, editCount: n.editCount, execCount: n.execCount, total: n.accessCount, classification: sc.name, importance: imp };
+    return { file: n.id, label: n.label, dir: n.dir, readCount: n.readCount, editCount: n.editCount, execCount: n.execCount, total: n.accessCount, importance: imp };
   }
 
   // --- Public API ---
@@ -1158,26 +1220,85 @@ const Gravity = (() => {
   function destroy() {
     if (animFrame) cancelAnimationFrame(animFrame);
     if (simulation) simulation.stop();
-    if (ambientPulseTimer) { clearInterval(ambientPulseTimer); ambientPulseTimer = null; }
-    animFrame = null; simulation = null; pulses = [];
+    animFrame = null; simulation = null;
   }
 
   function reset() {
     nodes.clear(); edges.clear(); lastToolBySession.clear(); activeFiles.clear();
-    labelCounts.clear(); hoveredNode = null; selectedNode = null;
+    labelCounts.clear(); hoveredNode = null; selectedNode = null; infoCard = null;
     if (simulation) simulation.stop(); simulation = null;
   }
 
   function zoom(f) { camZoom = Math.min(4, Math.max(0.1, camZoom * f)); }
-  function deselect() { selectedNode = null; }
+  function deselect() { selectedNode = null; infoCard = null; }
 
-  // Expose data for 3D view sync
   function getNodes() { return nodes; }
   function getEdges() { return edges; }
+
+  function setEdgeLengthScale(v) {
+    edgeLengthScale = Math.max(0.1, Math.min(3, v));
+    userDragged = true; // lock camera
+  }
+
+  function setNodeSizeScale(v) {
+    nodeSizeScale = Math.max(0.1, Math.min(3, v));
+    // Node size affects collision radius too
+    if (simulation) {
+      simulation.force("collision").radius(d => nodeRadius(d) * 2.5 + 20);
+      simulation.alpha(0.3).restart();
+    }
+  }
+
+  function setRecencyFilter(type) {
+    recencyFilter = type;
+    document.querySelectorAll(".recency-filter-btn").forEach(b => b.classList.toggle("active", b.dataset.recency === type));
+  }
 
   function setFilter(type) {
     activeFilter = type;
     document.querySelectorAll(".filter-btn").forEach(b => b.classList.toggle("active", b.dataset.filter === type));
+  }
+
+  function setSessionFilter(id) {
+    sessionFilter = id;
+    document.querySelectorAll(".session-filter-btn").forEach(b => b.classList.toggle("active", b.dataset.session === id));
+  }
+
+  function registerSession(id, label, color) {
+    knownSessions.set(id, { label, color });
+    rebuildSessionFilterUI();
+  }
+
+  function unregisterSession(id) {
+    knownSessions.delete(id);
+    if (sessionFilter === id) sessionFilter = "all";
+    rebuildSessionFilterUI();
+  }
+
+  function rebuildSessionFilterUI() {
+    const bar = document.getElementById("session-filter-bar");
+    if (!bar) return;
+    bar.innerHTML = "";
+
+    // "All" button
+    const allBtn = document.createElement("button");
+    allBtn.className = `session-filter-btn ${sessionFilter === "all" ? "active" : ""}`;
+    allBtn.dataset.session = "all";
+    allBtn.textContent = "All";
+    allBtn.onclick = () => setSessionFilter("all");
+    bar.appendChild(allBtn);
+
+    for (const [id, info] of knownSessions) {
+      const btn = document.createElement("button");
+      btn.className = `session-filter-btn ${sessionFilter === id ? "active" : ""}`;
+      btn.dataset.session = id;
+      btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span>${info.label}`;
+      btn.onclick = () => setSessionFilter(id);
+      bar.appendChild(btn);
+    }
+
+    // Hide bar if only 1 or 0 sessions
+    bar.style.display = knownSessions.size > 1 ? "" : "none";
   }
 
   function getStats() {
@@ -1187,5 +1308,5 @@ const Gravity = (() => {
     return { visible, total: nodes.size, edges: edges.size, zoom: Math.round(camZoom * 100) + "%" };
   }
 
-  return { init, addEntry, addEntries, destroy, reset, getTooltip, getStats, zoom, deselect, getNodes, getEdges, setFilter };
+  return { init, addEntry, addEntries, destroy, reset, getTooltip, getStats, zoom, deselect, getNodes, getEdges, setFilter, setRecencyFilter, setSessionFilter, registerSession, unregisterSession, setEdgeLengthScale, setNodeSizeScale };
 })();
