@@ -25,8 +25,10 @@ const Gravity = (() => {
 
   // Claude presence — tracks where Claude is right now
   let claudePresence = []; // [{file, ts, action}] — last few tool uses
-  const PRESENCE_WINDOW = 5000; // show presence for 5 seconds
-  let claudeTrail = []; // [{fromFile, toFile, ts}] — recent movement trail
+  const PRESENCE_WINDOW = 3000; // show presence for 3 seconds
+  const MAX_PRESENCE = 2; // only show last 2 locations
+  let claudeTrail = []; // [{fromFile, toFile, ts}] — most recent movement
+  const MAX_TRAIL = 1; // only show 1 trail line
 
   // Fisheye (subtle)
   let fisheyeX = 0, fisheyeY = 0;
@@ -672,10 +674,10 @@ const Gravity = (() => {
     }
 
     // --- Claude Trail (movement path) ---
-    // Clean up old presence/trail entries
-    claudePresence = claudePresence.filter(p => now - p.ts < PRESENCE_WINDOW);
-    claudeTrail = claudeTrail.filter(t => now - t.ts < PRESENCE_WINDOW);
-    // Draw trail lines
+    // Clean up old presence/trail entries, keep only most recent
+    claudePresence = claudePresence.filter(p => now - p.ts < PRESENCE_WINDOW).slice(-MAX_PRESENCE);
+    claudeTrail = claudeTrail.filter(t => now - t.ts < PRESENCE_WINDOW).slice(-MAX_TRAIL);
+    // Draw trail line (just the most recent movement)
     for (const trail of claudeTrail) {
       const fromN = nodes.get(trail.fromFile);
       const toN = nodes.get(trail.toFile);
