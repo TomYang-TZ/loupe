@@ -406,6 +406,7 @@ const Gravity = (() => {
           size: cfg.sizeRange[0] + Math.random() * (cfg.sizeRange[1] - cfg.sizeRange[0]),
           opacity: cfg.opRange[0] + Math.random() * (cfg.opRange[1] - cfg.opRange[0]),
           color: colors[Math.floor(Math.random() * colors.length)],
+          lightColor: ["#b0b8c8","#a8b0c0","#c0b8a8","#b8b0a0","#9098a8"][Math.floor(Math.random() * 5)],
           twinkle: Math.random() < 0.08 ? Math.random() * Math.PI * 2 : -1,
           twinkleSpeed: 2 + Math.random() * 3,
           drift: cfg === layers[0] ? 0.0003 : cfg === layers[1] ? 0.0008 : 0.002,
@@ -437,39 +438,38 @@ const Gravity = (() => {
         ctx.fillRect(0, 0, width, height);
       }
 
-      // Stars
+      // Stars — toned down for subtlety
       for (const s of bgStars) {
-        let op = s.opacity;
+        let op = s.opacity * 0.45; // scale down from raw values
         if (s.twinkle >= 0) op *= (0.5 + 0.5 * Math.sin(t / s.twinkleSpeed * Math.PI * 2 + s.twinkle));
         ctx.globalAlpha = op;
         ctx.fillStyle = s.color;
         const sx = ((s.x * width + camX * s.drift * width) % width + width) % width;
         const sy = ((s.y * height + camY * s.drift * height) % height + height) % height;
         ctx.beginPath();
-        ctx.arc(sx, sy, s.size, 0, Math.PI * 2);
+        ctx.arc(sx, sy, s.size * 0.7, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
     } else {
-      // Light mode: soft warm-toned dots
-      const lightColors = ["#b0b8c8","#a0a8b8","#c0b8a8","#b8b0a0","#9098a8"];
+      // Light mode: visible warm-toned dots
       for (const s of bgStars) {
-        ctx.globalAlpha = s.opacity * 0.35;
-        let op = s.opacity * 0.35;
+        let op = s.opacity * 0.55;
         if (s.twinkle >= 0) op *= (0.5 + 0.5 * Math.sin(t / s.twinkleSpeed * Math.PI * 2 + s.twinkle));
         ctx.globalAlpha = op;
-        ctx.fillStyle = lightColors[Math.floor(Math.random() * lightColors.length)];
+        ctx.fillStyle = s.lightColor;
         const sx = ((s.x * width + camX * s.drift * width) % width + width) % width;
         const sy = ((s.y * height + camY * s.drift * height) % height + height) % height;
         ctx.beginPath();
         ctx.arc(sx, sy, s.size * 0.8, 0, Math.PI * 2);
         ctx.fill();
       }
-      // Light mode nebula: faint pastel washes
+      ctx.globalAlpha = 1;
+      // Light mode nebula: pastel washes
       const lightNebulae = [
-        { x: 0.25, y: 0.35, rx: width * 0.22, color: [180, 160, 210, 0.035] },
-        { x: 0.7, y: 0.6, rx: width * 0.18, color: [160, 190, 210, 0.03] },
-        { x: 0.45, y: 0.75, rx: width * 0.15, color: [210, 170, 160, 0.025] },
+        { x: 0.25, y: 0.35, rx: width * 0.22, color: [160, 140, 190, 0.05] },
+        { x: 0.7, y: 0.6, rx: width * 0.18, color: [140, 170, 200, 0.04] },
+        { x: 0.45, y: 0.75, rx: width * 0.15, color: [200, 155, 140, 0.035] },
       ];
       for (const n of lightNebulae) {
         const breathe = 1 + 0.04 * Math.sin(t / 22 * Math.PI * 2);
