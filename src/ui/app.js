@@ -606,7 +606,7 @@ function handleLine(msg) {
   entries.push(entry);
 
   // Feed to universe renderer if initialized
-  if (universeInitialized) Universe.addEntry(entry);
+  if (gravityInitialized) Gravity.addEntry(entry);
 
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
@@ -1287,13 +1287,13 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "?" && !inSearch) { toggleHelp(); return; }
   if (e.key === "m" && !inSearch) { toggleView(); return; }
   if (e.key === "t" && e.metaKey) { e.preventDefault(); toggleTheme(); return; }
-  if ((e.key === "=" || e.key === "+") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Universe.zoom(1.2); else setGridCols(gridCols + 1); return; }
-  if ((e.key === "-" || e.key === "_") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Universe.zoom(0.8); else setGridCols(gridCols - 1); return; }
+  if ((e.key === "=" || e.key === "+") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(1.2); else setGridCols(gridCols + 1); return; }
+  if ((e.key === "-" || e.key === "_") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(0.8); else setGridCols(gridCols - 1); return; }
   if ((e.key === "=" || e.key === "+") && e.metaKey) { e.preventDefault(); adjustFontSize(1); return; }
   if (e.key === "-" && e.metaKey) { e.preventDefault(); adjustFontSize(-1); return; }
   if (e.key === "Escape") {
     if (helpVisible) { toggleHelp(); return; }
-    if (gravityView) { Universe.deselect(); return; }
+    if (gravityView) { Gravity.deselect(); return; }
     searchInput.blur(); searchInput.value = ""; searchQuery = ""; rebuildView(); return;
   }
   if (e.key === "/" && !inSearch) { e.preventDefault(); searchInput.focus(); return; }
@@ -1396,11 +1396,10 @@ new MutationObserver(() => onModeChange()).observe(document.body, { attributes: 
 
 // ===== Universe Map View =====
 let gravityView = false;
-let universeInitialized = false;
-const universeContainer = document.getElementById("universe-container");
+let gravityInitialized = false;
+const gravityCanvas = document.getElementById("gravity-canvas");
 const gravityContainer = document.getElementById("gravity-container");
 const gravityTooltip = document.getElementById("gravity-tooltip");
-const gravityHud = document.getElementById("gravity-hud");
 const viewToggleBtn = document.getElementById("view-toggle-btn");
 
 window.toggleView = () => {
@@ -1411,10 +1410,10 @@ window.toggleView = () => {
     gravityContainer.style.display = "";
     if (gridControls) gridControls.style.display = "none";
     if (gridSep) gridSep.style.display = "none";
-    if (!universeInitialized) {
-      Universe.init(universeContainer);
-      Universe.addEntries(entries);
-      universeInitialized = true;
+    if (!gravityInitialized) {
+      Gravity.init(gravityCanvas);
+      Gravity.addEntries(entries);
+      gravityInitialized = true;
     }
   } else {
     gravityContainer.style.display = "none";
@@ -1423,19 +1422,10 @@ window.toggleView = () => {
   }
 };
 
-window.updateGravityHud = function updateGravityHud() {
-  if (!gravityHud || !gravityView || !universeInitialized) return;
-  const stats = Universe.getStats();
-  if (stats) {
-    gravityHud.textContent = `${stats.visible}/${stats.total} files · ${stats.edges} edges · zoom ${stats.zoom}`;
-  }
-};
-setInterval(updateGravityHud, 500);
-
-// Tooltip update loop for universe map
+// Tooltip update loop for gravity map
 setInterval(() => {
   if (!gravityView) return;
-  const info = Universe.getTooltip();
+  const info = Gravity.getTooltip();
   if (info) {
     gravityTooltip.innerHTML = `<span class="gt-file">${info.label}</span> <span class="gt-dir">${info.dir}</span><br>` +
       `<span class="gt-stat">Read ${info.readCount}</span> <span class="gt-stat">Edit ${info.editCount}</span> <span class="gt-stat">Exec ${info.execCount}</span><br>` +

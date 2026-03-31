@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #050510; color: #e0e0e0; font-family: 'SF Mono', 'JetBrains Mono', monospace; overflow: hidden; height: 100vh; }
+
+  .scene { position: relative; width: 100%; height: 100vh; background: radial-gradient(ellipse at 40% 50%, #0a0a1a 0%, #050510 50%, #020208 100%); }
+
+  /* BG stars */
+  .bg-stars { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+
+  /* Nodes */
+  .node { position: absolute; border-radius: 50%; z-index: 10; cursor: pointer; transition: transform 0.3s ease; }
+  .node-label { position: absolute; font-size: 9px; color: rgba(255,255,255,0); white-space: nowrap; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 6px; transition: color 0.4s ease; pointer-events: none; letter-spacing: 0.5px; }
+
+  /* Edge lines - SVG overlay */
+  .edge-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; }
+
+  /* Hover zone */
+  .hover-zone { position: absolute; z-index: 8; cursor: pointer; }
+
+  /* Info panels */
+  .panel { position: absolute; z-index: 30; background: rgba(5,5,16,0.85); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px 18px; backdrop-filter: blur(12px); pointer-events: none; opacity: 0; transition: opacity 0.3s ease; }
+  .panel.visible { opacity: 1; }
+  .panel h4 { font-size: 11px; color: #aaa; font-weight: 400; margin-bottom: 6px; }
+  .panel p { font-size: 10px; color: #555; line-height: 1.5; }
+  .panel .stat { display: inline-block; margin-right: 12px; }
+  .panel .stat-val { color: #888; }
+
+  /* Section labels */
+  .section-label {
+    position: absolute; z-index: 20;
+    font-size: 11px; color: #444; letter-spacing: 1px; text-transform: uppercase;
+  }
+
+  /* State indicator */
+  .state-bar {
+    position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 20;
+    display: flex; gap: 30px; align-items: center;
+    background: rgba(5,5,16,0.7); border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 20px; padding: 10px 24px;
+    backdrop-filter: blur(10px);
+  }
+  .state-item { display: flex; align-items: center; gap: 8px; font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.5px; }
+  .state-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  /* Interaction guide */
+  .guide {
+    position: absolute; top: 20px; left: 50%; transform: translateX(-50%); z-index: 20;
+    font-size: 11px; color: #444; letter-spacing: 0.5px;
+    background: rgba(5,5,16,0.6); border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 6px; padding: 8px 16px;
+  }
+  .guide span { color: #666; }
+</style>
+</head>
+<body>
+<div class="scene" id="scene">
+  <div class="bg-stars" id="bg"></div>
+
+  <div class="guide">Try it: <span>hover over the bright blue star in the center</span></div>
+
+  <!-- SVG edges -->
+  <svg class="edge-layer" id="edges" viewBox="0 0 1200 700" preserveAspectRatio="none">
+    <defs>
+      <!-- Glow filter for active edges -->
+      <filter id="edge-glow" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="2" result="blur"/>
+        <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+    </defs>
+
+    <!-- Default state: very faint -->
+    <line id="e1" x1="520" y1="320" x2="700" y2="240" stroke="rgba(126,184,255,0.05)" stroke-width="0.5" class="edge"/>
+    <line id="e2" x1="520" y1="320" x2="380" y2="420" stroke="rgba(126,184,255,0.05)" stroke-width="0.5" class="edge"/>
+    <line id="e3" x1="520" y1="320" x2="620" y2="460" stroke="rgba(126,184,255,0.05)" stroke-width="0.5" class="edge"/>
+    <line id="e4" x1="520" y1="320" x2="340" y2="240" stroke="rgba(126,184,255,0.05)" stroke-width="0.5" class="edge"/>
+    <line id="e5" x1="700" y1="240" x2="820" y2="180" stroke="rgba(255,217,61,0.04)" stroke-width="0.5" class="edge"/>
+    <line id="e6" x1="380" y1="420" x2="260" y2="500" stroke="rgba(255,107,74,0.04)" stroke-width="0.5" class="edge"/>
+
+    <!-- Photon particles (hidden until hover) -->
+    <circle id="photon1" r="2" fill="#7eb8ff" opacity="0" filter="url(#edge-glow)">
+      <animate attributeName="opacity" values="0" dur="1s" repeatCount="indefinite"/>
+    </circle>
+    <circle id="photon2" r="1.5" fill="#7eb8ff" opacity="0" filter="url(#edge-glow)">
+      <animate attributeName="opacity" values="0" dur="1s" repeatCount="indefinite"/>
+    </circle>
+  </svg>
+
+  <!-- Hover zones (larger than visible nodes) -->
+  <div class="hover-zone" id="hz-main" style="width:50px;height:50px;top:295px;left:495px;border-radius:50%;"></div>
+
+  <!-- Nodes -->
+  <div class="node" id="n-main" style="width:20px;height:20px;top:310px;left:510px;background:#7eb8ff;box-shadow:0 0 10px #7eb8ff,0 0 25px rgba(126,184,255,0.4),0 0 45px rgba(126,184,255,0.15);">
+    <div class="node-label">universe.js</div>
+  </div>
+  <div class="node" id="n-yellow" style="width:12px;height:12px;top:234px;left:694px;background:#ffd93d;box-shadow:0 0 6px #ffd93d,0 0 15px rgba(255,217,61,0.3);">
+    <div class="node-label">app.js</div>
+  </div>
+  <div class="node" id="n-white" style="width:15px;height:15px;top:412px;left:373px;background:#f0f0ff;box-shadow:0 0 8px #f0f0ff,0 0 18px rgba(240,240,255,0.35);">
+    <div class="node-label">styles.css</div>
+  </div>
+  <div class="node" id="n-orange" style="width:9px;height:9px;top:455px;left:616px;background:#ff9f43;box-shadow:0 0 4px #ff9f43,0 0 10px rgba(255,159,67,0.3);">
+    <div class="node-label">index.html</div>
+  </div>
+  <div class="node" id="n-red1" style="width:5px;height:5px;top:237px;left:338px;background:#ff6b4a;box-shadow:0 0 3px rgba(255,107,74,0.4);opacity:0.5;">
+    <div class="node-label">watcher.js</div>
+  </div>
+  <div class="node" id="n-red2" style="width:4px;height:4px;top:177px;left:818px;background:#ff6b4a;box-shadow:0 0 2px rgba(255,107,74,0.3);opacity:0.4;">
+    <div class="node-label">server.js</div>
+  </div>
+  <div class="node" id="n-red3" style="width:4px;height:4px;top:497px;left:258px;background:#ff6b4a;box-shadow:0 0 2px rgba(255,107,74,0.3);opacity:0.35;">
+    <div class="node-label">config.js</div>
+  </div>
+
+  <!-- Tooltip panel -->
+  <div class="panel" id="tooltip" style="top:260px;left:545px;">
+    <h4>universe.js <span style="color:#333">· src/ui/</span></h4>
+    <p>
+      <span class="stat">Read <span class="stat-val">12</span></span>
+      <span class="stat">Edit <span class="stat-val">8</span></span>
+      <span class="stat">Exec <span class="stat-val">3</span></span>
+    </p>
+    <p style="margin-top:4px;color:#444;">Blue Giant · Importance 35</p>
+  </div>
+
+  <!-- State bar -->
+  <div class="state-bar">
+    <div class="state-item"><div class="state-dot" style="background:rgba(255,255,255,0.15);"></div> Default — edges hidden</div>
+    <div class="state-item"><div class="state-dot" style="background:rgba(126,184,255,0.6);"></div> Hover — connections reveal</div>
+    <div class="state-item"><div class="state-dot" style="background:rgba(126,184,255,1);box-shadow:0 0 4px rgba(126,184,255,0.5);"></div> Click — lock focus + tooltip</div>
+  </div>
+</div>
+
+<script>
+  // Background stars
+  const bg = document.getElementById('bg');
+  for (let i = 0; i < 400; i++) {
+    const s = document.createElement('div');
+    const size = 0.5 + Math.random() * 1.5;
+    s.style.cssText = `position:absolute;border-radius:50%;width:${size}px;height:${size}px;left:${Math.random()*100}%;top:${Math.random()*100}%;background:#fff;opacity:${0.1 + Math.random()*0.3};`;
+    bg.appendChild(s);
+  }
+
+  // Interactive hover behavior
+  const hz = document.getElementById('hz-main');
+  const edges = document.querySelectorAll('.edge');
+  const tooltip = document.getElementById('tooltip');
+  const mainNode = document.getElementById('n-main');
+  const allNodes = document.querySelectorAll('.node');
+  const svg = document.getElementById('edges');
+  let isHovered = false;
+
+  // Edge reveal configs
+  const edgeConfigs = {
+    e1: { color: 'rgba(126,184,255,0.35)', width: 1.2 },
+    e2: { color: 'rgba(200,210,255,0.3)', width: 1 },
+    e3: { color: 'rgba(126,184,255,0.25)', width: 0.8 },
+    e4: { color: 'rgba(126,184,255,0.2)', width: 0.7 },
+    e5: { color: 'rgba(255,217,61,0.04)', width: 0.5 },
+    e6: { color: 'rgba(255,107,74,0.04)', width: 0.5 },
+  };
+
+  // Photon animation along edge
+  function animatePhoton(photonId, x1, y1, x2, y2, duration, delay) {
+    const photon = document.getElementById(photonId);
+    const startTime = performance.now() + delay;
+
+    function step(now) {
+      if (!isHovered) { photon.setAttribute('opacity', '0'); return; }
+      const elapsed = now - startTime;
+      if (elapsed < 0) { requestAnimationFrame(step); return; }
+      const t = (elapsed % duration) / duration;
+      const ease = t * t * (3 - 2 * t);
+      const cx = x1 + (x2 - x1) * ease;
+      const cy = y1 + (y2 - y1) * ease;
+      photon.setAttribute('cx', cx);
+      photon.setAttribute('cy', cy);
+
+      // Fade in/out at ends
+      let op = 0.8;
+      if (t < 0.1) op = t / 0.1 * 0.8;
+      else if (t > 0.85) op = (1 - t) / 0.15 * 0.8;
+      photon.setAttribute('opacity', op);
+
+      requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  hz.addEventListener('mouseenter', () => {
+    isHovered = true;
+
+    // Reveal connected edges with transition
+    ['e1','e2','e3','e4'].forEach(id => {
+      const el = document.getElementById(id);
+      el.style.transition = 'all 0.4s ease';
+      el.setAttribute('stroke', edgeConfigs[id].color);
+      el.setAttribute('stroke-width', edgeConfigs[id].width);
+    });
+
+    // Show labels on connected nodes
+    ['n-main','n-yellow','n-white','n-orange','n-red1'].forEach(id => {
+      const label = document.getElementById(id).querySelector('.node-label');
+      label.style.color = 'rgba(255,255,255,0.6)';
+    });
+
+    // Brighten connected nodes
+    mainNode.style.transform = 'scale(1.15)';
+    mainNode.style.boxShadow = '0 0 14px #7eb8ff, 0 0 35px rgba(126,184,255,0.6), 0 0 60px rgba(126,184,255,0.25)';
+
+    // Dim unconnected nodes slightly
+    ['n-red2','n-red3'].forEach(id => {
+      document.getElementById(id).style.opacity = '0.15';
+      document.getElementById(id).style.transition = 'opacity 0.4s ease';
+    });
+
+    // Show tooltip
+    tooltip.classList.add('visible');
+
+    // Start photon animations
+    animatePhoton('photon1', 520, 320, 700, 240, 2000, 0);
+    animatePhoton('photon2', 520, 320, 380, 420, 2500, 300);
+  });
+
+  hz.addEventListener('mouseleave', () => {
+    isHovered = false;
+
+    // Reset edges
+    edges.forEach(el => {
+      el.style.transition = 'all 0.6s ease';
+      el.setAttribute('stroke', el.getAttribute('stroke').replace(/[\d.]+\)$/, '0.05)'));
+      el.setAttribute('stroke-width', '0.5');
+    });
+
+    // Hide labels
+    allNodes.forEach(n => {
+      n.querySelector('.node-label').style.color = 'rgba(255,255,255,0)';
+    });
+
+    // Reset main node
+    mainNode.style.transform = 'scale(1)';
+    mainNode.style.boxShadow = '0 0 10px #7eb8ff, 0 0 25px rgba(126,184,255,0.4), 0 0 45px rgba(126,184,255,0.15)';
+
+    // Restore unconnected
+    ['n-red2','n-red3'].forEach(id => {
+      const el = document.getElementById(id);
+      el.style.opacity = id === 'n-red2' ? '0.4' : '0.35';
+    });
+
+    // Hide tooltip
+    tooltip.classList.remove('visible');
+  });
+</script>
+</body>
+</html>

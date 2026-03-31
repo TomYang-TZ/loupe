@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #050510; color: #e0e0e0; font-family: 'SF Mono', 'JetBrains Mono', monospace; overflow: hidden; height: 100vh; }
+
+  .scene { position: relative; width: 100%; height: 100vh; overflow: hidden; background: radial-gradient(ellipse at 40% 50%, #0a0a1a 0%, #050510 50%, #020208 100%); }
+
+  /* Star layers with parallax */
+  .star-layer { position: absolute; top: 0; left: 0; width: 200%; height: 200%; }
+  .star-layer-far { animation: drift-far 120s linear infinite; }
+  .star-layer-mid { animation: drift-mid 80s linear infinite; }
+  .star-layer-near { animation: drift-near 50s linear infinite; }
+
+  @keyframes drift-far { from { transform: translate(0, 0); } to { transform: translate(-30px, -15px); } }
+  @keyframes drift-mid { from { transform: translate(0, 0); } to { transform: translate(-60px, -30px); } }
+  @keyframes drift-near { from { transform: translate(0, 0); } to { transform: translate(-100px, -50px); } }
+
+  .star-dot { position: absolute; border-radius: 50%; }
+
+  /* Nebula clouds */
+  .nebula { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0; animation-fill-mode: forwards; }
+
+  .nebula-1 {
+    width: 600px; height: 350px;
+    background: radial-gradient(ellipse, rgba(60, 40, 120, 0.12) 0%, rgba(40, 20, 80, 0.06) 40%, transparent 70%);
+    top: 15%; left: 10%;
+    animation: nebula-breathe-1 25s ease-in-out infinite, fade-in 3s ease-out forwards;
+  }
+  .nebula-2 {
+    width: 500px; height: 400px;
+    background: radial-gradient(ellipse, rgba(30, 60, 100, 0.1) 0%, rgba(20, 40, 80, 0.05) 40%, transparent 70%);
+    top: 55%; right: 5%;
+    animation: nebula-breathe-2 30s ease-in-out infinite, fade-in 3s ease-out 0.5s forwards;
+  }
+  .nebula-3 {
+    width: 400px; height: 250px;
+    background: radial-gradient(ellipse, rgba(80, 30, 50, 0.08) 0%, rgba(60, 20, 40, 0.04) 40%, transparent 70%);
+    bottom: 20%; left: 35%;
+    animation: nebula-breathe-3 20s ease-in-out infinite, fade-in 3s ease-out 1s forwards;
+  }
+
+  @keyframes fade-in { to { opacity: 1; } }
+  @keyframes nebula-breathe-1 { 0%, 100% { transform: scale(1) translate(0, 0); opacity: 1; } 50% { transform: scale(1.06) translate(8px, -5px); opacity: 0.85; } }
+  @keyframes nebula-breathe-2 { 0%, 100% { transform: scale(1) translate(0, 0); opacity: 1; } 50% { transform: scale(1.04) translate(-6px, 4px); opacity: 0.9; } }
+  @keyframes nebula-breathe-3 { 0%, 100% { transform: scale(1) translate(0, 0); opacity: 1; } 50% { transform: scale(1.08) translate(5px, 6px); opacity: 0.8; } }
+
+  /* Twinkling */
+  @keyframes twinkle-slow { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.8; } }
+  @keyframes twinkle-fast { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+  .twinkle-s { animation: twinkle-slow 4s ease-in-out infinite; }
+  .twinkle-f { animation: twinkle-fast 2.5s ease-in-out infinite; }
+
+  /* Sample data nodes to show context */
+  .data-node { position: absolute; border-radius: 50%; z-index: 10; }
+
+  .node-blue-giant {
+    width: 18px; height: 18px;
+    background: #7eb8ff;
+    box-shadow: 0 0 10px #7eb8ff, 0 0 25px rgba(126,184,255,0.4), 0 0 45px rgba(126,184,255,0.15);
+    top: 38%; left: 42%;
+  }
+  .node-yellow {
+    width: 11px; height: 11px;
+    background: #ffd93d;
+    box-shadow: 0 0 6px #ffd93d, 0 0 15px rgba(255,217,61,0.3);
+    top: 32%; left: 55%;
+  }
+  .node-orange {
+    width: 8px; height: 8px;
+    background: #ff9f43;
+    box-shadow: 0 0 4px #ff9f43, 0 0 10px rgba(255,159,67,0.3);
+    top: 50%; left: 48%;
+  }
+  .node-red-1 {
+    width: 5px; height: 5px;
+    background: #ff6b4a;
+    box-shadow: 0 0 3px rgba(255,107,74,0.4);
+    top: 44%; left: 35%;
+  }
+  .node-red-2 {
+    width: 4px; height: 4px;
+    background: #ff6b4a;
+    box-shadow: 0 0 2px rgba(255,107,74,0.3);
+    top: 28%; left: 62%;
+    opacity: 0.5;
+  }
+  .node-white {
+    width: 14px; height: 14px;
+    background: #f0f0ff;
+    box-shadow: 0 0 8px #f0f0ff, 0 0 20px rgba(240,240,255,0.4), 0 0 35px rgba(200,210,255,0.15);
+    top: 58%; left: 30%;
+  }
+
+  /* Faint connection lines */
+  .connection {
+    position: absolute; z-index: 5;
+    height: 1px;
+    opacity: 0.06;
+    transform-origin: left center;
+  }
+  .conn-1 { top: 39.5%; left: 43.5%; width: 160px; background: linear-gradient(90deg, rgba(126,184,255,0.3), rgba(255,217,61,0.2)); transform: rotate(-12deg); }
+  .conn-2 { top: 40%; left: 43%; width: 100px; background: linear-gradient(90deg, rgba(126,184,255,0.3), rgba(255,159,67,0.2)); transform: rotate(50deg); }
+  .conn-3 { top: 59%; left: 32%; width: 200px; background: linear-gradient(90deg, rgba(240,240,255,0.2), rgba(126,184,255,0.2)); transform: rotate(-25deg); }
+
+  /* Labels */
+  .info-overlay {
+    position: absolute; bottom: 30px; left: 30px; z-index: 20;
+    background: rgba(5,5,16,0.7); border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px; padding: 16px 20px;
+    backdrop-filter: blur(10px);
+  }
+  .info-overlay h3 { font-size: 12px; color: #888; font-weight: 400; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+  .info-overlay ul { list-style: none; padding: 0; }
+  .info-overlay li { font-size: 11px; color: #555; margin: 4px 0; display: flex; align-items: center; gap: 8px; }
+  .info-overlay li span { display: inline-block; width: 6px; height: 6px; border-radius: 50%; }
+  .layer-far { background: rgba(255,255,255,0.2); }
+  .layer-mid { background: rgba(255,255,255,0.4); }
+  .layer-near { background: rgba(255,255,255,0.7); }
+  .layer-nebula { background: rgba(60,40,120,0.5); width: 10px !important; height: 6px !important; border-radius: 3px !important; filter: blur(1px); }
+</style>
+</head>
+<body>
+<div class="scene">
+  <!-- Far star layer (tiny, dim, slow drift) -->
+  <div class="star-layer star-layer-far" id="far-stars"></div>
+  <!-- Mid star layer -->
+  <div class="star-layer star-layer-mid" id="mid-stars"></div>
+  <!-- Near star layer (brighter, faster drift) -->
+  <div class="star-layer star-layer-near" id="near-stars"></div>
+
+  <!-- Nebula clouds -->
+  <div class="nebula nebula-1"></div>
+  <div class="nebula nebula-2"></div>
+  <div class="nebula nebula-3"></div>
+
+  <!-- Sample connections (very faint) -->
+  <div class="connection conn-1"></div>
+  <div class="connection conn-2"></div>
+  <div class="connection conn-3"></div>
+
+  <!-- Sample data nodes -->
+  <div class="data-node node-blue-giant"></div>
+  <div class="data-node node-yellow"></div>
+  <div class="data-node node-orange"></div>
+  <div class="data-node node-red-1"></div>
+  <div class="data-node node-red-2"></div>
+  <div class="data-node node-white"></div>
+
+  <!-- Info overlay -->
+  <div class="info-overlay">
+    <h3>Background Layers</h3>
+    <ul>
+      <li><span class="layer-far"></span> Far stars — 800+ tiny points, slowest parallax</li>
+      <li><span class="layer-mid"></span> Mid stars — 200 medium points, moderate drift</li>
+      <li><span class="layer-near"></span> Near stars — 50 bright points, some twinkle</li>
+      <li><span class="layer-nebula"></span> Nebula — 2-3 soft clouds, slow breathing</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+  function createStars(container, count, sizeRange, opacityRange, twinkleChance) {
+    for (let i = 0; i < count; i++) {
+      const star = document.createElement('div');
+      star.className = 'star-dot';
+      const size = sizeRange[0] + Math.random() * (sizeRange[1] - sizeRange[0]);
+      const opacity = opacityRange[0] + Math.random() * (opacityRange[1] - opacityRange[0]);
+      star.style.width = size + 'px';
+      star.style.height = size + 'px';
+      star.style.left = Math.random() * 100 + '%';
+      star.style.top = Math.random() * 100 + '%';
+      star.style.opacity = opacity;
+
+      // Slight color variation for realism
+      const temp = Math.random();
+      if (temp < 0.6) star.style.background = '#ffffff';
+      else if (temp < 0.8) star.style.background = '#ccd4ff';
+      else if (temp < 0.9) star.style.background = '#ffe8c0';
+      else star.style.background = '#ffcca0';
+
+      if (size > 1.2) {
+        star.style.boxShadow = `0 0 ${size}px rgba(255,255,255,${opacity * 0.3})`;
+      }
+
+      if (Math.random() < twinkleChance) {
+        star.classList.add(Math.random() < 0.5 ? 'twinkle-s' : 'twinkle-f');
+        star.style.animationDelay = (Math.random() * 5) + 's';
+      }
+
+      container.appendChild(star);
+    }
+  }
+
+  createStars(document.getElementById('far-stars'), 800, [0.5, 1.2], [0.15, 0.35], 0.02);
+  createStars(document.getElementById('mid-stars'), 200, [1, 2], [0.25, 0.55], 0.08);
+  createStars(document.getElementById('near-stars'), 50, [1.5, 3], [0.5, 0.85], 0.2);
+</script>
+</body>
+</html>

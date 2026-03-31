@@ -1,0 +1,124 @@
+<h2>Sun/Moon Theme Toggle</h2>
+<p class="subtitle">Adapted from your reference — sized for Loupe's topbar. Click dark/light to preview the animation concept.</p>
+
+<div class="split">
+  <!-- Dark state -->
+  <div class="mockup">
+    <div class="mockup-header">Dark Mode State (Moon)</div>
+    <div class="mockup-body" style="padding:0;overflow:hidden;">
+      <div style="background:#0f172a;padding:24px;display:flex;flex-direction:column;align-items:center;gap:20px;">
+        <!-- Large preview -->
+        <div style="position:relative;width:28px;height:28px;">
+          <svg width="28" height="28" viewBox="0 0 24 24" style="transform:scale(1.75);">
+            <mask id="moon-mask-demo">
+              <rect x="0" y="0" width="100%" height="100%" fill="white"/>
+              <circle cx="17" cy="10" r="6" fill="black"/>
+            </mask>
+            <circle cx="12" cy="12" r="6" mask="url(#moon-mask-demo)" fill="#94a3b8"/>
+          </svg>
+        </div>
+        <div style="font-size:10px;color:#64748b;text-align:center;">
+          Sun scaled up 1.75x, beams hidden<br>
+          Moon mask reveals crescent<br>
+          <span style="color:#94a3b8;">28px icon in topbar</span>
+        </div>
+
+        <!-- In context -->
+        <div style="width:100%;background:#1e293b;border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:8px;border:1px solid #334155;">
+          <button style="background:none;border:none;padding:4px;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;" title="Toggle theme">
+            <svg width="22" height="22" viewBox="0 0 24 24">
+              <mask id="moon-mask-ctx">
+                <rect x="0" y="0" width="100%" height="100%" fill="white"/>
+                <circle cx="17" cy="10" r="6" fill="black"/>
+              </mask>
+              <circle cx="12" cy="12" r="6" mask="url(#moon-mask-ctx)" fill="#94a3b8" style="transform:scale(1.75);transform-origin:center;"/>
+            </svg>
+          </button>
+          <div style="flex:1;font-size:10px;color:#94a3b8;text-align:center;font-weight:600;">Session 1</div>
+          <span style="font-size:9px;color:#94a3b8;padding:2px 6px;border:1px solid #334155;border-radius:4px;">Pin</span>
+          <span style="font-size:9px;color:#94a3b8;padding:2px 6px;border:1px solid #334155;border-radius:4px;">↗</span>
+        </div>
+        <div style="font-size:9px;color:#475569;">↑ In minimal topbar context</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Light state -->
+  <div class="mockup">
+    <div class="mockup-header">Light Mode State (Sun)</div>
+    <div class="mockup-body" style="padding:0;overflow:hidden;">
+      <div style="background:#f8fafc;padding:24px;display:flex;flex-direction:column;align-items:center;gap:20px;">
+        <!-- Large preview -->
+        <div style="position:relative;width:28px;height:28px;">
+          <svg width="28" height="28" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="6" fill="#475569"/>
+            <g stroke="#475569" stroke-width="2" stroke-linecap="round">
+              <line x1="12" y1="1" x2="12" y2="3"/>
+              <line x1="12" y1="21" x2="12" y2="23"/>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+              <line x1="1" y1="12" x2="3" y2="12"/>
+              <line x1="21" y1="12" x2="23" y2="12"/>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </g>
+          </svg>
+        </div>
+        <div style="font-size:10px;color:#94a3b8;text-align:center;">
+          Sun at normal scale, beams visible<br>
+          Moon mask fully hidden<br>
+          <span style="color:#475569;">28px icon in topbar</span>
+        </div>
+
+        <!-- In context -->
+        <div style="width:100%;background:#ffffff;border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:8px;border:1px solid #e2e8f0;box-shadow:0 1px 2px rgba(0,0,0,0.04);">
+          <button style="background:none;border:none;padding:4px;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;" title="Toggle theme">
+            <svg width="22" height="22" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="6" fill="#475569"/>
+              <g stroke="#475569" stroke-width="2" stroke-linecap="round">
+                <line x1="12" y1="1" x2="12" y2="3"/>
+                <line x1="12" y1="21" x2="12" y2="23"/>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                <line x1="1" y1="12" x2="3" y2="12"/>
+                <line x1="21" y1="12" x2="23" y2="12"/>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+              </g>
+            </svg>
+          </button>
+          <div style="flex:1;font-size:10px;color:#334155;text-align:center;font-weight:600;">Session 1</div>
+          <span style="font-size:9px;color:#64748b;padding:2px 6px;border:1px solid #e2e8f0;border-radius:4px;">Pin</span>
+          <span style="font-size:9px;color:#64748b;padding:2px 6px;border:1px solid #e2e8f0;border-radius:4px;">↗</span>
+        </div>
+        <div style="font-size:9px;color:#94a3b8;">↑ In minimal topbar context</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:16px;">
+  <h3>Animation Spec</h3>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px;">
+    <div style="padding:12px;border:1px solid var(--border);border-radius:6px;">
+      <div style="font-weight:600;margin-bottom:6px;">Light → Dark</div>
+      <ul style="margin:0;padding-left:16px;color:var(--text-muted);line-height:1.6;">
+        <li>Sun scales up to 1.75x (0.25s ease)</li>
+        <li>Sun beams rotate -25deg + fade out (0.15s)</li>
+        <li>Moon mask circle moves in (cx 24→17, 0.5s delay 0.25s)</li>
+      </ul>
+    </div>
+    <div style="padding:12px;border:1px solid var(--border);border-radius:6px;">
+      <div style="font-weight:600;margin-bottom:6px;">Dark → Light</div>
+      <ul style="margin:0;padding-left:16px;color:var(--text-muted);line-height:1.6;">
+        <li>Sun scales down to 1x (0.5s elastic)</li>
+        <li>Sun beams rotate back + fade in (0.5s elastic)</li>
+        <li>Moon mask circle retreats (cx 17→24, 0.25s)</li>
+      </ul>
+    </div>
+  </div>
+  <p style="margin-top:8px;font-size:11px;color:var(--text-muted);">
+    Respects <code>prefers-reduced-motion</code> — all transitions disabled when set to reduce.
+    Icon size: 22px in topbar (both minimal and full mode header). Hover: subtle color shift.
+  </p>
+</div>
