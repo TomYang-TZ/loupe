@@ -439,30 +439,30 @@ const Gravity = (() => {
         ctx.fillRect(0, 0, width, height);
       }
 
-      // Stars — toned down for subtlety
+      // Stars
       for (const s of bgStars) {
-        let op = s.opacity * 0.45; // scale down from raw values
+        let op = s.opacity * 0.7;
         if (s.twinkle >= 0) op *= (0.5 + 0.5 * Math.sin(t / s.twinkleSpeed * Math.PI * 2 + s.twinkle));
         ctx.globalAlpha = op;
         ctx.fillStyle = s.color;
         const sx = ((s.x * width + camX * s.drift * width) % width + width) % width;
         const sy = ((s.y * height + camY * s.drift * height) % height + height) % height;
         ctx.beginPath();
-        ctx.arc(sx, sy, s.size * 0.7, 0, Math.PI * 2);
+        ctx.arc(sx, sy, s.size, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
     } else {
-      // Light mode: darker dots that mirror dark mode stars
+      // Light mode: visible dots mirroring dark mode
       for (const s of bgStars) {
-        let op = s.opacity * 0.18;
+        let op = s.opacity * 0.5;
         if (s.twinkle >= 0) op *= (0.6 + 0.4 * Math.sin(t / s.twinkleSpeed * Math.PI * 2 + s.twinkle));
         ctx.globalAlpha = op;
         ctx.fillStyle = s.lightColor;
         const sx = ((s.x * width + camX * s.drift * width) % width + width) % width;
         const sy = ((s.y * height + camY * s.drift * height) % height + height) % height;
         ctx.beginPath();
-        ctx.arc(sx, sy, s.size * 0.7, 0, Math.PI * 2);
+        ctx.arc(sx, sy, s.size * 0.9, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
