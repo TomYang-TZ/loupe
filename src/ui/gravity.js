@@ -21,6 +21,7 @@ const Gravity = (() => {
   let isDragging = false, dragStartX = 0, dragStartY = 0, dragCamX = 0, dragCamY = 0;
   let hoveredNode = null;
   let selectedNode = null;
+  let draggingNode = null;
 
   // Fisheye (subtle)
   let fisheyeX = 0, fisheyeY = 0;
@@ -61,11 +62,11 @@ const Gravity = (() => {
 
   // --- Star Classification ---
   const STAR_CLASSES = [
-    { name: "Red Dwarf",    minImp: 1,  maxImp: 3,  dark: "#ff6b4a", light: "#e05a3a" },
-    { name: "Orange Dwarf", minImp: 4,  maxImp: 8,  dark: "#ff9f43", light: "#d97a2a" },
-    { name: "Yellow Star",  minImp: 9,  maxImp: 15, dark: "#ffd93d", light: "#c9a820" },
-    { name: "White Star",   minImp: 16, maxImp: 25, dark: "#f0f0ff", light: "#8888aa" },
-    { name: "Blue Giant",   minImp: 26, maxImp: Infinity, dark: "#7eb8ff", light: "#4a90d9" },
+    { name: "Red Dwarf",    minImp: 1,  maxImp: 3,  dark: "#ff6b4a", light: "#c44a30" },
+    { name: "Orange Dwarf", minImp: 4,  maxImp: 8,  dark: "#ff9f43", light: "#b06a1e" },
+    { name: "Yellow Star",  minImp: 9,  maxImp: 15, dark: "#ffd93d", light: "#8a7a18" },
+    { name: "White Star",   minImp: 16, maxImp: 25, dark: "#f0f0ff", light: "#505068" },
+    { name: "Blue Giant",   minImp: 26, maxImp: Infinity, dark: "#7eb8ff", light: "#2a5a8a" },
   ];
 
   function getImportance(n) {
@@ -302,11 +303,11 @@ const Gravity = (() => {
     if (simulation) simulation.stop();
 
     simulation = d3.forceSimulation(nodeArray)
-      .force("charge", d3.forceManyBody().strength(-200).distanceMax(500))
-      .force("link", d3.forceLink(edgeArray).id(d => d.id).distance(120).strength(e => 0.05 + e.weight * 0.015))
-      .force("center", d3.forceCenter(width / 2, height / 2).strength(0.012))
-      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 8))
-      .force("cluster", clusterForce(dirGroups, 0.15))
+      .force("charge", d3.forceManyBody().strength(-120).distanceMax(350))
+      .force("link", d3.forceLink(edgeArray).id(d => d.id).distance(80).strength(e => 0.08 + e.weight * 0.01))
+      .force("center", d3.forceCenter(width / 2, height / 2).strength(0.015))
+      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 5))
+      .force("cluster", clusterForce(dirGroups, 0.08))
       .alphaDecay(0.02)
       .on("tick", () => {});
 
@@ -406,7 +407,7 @@ const Gravity = (() => {
           size: cfg.sizeRange[0] + Math.random() * (cfg.sizeRange[1] - cfg.sizeRange[0]),
           opacity: cfg.opRange[0] + Math.random() * (cfg.opRange[1] - cfg.opRange[0]),
           color: colors[Math.floor(Math.random() * colors.length)],
-          lightColor: ["#b0b8c8","#a8b0c0","#c0b8a8","#b8b0a0","#9098a8"][Math.floor(Math.random() * 5)],
+          lightColor: ["#8890a0","#808898","#a09888","#988880","#707888"][Math.floor(Math.random() * 5)],
           twinkle: Math.random() < 0.08 ? Math.random() * Math.PI * 2 : -1,
           twinkleSpeed: 2 + Math.random() * 3,
           drift: cfg === layers[0] ? 0.0003 : cfg === layers[1] ? 0.0008 : 0.002,
@@ -452,24 +453,24 @@ const Gravity = (() => {
       }
       ctx.globalAlpha = 1;
     } else {
-      // Light mode: visible warm-toned dots
+      // Light mode: darker dots that mirror dark mode stars
       for (const s of bgStars) {
-        let op = s.opacity * 0.55;
-        if (s.twinkle >= 0) op *= (0.5 + 0.5 * Math.sin(t / s.twinkleSpeed * Math.PI * 2 + s.twinkle));
+        let op = s.opacity * 0.18;
+        if (s.twinkle >= 0) op *= (0.6 + 0.4 * Math.sin(t / s.twinkleSpeed * Math.PI * 2 + s.twinkle));
         ctx.globalAlpha = op;
         ctx.fillStyle = s.lightColor;
         const sx = ((s.x * width + camX * s.drift * width) % width + width) % width;
         const sy = ((s.y * height + camY * s.drift * height) % height + height) % height;
         ctx.beginPath();
-        ctx.arc(sx, sy, s.size * 0.8, 0, Math.PI * 2);
+        ctx.arc(sx, sy, s.size * 0.7, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1;
-      // Light mode nebula: pastel washes
+      // Light mode nebula: soft shadow-like washes (inverted nebula)
       const lightNebulae = [
-        { x: 0.25, y: 0.35, rx: width * 0.22, color: [160, 140, 190, 0.05] },
-        { x: 0.7, y: 0.6, rx: width * 0.18, color: [140, 170, 200, 0.04] },
-        { x: 0.45, y: 0.75, rx: width * 0.15, color: [200, 155, 140, 0.035] },
+        { x: 0.2, y: 0.3, rx: width * 0.25, color: [120, 100, 160, 0.03] },
+        { x: 0.75, y: 0.65, rx: width * 0.2, color: [100, 130, 160, 0.025] },
+        { x: 0.5, y: 0.8, rx: width * 0.18, color: [160, 110, 100, 0.02] },
       ];
       for (const n of lightNebulae) {
         const breathe = 1 + 0.04 * Math.sin(t / 22 * Math.PI * 2);
@@ -810,9 +811,43 @@ const Gravity = (() => {
 
   // --- Interaction ---
   function initInteraction() {
+
+    canvas.addEventListener("mouseleave", () => { fisheyeActive = false; hoveredNode = null; hoveredEdge = null; });
+
+    canvas.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const hit = nodeAt(mx, my);
+      if (hit) {
+        // Start dragging the node
+        draggingNode = hit;
+        selectedNode = hit;
+        hit.fx = hit.x;
+        hit.fy = hit.y;
+        if (simulation) simulation.alphaTarget(0.3).restart();
+        canvas.style.cursor = "grabbing";
+        return;
+      }
+      selectedNode = null;
+      isDragging = true;
+      userDragged = true;
+      dragStartX = e.clientX; dragStartY = e.clientY;
+      dragCamX = camX; dragCamY = camY;
+      canvas.style.cursor = "grabbing";
+    });
+
     canvas.addEventListener("mousemove", (e) => {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+      // Node dragging
+      if (draggingNode) {
+        draggingNode.fx = mx / camZoom + camX;
+        draggingNode.fy = my / camZoom + camY;
+        return;
+      }
+
       if (isDragging) {
         camX = dragCamX - (e.clientX - dragStartX) / camZoom;
         camY = dragCamY - (e.clientY - dragStartY) / camZoom;
@@ -823,31 +858,23 @@ const Gravity = (() => {
       const hit = nodeAt(mx, my);
       hoveredNode = hit;
       fisheyeActive = !!hit;
-      // Edge hover when not over a node
       hoveredEdge = hit ? null : findEdgeAtMouse(mx, my);
       canvas.style.cursor = hit ? "pointer" : hoveredEdge ? "crosshair" : "grab";
     });
 
-    canvas.addEventListener("mouseleave", () => { fisheyeActive = false; hoveredNode = null; hoveredEdge = null; });
-
-    canvas.addEventListener("mousedown", (e) => {
-      if (e.button !== 0) return; // only left click
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-      const hit = nodeAt(mx, my);
-      if (hit) { selectedNode = hit; return; }
-      selectedNode = null;
-      isDragging = true;
-      userDragged = true;
-      dragStartX = e.clientX; dragStartY = e.clientY;
-      dragCamX = camX; dragCamY = camY;
-      canvas.style.cursor = "grabbing";
-    });
+    function releaseNode() {
+      if (draggingNode) {
+        draggingNode.fx = null;
+        draggingNode.fy = null;
+        draggingNode = null;
+        if (simulation) simulation.alphaTarget(0);
+      }
+    }
 
     canvas.addEventListener("mouseup", () => {
+      releaseNode();
       if (isDragging) {
         isDragging = false;
-        // Lock target to where user dragged so it doesn't snap back
         targetCamX = camX;
         targetCamY = camY;
         canvas.style.cursor = hoveredNode ? "pointer" : "grab";
@@ -855,6 +882,7 @@ const Gravity = (() => {
     });
 
     document.addEventListener("mouseup", () => {
+      releaseNode();
       if (isDragging) {
         isDragging = false;
         targetCamX = camX;
