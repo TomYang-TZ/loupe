@@ -451,16 +451,36 @@ const Gravity = (() => {
       }
       ctx.globalAlpha = 1;
     } else {
-      // Light mode: subtle dots
+      // Light mode: soft warm-toned dots
+      const lightColors = ["#b0b8c8","#a0a8b8","#c0b8a8","#b8b0a0","#9098a8"];
       for (const s of bgStars) {
-        if (s.opacity < 0.4) continue; // only bright stars in light mode
-        ctx.globalAlpha = s.opacity * 0.15;
-        ctx.fillStyle = "#94a3b8";
+        ctx.globalAlpha = s.opacity * 0.35;
+        let op = s.opacity * 0.35;
+        if (s.twinkle >= 0) op *= (0.5 + 0.5 * Math.sin(t / s.twinkleSpeed * Math.PI * 2 + s.twinkle));
+        ctx.globalAlpha = op;
+        ctx.fillStyle = lightColors[Math.floor(Math.random() * lightColors.length)];
         const sx = ((s.x * width + camX * s.drift * width) % width + width) % width;
         const sy = ((s.y * height + camY * s.drift * height) % height + height) % height;
         ctx.beginPath();
-        ctx.arc(sx, sy, s.size * 0.7, 0, Math.PI * 2);
+        ctx.arc(sx, sy, s.size * 0.8, 0, Math.PI * 2);
         ctx.fill();
+      }
+      // Light mode nebula: faint pastel washes
+      const lightNebulae = [
+        { x: 0.25, y: 0.35, rx: width * 0.22, color: [180, 160, 210, 0.035] },
+        { x: 0.7, y: 0.6, rx: width * 0.18, color: [160, 190, 210, 0.03] },
+        { x: 0.45, y: 0.75, rx: width * 0.15, color: [210, 170, 160, 0.025] },
+      ];
+      for (const n of lightNebulae) {
+        const breathe = 1 + 0.04 * Math.sin(t / 22 * Math.PI * 2);
+        const cx = n.x * width;
+        const cy = n.y * height;
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, n.rx * breathe);
+        grad.addColorStop(0, `rgba(${n.color[0]},${n.color[1]},${n.color[2]},${n.color[3]})`);
+        grad.addColorStop(0.6, `rgba(${n.color[0]},${n.color[1]},${n.color[2]},${n.color[3] * 0.3})`);
+        grad.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, width, height);
       }
       ctx.globalAlpha = 1;
     }
