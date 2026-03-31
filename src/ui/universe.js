@@ -10,17 +10,17 @@ const Universe = (function () {
   const GLOW_DURATION = 30000;       // 30s — "active"
   const WARM_DURATION = 120000;      // 2min — "warm"
   const STALE_CUTOFF = 30 * 60000;   // 30min — hidden
-  const DEFAULT_CAM_Z = 350;
-  const MIN_DISTANCE = 50;
-  const MAX_DISTANCE = 800;
+  const DEFAULT_CAM_Z = 180;
+  const MIN_DISTANCE = 30;
+  const MAX_DISTANCE = 500;
 
   // Star classification thresholds
   const STAR_CLASSES = [
-    { name: "Red Dwarf",    minImp: 1,  maxImp: 3,  minSize: 0.8, maxSize: 1.2, color: new THREE.Color("#ff6b4a"), coronaMul: 2.0 },
-    { name: "Orange Dwarf", minImp: 4,  maxImp: 8,  minSize: 1.5, maxSize: 2.0, color: new THREE.Color("#ff9f43"), coronaMul: 2.5 },
-    { name: "Yellow Star",  minImp: 9,  maxImp: 15, minSize: 2.5, maxSize: 3.5, color: new THREE.Color("#ffd93d"), coronaMul: 3.0 },
-    { name: "White Star",   minImp: 16, maxImp: 25, minSize: 4.0, maxSize: 5.0, color: new THREE.Color("#f0f0ff"), coronaMul: 3.5 },
-    { name: "Blue Giant",   minImp: 26, maxImp: Infinity, minSize: 5.5, maxSize: 7.0, color: new THREE.Color("#7eb8ff"), coronaMul: 4.0 },
+    { name: "Red Dwarf",    minImp: 1,  maxImp: 3,  minSize: 1.5, maxSize: 2.5, color: new THREE.Color("#ff6b4a"), coronaMul: 3.0 },
+    { name: "Orange Dwarf", minImp: 4,  maxImp: 8,  minSize: 3.0, maxSize: 4.5, color: new THREE.Color("#ff9f43"), coronaMul: 3.0 },
+    { name: "Yellow Star",  minImp: 9,  maxImp: 15, minSize: 5.0, maxSize: 7.0, color: new THREE.Color("#ffd93d"), coronaMul: 3.0 },
+    { name: "White Star",   minImp: 16, maxImp: 25, minSize: 7.0, maxSize: 9.0, color: new THREE.Color("#f0f0ff"), coronaMul: 3.5 },
+    { name: "Blue Giant",   minImp: 26, maxImp: Infinity, minSize: 9.0, maxSize: 12.0, color: new THREE.Color("#7eb8ff"), coronaMul: 4.0 },
   ];
 
   // Edge type colors
@@ -259,14 +259,15 @@ const Universe = (function () {
     varying vec2 vUv;
     void main() {
       float dist = length(vUv - 0.5) * 2.0;
-      // Core: solid bright center
-      float coreEdge = 0.3;
-      float core = smoothstep(coreEdge + 0.05, coreEdge - 0.05, dist);
-      // Corona: exponential falloff
-      float corona = exp(-dist * 3.0) * 0.15;
-      float alpha = (core + corona) * vOpacity;
-      if (alpha < 0.001) discard;
-      vec3 col = vColor * (core + corona * 0.5);
+      // Core: bright center
+      float core = smoothstep(0.45, 0.0, dist);
+      // Corona: soft glow extending outward
+      float corona = exp(-dist * 2.0) * 0.4;
+      float combined = core + corona;
+      float alpha = combined * vOpacity;
+      if (alpha < 0.002) discard;
+      // Core is full bright, corona is tinted
+      vec3 col = vColor * (core + corona * 0.7) + vec3(0.1) * core;
       gl_FragColor = vec4(col, alpha);
     }
   `;
@@ -518,11 +519,11 @@ const Universe = (function () {
       const c = EDGE_COLORS[e.type] || EDGE_COLORS.sequence;
 
       // Determine opacity
-      let alpha = 0.05; // default: nearly invisible
+      let alpha = 0.12; // default: faintly visible
       const hovered = hoveredNode || selectedNode;
       if (hovered) {
         if (e.source === hovered.id || e.target === hovered.id) {
-          alpha = 0.3; // connected to hovered node
+          alpha = 0.5; // connected to hovered node
         } else {
           alpha = 0.02; // dim further when something is hovered
         }
@@ -701,7 +702,7 @@ const Universe = (function () {
     tex.minFilter = THREE.LinearFilter;
     const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
     const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(canvas.width / 32, canvas.height / 32, 1); // scale to world units
+    sprite.scale.set(canvas.width / 20, canvas.height / 20, 1); // scale to world units
     return sprite;
   }
 
@@ -762,7 +763,7 @@ const Universe = (function () {
       if (!entry || entry.isExpanded !== needsExpanded) {
         if (entry) { labelGroup.remove(entry.sprite); entry.sprite.material.map.dispose(); entry.sprite.material.dispose(); }
         const displayText = needsExpanded ? `${n.label}  \u00b7  ${n.dir}` : n.label;
-        const sprite = createLabelSprite(displayText, `rgba(255,255,255,0.7)`);
+        const sprite = createLabelSprite(displayText, `rgba(255,255,255,0.9)`);
         entry = { sprite, isExpanded: needsExpanded };
         labelSprites.set(fp, entry);
         labelGroup.add(entry.sprite);
