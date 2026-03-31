@@ -59,10 +59,17 @@ const Gravity = (() => {
   };
 
   function classifyEdge(prevAction, prevFile, currAction, currFile) {
+    const sameFile = prevFile === currFile;
+    // Same-file patterns
+    if (sameFile && prevAction === "edit" && currAction === "read") return "review";
+    if (sameFile && prevAction === "edit" && currAction === "edit") return "iteration";
+    // Cross-file patterns
+    if (currAction === "delegate") return "delegation";
     if (prevAction === "read" && currAction === "edit") return "prerequisite";
-    if (prevAction === "edit" && currAction === "edit" && prevFile !== currFile) return "coupling";
+    if (prevAction === "edit" && currAction === "edit") return "coupling";
     if (prevAction === "edit" && currAction === "exec") return "validation";
-    if (prevAction === "read" && currAction === "read") return "discovery";
+    if (prevAction === "exec" && currAction === "edit") return "test-driven";
+    if (prevAction === "read" && currAction === "read") return "reference";
     return "sequence";
   }
 
@@ -98,19 +105,23 @@ const Gravity = (() => {
   function getEdgeColor(edge, dark, solid) {
     if (solid) {
       return ({
-        prerequisite: dark ? "#a0b4d0" : "#3a5a7a",
-        coupling:     dark ? "#c0a080" : "#6a5040",
-        validation:   dark ? "#80c0a0" : "#3a6a50",
-        discovery:    dark ? "#8090c0" : "#4a5a8a",
-        sequence:     dark ? "#506070" : "#a0a8b0",
+        prerequisite:  dark ? "#a0b4d0" : "#3a5a7a",
+        coupling:      dark ? "#c0a080" : "#6a5040",
+        validation:    dark ? "#80c0a0" : "#3a6a50",
+        reference:     dark ? "#8090c0" : "#4a5a8a",
+        "test-driven": dark ? "#d0a080" : "#8a5a3a",
+        delegation:    dark ? "#b090d0" : "#6a4a8a",
+        sequence:      dark ? "#506070" : "#a0a8b0",
       })[edge.type] || (dark ? "#506070" : "#a0a8b0");
     }
     return ({
-      prerequisite: dark ? "rgba(160,180,208,0.25)" : "rgba(58,90,122,0.15)",
-      coupling:     dark ? "rgba(192,160,128,0.2)"  : "rgba(106,80,64,0.12)",
-      validation:   dark ? "rgba(128,192,160,0.2)"  : "rgba(58,106,80,0.12)",
-      discovery:    dark ? "rgba(128,144,192,0.15)"  : "rgba(74,90,138,0.1)",
-      sequence:     dark ? "rgba(80,96,112,0.06)"   : "rgba(160,168,176,0.08)",
+      prerequisite:  dark ? "rgba(160,180,208,0.25)" : "rgba(58,90,122,0.15)",
+      coupling:      dark ? "rgba(192,160,128,0.2)"  : "rgba(106,80,64,0.12)",
+      validation:    dark ? "rgba(128,192,160,0.2)"  : "rgba(58,106,80,0.12)",
+      reference:     dark ? "rgba(128,144,192,0.15)" : "rgba(74,90,138,0.1)",
+      "test-driven": dark ? "rgba(208,160,128,0.2)"  : "rgba(138,90,58,0.12)",
+      delegation:    dark ? "rgba(176,144,208,0.2)"  : "rgba(106,74,138,0.12)",
+      sequence:      dark ? "rgba(80,96,112,0.06)"   : "rgba(160,168,176,0.08)",
     })[edge.type] || (dark ? "rgba(80,96,112,0.06)" : "rgba(160,168,176,0.08)");
   }
 
@@ -214,13 +225,23 @@ const Gravity = (() => {
     else if (action === "exec") node.execCount++;
     activeFiles.set(fp, ts);
 
-    if (prev && prev.file !== fp && (ts - prev.ts) < 60000) {
-      const et = classifyEdge(prev.action, prev.file, action, fp);
-      const edge = getOrCreateEdge(prev.file, fp, et);
-      edge.weight++;
-      edge.lastTs = ts;
-      edge.sessions.add(sessionId);
-      getOrCreateNode(prev.file, fp);
+    if (prev && (ts - prev.ts) < 60000) {
+      if (prev.file === fp) {
+        // Same-file patterns: iteration (edit→edit) or review (edit→read)
+        const et = classifyEdge(prev.action, prev.file, action, fp);
+        if (et === "iteration" || et === "review") {
+          // Track as node metadata, not as an edge (self-loops are noisy)
+          if (et === "iteration") node.iterationCount = (node.iterationCount || 0) + 1;
+          if (et === "review") node.reviewCount = (node.reviewCount || 0) + 1;
+        }
+      } else {
+        const et = classifyEdge(prev.action, prev.file, action, fp);
+        const edge = getOrCreateEdge(prev.file, fp, et);
+        edge.weight++;
+        edge.lastTs = ts;
+        edge.sessions.add(sessionId);
+        getOrCreateNode(prev.file, fp);
+      }
     }
     lastToolBySession.set(sessionId, { tool: toolName, action, file: fp, ts });
 
@@ -466,9 +487,11 @@ const Gravity = (() => {
   const EDGE_TYPE_LABELS = {
     prerequisite: "Read → Edit",
     coupling: "Edit → Edit",
-    validation: "Edit → Exec",
-    discovery: "Search → Read",
-    sequence: "Sequential",
+    validation: "Edit → Run",
+    reference: "Read → Read",
+    "test-driven": "Run → Edit",
+    delegation: "→ Agent",
+    sequence: "Other",
   };
 
   function drawEdgeLabel(edge, dark, mx, my) {
@@ -523,8 +546,14 @@ const Gravity = (() => {
     }
   }
 
-  // --- Click info card ---
-  let infoCard = null; // { node, x, y }
+  // --- Info card system ---
+  // Hover → mini card on canvas (follows hover, disappears on leave)
+  // Click node → pins mini card (stays visible)
+  // Click pinned mini card → detail popover nearby
+  // Click mini card again → close popover
+  let infoCard = null; // { node } — pinned node (via click)
+  let miniCardRect = null; // screen coords for click detection
+  let detailOpen = false;
 
   function buildInfoCard(node) {
     const now = Date.now();
@@ -543,107 +572,161 @@ const Gravity = (() => {
     let lastActionStr = node.lastAction;
     if (age < 30000) lastActionStr += " · just now";
     else if (age < 60000) lastActionStr += " · <1m ago";
-    else if (age < WARM_DURATION) lastActionStr += ` · ${Math.round(age / 60000)}m ago`;
     else lastActionStr += ` · ${Math.round(age / 60000)}m ago`;
 
     const edgeTypes = {};
     for (const e of connEdges) {
       const dir = e.source === node.id ? "→" : "←";
       const other = e.source === node.id ? shortName(e.target) : shortName(e.source);
-      const label = `${dir} ${other}`;
-      edgeTypes[label] = EDGE_TYPE_LABELS[e.type] || e.type;
+      edgeTypes[`${dir} ${other}`] = EDGE_TYPE_LABELS[e.type] || e.type;
     }
 
     return {
-      file: node.id,
-      lastAction: lastActionStr,
-      edgeTypes,
+      file: node.id, lastAction: lastActionStr, edgeTypes,
       connections: [...connFiles].map(shortName),
-      reads: node.readCount,
-      edits: node.editCount,
-      execs: node.execCount,
-      importance: imp,
+      reads: node.readCount, edits: node.editCount, execs: node.execCount,
     };
   }
 
-  function drawInfoCard(dark) {
-    if (!infoCard) return;
-    const card = infoCard;
-    const node = card.node;
+  // Draw mini card next to a node (on canvas)
+  function drawMiniCard(dark) {
+    // Show for pinned node, or hovered node (if not pinned to something else)
+    const target = infoCard ? infoCard.node : hoveredNode;
+    if (!target) { miniCardRect = null; return; }
 
-    // Position card near the node in screen space (with spread applied)
+    const node = target;
+    const info = buildInfoCard(node);
+    const isPinned = infoCard && infoCard.node === node;
+
     const sx = (spX(node) - camX) * camZoom;
     const sy = (spY(node) - camY) * camZoom;
     const r = nodeRadius(node) * camZoom;
 
-    const cardX = sx + r + 14;
-    const cardY = sy - 20;
-    const cardW = 220;
+    const label = shortName(node.id);
+    const sub = `R:${info.reads} E:${info.edits} X:${info.execs} · ${info.lastAction}`;
 
-    const info = buildInfoCard(node);
-    const lines = [];
-    lines.push({ text: info.file, bold: true, size: 10 });
-    lines.push({ text: info.lastAction, bold: false, size: 9, dim: true });
-    lines.push({ text: "", size: 4 }); // spacer
+    ctx.font = '600 10px "SF Mono",Menlo,monospace';
+    const labelW = ctx.measureText(label).width;
+    ctx.font = '400 8px "SF Mono",Menlo,monospace';
+    const subW = ctx.measureText(sub).width;
+    const cardW = Math.max(labelW, subW) + 24;
+    const cardH = 36;
 
-    // Edge types
-    const edgeEntries = Object.entries(info.edgeTypes);
-    if (edgeEntries.length > 0) {
-      for (const [label, type] of edgeEntries.slice(0, 5)) {
-        lines.push({ text: `${label}  ${type}`, bold: false, size: 8, dim: true });
-      }
-      if (edgeEntries.length > 5) lines.push({ text: `+${edgeEntries.length - 5} more`, size: 8, dim: true });
-      lines.push({ text: "", size: 4 });
-    }
+    let cx = sx + r + 12;
+    let cy = sy - cardH / 2;
+    if (cx + cardW > width - 10) cx = sx - r - cardW - 12;
+    if (cy + cardH > height - 10) cy = height - cardH - 10;
+    if (cy < 4) cy = 4;
 
-    // Connected files
-    if (info.connections.length > 0) {
-      lines.push({ text: `${info.connections.length} connected: ${info.connections.slice(0, 4).join(", ")}${info.connections.length > 4 ? "…" : ""}`, size: 8, dim: true });
-      lines.push({ text: "", size: 4 });
-    }
-
-    // Stats
-    lines.push({ text: `R:${info.reads} E:${info.edits} X:${info.execs} · imp:${info.importance}`, size: 8, dim: true });
-
-    // Calculate card height
-    let totalH = 16; // padding
-    for (const l of lines) totalH += (l.size || 10) + 4;
-    totalH += 8;
-
-    // Keep card on screen
-    let cx = cardX, cy = cardY;
-    if (cx + cardW > width - 10) cx = sx - r - cardW - 14;
-    if (cy + totalH > height - 10) cy = height - totalH - 10;
-    if (cy < 10) cy = 10;
-
-    // Draw card
-    ctx.fillStyle = dark ? "rgba(10,12,20,0.92)" : "rgba(255,255,255,0.95)";
-    ctx.strokeStyle = dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.1)";
+    // Background — slightly more opaque when pinned
+    const bgAlpha = isPinned ? 0.95 : 0.85;
+    ctx.fillStyle = dark ? `rgba(10,12,20,${bgAlpha})` : `rgba(255,255,255,${bgAlpha})`;
+    ctx.strokeStyle = isPinned
+      ? (dark ? "rgba(160,180,208,0.3)" : "rgba(58,90,122,0.2)")
+      : (dark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.08)");
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.roundRect(cx, cy, cardW, totalH, 6);
+    ctx.roundRect(cx, cy, cardW, cardH, 5);
     ctx.fill();
     ctx.stroke();
 
-    // Draw lines
-    let ly = cy + 10;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "top";
-    for (const l of lines) {
-      if (!l.text) { ly += l.size + 2; continue; }
-      const sz = l.size || 10;
-      ctx.font = `${l.bold ? "600" : "400"} ${sz}px "SF Mono","JetBrains Mono",Menlo,monospace`;
-      const alpha = l.dim ? 0.5 : 0.9;
-      ctx.fillStyle = dark ? `rgba(200,215,240,${alpha})` : `rgba(30,40,50,${alpha})`;
-      // Truncate long text
-      let text = l.text;
-      while (ctx.measureText(text).width > cardW - 20 && text.length > 10) {
-        text = text.slice(0, -4) + "…";
-      }
-      ctx.fillText(text, cx + 10, ly);
-      ly += sz + 4;
+    // Text
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.font = '600 10px "SF Mono",Menlo,monospace';
+    ctx.fillStyle = dark ? "rgba(200,215,240,0.9)" : "rgba(30,40,50,0.9)";
+    ctx.fillText(label, cx + 10, cy + 6);
+    ctx.font = '400 8px "SF Mono",Menlo,monospace';
+    ctx.fillStyle = dark ? "rgba(200,215,240,0.4)" : "rgba(50,70,90,0.4)";
+    ctx.fillText(sub, cx + 10, cy + 20);
+
+    // Pin indicator + expand hint
+    if (isPinned) {
+      ctx.fillStyle = dark ? "rgba(200,215,240,0.25)" : "rgba(50,70,90,0.2)";
+      ctx.textAlign = "right";
+      ctx.fillText(detailOpen ? "▾" : "▸", cx + cardW - 8, cy + 12);
     }
+
+    miniCardRect = { x: cx, y: cy, w: cardW, h: cardH };
   }
+
+  // Show detail popover (HTML, positioned near mini card)
+  function showDetail(node) {
+    const cardEl = document.getElementById("gravity-card");
+    if (!cardEl || !miniCardRect) return;
+
+    const info = buildInfoCard(node);
+    const NAMES = {
+      prerequisite: "prerequisite",
+      coupling: "coupling",
+      validation: "validation",
+      reference: "reference",
+      "test-driven": "test-driven",
+      delegation: "delegation",
+      iteration: "iteration",
+      review: "review",
+      sequence: "other",
+    };
+
+    let html = `<div class="gc-file">${esc(info.file)}</div>`;
+    html += `<div class="gc-action">${esc(info.lastAction)}</div>`;
+
+    // Behavioral patterns — unified section
+    const edgeEntries = Object.entries(info.edgeTypes);
+    const hasPatterns = edgeEntries.length > 0 || node.iterationCount || node.reviewCount;
+    if (hasPatterns) {
+      html += `<div class="gc-section"><div class="gc-label">Behavior</div>`;
+      if (node.iterationCount) {
+        html += `<div class="gc-edge">↻ ${node.iterationCount}× <span class="gc-type" data-tip="${NAMES.iteration}">Edit → Edit</span></div>`;
+      }
+      if (node.reviewCount) {
+        html += `<div class="gc-edge">↩ ${node.reviewCount}× <span class="gc-type" data-tip="${NAMES.review}">Edit → Read</span></div>`;
+      }
+      for (const [label, type] of edgeEntries) {
+        const key = Object.entries(EDGE_TYPE_LABELS).find(([k, v]) => v === type)?.[0] || "";
+        const name = NAMES[key] || "";
+        html += `<div class="gc-edge">${esc(label)} <span class="gc-type" data-tip="${name}">${esc(type)}</span></div>`;
+      }
+      html += `</div>`;
+    }
+
+    if (info.connections.length > 0) {
+      html += `<div class="gc-section"><div class="gc-label">Connected (${info.connections.length})</div>`;
+      html += `<div class="gc-edge">${info.connections.map(esc).join(", ")}</div>`;
+      html += `</div>`;
+    }
+
+    html += `<div class="gc-section gc-stats">R:${info.reads} E:${info.edits} X:${info.execs}</div>`;
+
+    cardEl.innerHTML = html;
+    cardEl.style.display = "";
+    cardEl.style.transform = "";
+
+    // Position below the mini card
+    let left = miniCardRect.x;
+    let top = miniCardRect.y + miniCardRect.h + 6;
+    // Keep on screen
+    if (top + 200 > height) top = miniCardRect.y - 200 - 6;
+    if (left + 240 > width) left = width - 250;
+    if (left < 4) left = 4;
+    if (top < 4) top = 4;
+    cardEl.style.left = left + "px";
+    cardEl.style.top = top + "px";
+    detailOpen = true;
+  }
+
+  function hideDetail() {
+    const cardEl = document.getElementById("gravity-card");
+    if (cardEl) cardEl.style.display = "none";
+    detailOpen = false;
+  }
+
+  function dismissAll() {
+    selectedNode = null;
+    infoCard = null;
+    hideDetail();
+  }
+
+  function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
   // --- Rendering ---
   function render() {
@@ -970,8 +1053,8 @@ const Gravity = (() => {
 
     ctx.restore();
 
-    // --- Info card (drawn in screen space) ---
-    drawInfoCard(dark);
+    // --- Mini card (canvas) ---
+    drawMiniCard(dark);
 
     drawLegend(dark);
     drawStats(dark, now);
@@ -990,7 +1073,8 @@ const Gravity = (() => {
   }
 
   function drawLegend(dark) {
-    const x = 12, y = height - 90;
+    if (height < 400) return; // hide legend when panel is compact
+    const x = 12, y = height - 120;
     const fg = dark ? "rgba(200,215,240,0.4)" : "rgba(50,70,90,0.4)";
     ctx.textAlign = "left"; ctx.textBaseline = "middle";
 
@@ -998,7 +1082,9 @@ const Gravity = (() => {
       { l: "Prerequisite", c: dark ? "#a0b4d0" : "#3a5a7a" },
       { l: "Coupling", c: dark ? "#c0a080" : "#6a5040" },
       { l: "Validation", c: dark ? "#80c0a0" : "#3a6a50" },
-      { l: "Discovery", c: dark ? "#8090c0" : "#4a5a8a" },
+      { l: "Reference", c: dark ? "#8090c0" : "#4a5a8a" },
+      { l: "Test-driven", c: dark ? "#d0a080" : "#8a5a3a" },
+      { l: "Delegation", c: dark ? "#b090d0" : "#6a4a8a" },
     ];
 
     edgeItems.forEach((item, i) => {
@@ -1020,7 +1106,7 @@ const Gravity = (() => {
 
   function drawStats(dark, now) {
     const fg = dark ? "rgba(200,215,240,0.3)" : "rgba(50,70,90,0.3)";
-    ctx.font = '400 9px "SF Mono",Menlo,monospace'; ctx.textAlign = "right"; ctx.textBaseline = "top";
+    ctx.font = '400 8px "SF Mono",Menlo,monospace'; ctx.textAlign = "right"; ctx.textBaseline = "top";
 
     let ac = 0, wc = 0, sc = 0, vn = 0;
     for (const node of nodes.values()) {
@@ -1041,9 +1127,9 @@ const Gravity = (() => {
     }
 
     ctx.fillStyle = fg;
-    ctx.fillText(`${vn}/${nodes.size} files · ${ve} edges`, width - 12, 12);
-    ctx.fillText(`${ac} active · ${wc} warm · ${sc} stale`, width - 12, 24);
-    if (camZoom !== 1) ctx.fillText(`zoom: ${Math.round(camZoom * 100)}%`, width - 12, 36);
+    ctx.textAlign = "left";
+    const sy = height - 16;
+    ctx.fillText(`${vn}/${nodes.size} files · ${ve} edges · ${ac} active · ${wc} warm · ${sc} stale${camZoom !== 1 ? ` · ${Math.round(camZoom * 100)}%` : ""}`, 12, sy);
   }
 
   // --- Hit testing (uses spread-adjusted positions) ---
@@ -1061,6 +1147,9 @@ const Gravity = (() => {
   }
 
   // --- Interaction ---
+  const CLICK_THRESHOLD = 4; // px — less movement = click, more = drag
+  let mouseDownPos = null; // { x, y, hit, mx, my }
+
   function initInteraction() {
     canvas.addEventListener("mouseleave", () => { hoveredNode = null; hoveredEdge = null; });
 
@@ -1069,23 +1158,16 @@ const Gravity = (() => {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
       const hit = nodeAt(mx, my);
+
+      mouseDownPos = { x: e.clientX, y: e.clientY, hit, mx, my };
+
       if (hit) {
         draggingNode = hit;
-        // Click: toggle info card
-        if (selectedNode === hit) {
-          selectedNode = null;
-          infoCard = null;
-        } else {
-          selectedNode = hit;
-          infoCard = { node: hit };
-        }
-        // Node position updated directly in mousemove
         canvas.style.cursor = "grabbing";
         return;
       }
-      // Click on empty space: dismiss card
-      selectedNode = null;
-      infoCard = null;
+
+      // Start panning
       isDragging = true;
       userDragged = true;
       dragStartX = e.clientX; dragStartY = e.clientY;
@@ -1098,6 +1180,9 @@ const Gravity = (() => {
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
 
       if (draggingNode) {
+        // Only start moving if past click threshold (avoid jitter on click)
+        if (mouseDownPos && Math.abs(e.clientX - mouseDownPos.x) < CLICK_THRESHOLD &&
+            Math.abs(e.clientY - mouseDownPos.y) < CLICK_THRESHOLD) return;
         // Directly set node position (no simulation needed)
         const wx = mx / camZoom + camX, wy = my / camZoom + camY;
         const nx = spreadCX + (wx - spreadCX) / edgeLengthScale;
@@ -1118,7 +1203,11 @@ const Gravity = (() => {
       const hit = nodeAt(mx, my);
       hoveredNode = hit;
       hoveredEdge = hit ? null : findEdgeAtMouse(mx, my);
-      canvas.style.cursor = hit ? "pointer" : hoveredEdge ? "crosshair" : "grab";
+      // Pointer cursor on nodes and on pinned mini card
+      const overMiniCard = miniCardRect && infoCard &&
+        mx >= miniCardRect.x && mx <= miniCardRect.x + miniCardRect.w &&
+        my >= miniCardRect.y && my <= miniCardRect.y + miniCardRect.h;
+      canvas.style.cursor = (hit || overMiniCard) ? "pointer" : hoveredEdge ? "crosshair" : "grab";
     });
 
     function releaseNode() {
@@ -1127,7 +1216,44 @@ const Gravity = (() => {
       }
     }
 
-    canvas.addEventListener("mouseup", () => {
+    canvas.addEventListener("mouseup", (e) => {
+      const wasClick = mouseDownPos &&
+        Math.abs(e.clientX - mouseDownPos.x) < CLICK_THRESHOLD &&
+        Math.abs(e.clientY - mouseDownPos.y) < CLICK_THRESHOLD;
+
+      if (wasClick) {
+        const mx = mouseDownPos.mx, my = mouseDownPos.my;
+
+        // Check if clicking on pinned mini card → toggle detail popover
+        if (miniCardRect && infoCard &&
+            mx >= miniCardRect.x && mx <= miniCardRect.x + miniCardRect.w &&
+            my >= miniCardRect.y && my <= miniCardRect.y + miniCardRect.h) {
+          if (detailOpen) {
+            hideDetail();
+          } else {
+            showDetail(infoCard.node);
+          }
+          releaseNode();
+          mouseDownPos = null;
+          return;
+        }
+
+        // Click on a node → pin it (show mini card)
+        if (mouseDownPos.hit) {
+          hideDetail();
+          if (selectedNode === mouseDownPos.hit) {
+            // Clicking same pinned node → unpin
+            dismissAll();
+          } else {
+            selectedNode = mouseDownPos.hit;
+            infoCard = { node: mouseDownPos.hit };
+          }
+        } else {
+          // Click on empty space → dismiss everything
+          dismissAll();
+        }
+      }
+
       releaseNode();
       if (isDragging) {
         isDragging = false;
@@ -1135,6 +1261,7 @@ const Gravity = (() => {
         targetCamY = camY;
         canvas.style.cursor = hoveredNode ? "pointer" : "grab";
       }
+      mouseDownPos = null;
     });
 
     document.addEventListener("mouseup", () => {
@@ -1149,10 +1276,7 @@ const Gravity = (() => {
 
     // Escape dismisses card
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
-        selectedNode = null;
-        infoCard = null;
-      }
+      if (e.key === "Escape") dismissAll();
     });
 
     canvas.addEventListener("wheel", (e) => {
@@ -1161,14 +1285,14 @@ const Gravity = (() => {
       camZoom = Math.min(4, Math.max(0.1, camZoom * (e.deltaY > 0 ? 0.9 : 1.1)));
     }, { passive: false });
 
-    canvas.addEventListener("dblclick", () => { selectedNode = null; infoCard = null; userDragged = false; targetCamX = 0; targetCamY = 0; camZoom = 1; });
+    canvas.addEventListener("dblclick", () => { dismissAll(); userDragged = false; targetCamX = 0; targetCamY = 0; camZoom = 1; });
   }
 
   function getTooltip() {
     if (!hoveredNode && !selectedNode) return null;
     const n = hoveredNode || selectedNode;
     const imp = getImportance(n);
-    return { file: n.id, label: n.label, dir: n.dir, readCount: n.readCount, editCount: n.editCount, execCount: n.execCount, total: n.accessCount, importance: imp };
+    return { file: n.id, label: n.label, dir: n.dir, readCount: n.readCount, editCount: n.editCount, execCount: n.execCount, total: n.accessCount };
   }
 
   // --- Public API ---
@@ -1230,7 +1354,7 @@ const Gravity = (() => {
   }
 
   function zoom(f) { camZoom = Math.min(4, Math.max(0.1, camZoom * f)); }
-  function deselect() { selectedNode = null; infoCard = null; }
+  function deselect() { dismissAll(); }
 
   function getNodes() { return nodes; }
   function getEdges() { return edges; }

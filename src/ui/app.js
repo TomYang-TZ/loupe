@@ -1356,18 +1356,7 @@ window.toggleMapPopover = () => {
   }
 };
 
-// Tooltip update loop for gravity map
-setInterval(() => {
-  if (!gravityView) return;
-  const info = Gravity.getTooltip();
-  if (info) {
-    gravityTooltip.innerHTML = `<span class="gt-file">${info.label}</span> <span class="gt-dir">${info.dir}</span><br>` +
-      `<span class="gt-stat">R:${info.readCount} E:${info.editCount} X:${info.execCount}</span> · imp:${info.importance}`;
-    gravityTooltip.classList.add("visible");
-  } else {
-    gravityTooltip.classList.remove("visible");
-  }
-}, 100);
+// Old tooltip removed — canvas mini card in gravity.js replaces it
 
 // ===== Init =====
 connect();
