@@ -943,6 +943,27 @@ function rebuildTabs() {
   syncSessionOrder();
   tabBar.innerHTML = "";
 
+  // In minimal mode, show "loupe_" brand in the tab bar
+  if (isMinimalMode()) {
+    const brand = document.createElement("div");
+    brand.className = "tab-brand";
+    brand.innerHTML = 'loupe<span class="logo-cursor">_</span>';
+    tabBar.appendChild(brand);
+  }
+
+  // Single session: in minimal mode the brand is enough; in full mode show session name
+  if (sessions.size <= 1) {
+    if (sessions.size === 1 && !isMinimalMode()) {
+      const [id, info] = [...sessions.entries()][0];
+      const tab = document.createElement("div");
+      tab.className = "session-tab active";
+      tab.dataset.session = id;
+      tab.innerHTML = `<span class="tab-label">${esc(info.label)}</span>`;
+      tabBar.appendChild(tab);
+    }
+    return;
+  }
+
   {
     const allTab = document.createElement("div");
     allTab.className = `session-tab ${activeSession === "all" ? "active" : ""}`;
@@ -1053,17 +1074,21 @@ function reconcileSessions(serverList) {
 
 setInterval(rebuildTabs, 30000);
 
-// ===== Auto-hide =====
-let autoHideEnabled = false;
-const autohideBtn = document.getElementById("autohide-btn");
+// ===== Lock (window pinning) =====
+// Lock ON = window stays visible, fades on blur. Lock OFF = window hides on blur.
+let locked = true; // default: locked (window stays)
 
-window.toggleAutoHide = () => {
-  autoHideEnabled = !autoHideEnabled;
-  if (autohideBtn) autohideBtn.classList.toggle("active", autoHideEnabled);
+window.toggleLock = () => {
+  locked = !locked;
+  document.querySelectorAll("#lock-toggle, #lock-toggle-mini").forEach(el => el.classList.toggle("active", locked));
+  // Auto-hide is the inverse of lock
   if (window.webkit?.messageHandlers?.autoHide) {
-    window.webkit.messageHandlers.autoHide.postMessage(autoHideEnabled);
+    window.webkit.messageHandlers.autoHide.postMessage(!locked);
   }
 };
+
+// Backward compat: native app calls toggleAutoHide via ⌘⇧H
+window.toggleAutoHide = window.toggleLock;
 
 function scrollAllToBottom() { for (const p of panes.values()) p.scrollEl.scrollTop = p.scrollEl.scrollHeight; }
 
@@ -1296,6 +1321,10 @@ window.toggleView = () => {
       Gravity.init(gravityCanvas);
       Gravity.addEntries(entries);
       gravityInitialized = true;
+      // Sync gravity session filter → log panel tabs
+      Gravity.setOnSessionFilterChange((id) => {
+        switchSession(id);
+      });
     }
     gravityContainer.style.display = "";
     gravityContainer.style.flex = "0 0 35%";

@@ -17,7 +17,7 @@ const Gravity = (() => {
   let labelCounts = new Map();
 
   // Camera
-  let camX = 0, camY = 0, camZoom = 1;
+  let camX = 0, camY = 0, camZoom = 0.85;
   let targetCamX = 0, targetCamY = 0;
   let isDragging = false, dragStartX = 0, dragStartY = 0, dragCamX = 0, dragCamY = 0;
   let hoveredNode = null;
@@ -39,14 +39,16 @@ const Gravity = (() => {
   const NODE_MAX_R = 20;
 
   // Slider scales (0.1 → 3.0, default 1.0)
-  let edgeLengthScale = 1.0;
+  let edgeLengthScale = 0.8; // 50% of slider (155) maps to 0.8 via: 0.1 + (v-10)/290*1.4
   let nodeSizeScale = 1.0;
+  let mapScale = 1.0; // proportional scale based on container width (baseline 500px)
+  function sf(px) { return Math.round(px * mapScale * 10) / 10; } // scale font/size
 
   // Spread center of mass (updated each frame)
   let spreadCX = 0, spreadCY = 0;
 
-  function spX(node) { return spreadCX + (node.x - spreadCX) * edgeLengthScale; }
-  function spY(node) { return spreadCY + (node.y - spreadCY) * edgeLengthScale; }
+  function spX(node) { return spreadCX + (node.x - spreadCX) * edgeLengthScale * mapScale; }
+  function spY(node) { return spreadCY + (node.y - spreadCY) * edgeLengthScale * mapScale; }
   const EDGE_MIN_W = 0.3;
   const EDGE_MAX_W = 3;
   const LABEL_MIN_ACCESS = 3;
@@ -55,8 +57,24 @@ const Gravity = (() => {
   const TOOL_ACTIONS = {
     Read: "read", Grep: "read", Glob: "read",
     Edit: "edit", Write: "edit",
-    Bash: "exec", Agent: "delegate",
+    Bash: "exec",
   };
+
+  // Map bash subcommands to action categories for edge classification
+  const BASH_CMD_CATEGORY = {
+    cat: "read", head: "read", tail: "read", less: "read", more: "read", ls: "read", stat: "read", file: "read", wc: "read",
+    sed: "edit", awk: "edit", tee: "edit", chmod: "edit", chown: "edit", chgrp: "edit", touch: "edit",
+    mv: "edit", cp: "edit", rm: "exec", mkdir: "exec", rmdir: "exec",
+    node: "exec", python: "exec", python3: "exec", npm: "exec", npx: "exec", make: "exec", cargo: "exec", go: "exec",
+    git: "exec", docker: "exec", curl: "exec", wget: "exec",
+  };
+
+  function extractBashSubcommand(cmd) {
+    if (!cmd) return null;
+    // Strip leading env vars, sudo, etc.
+    const m = cmd.match(/^(?:sudo\s+|env\s+\S+=\S+\s+)*(\w[\w.+-]*)/);
+    return m ? m[1] : null;
+  }
 
   function classifyEdge(prevAction, prevFile, currAction, currFile) {
     const sameFile = prevFile === currFile;
@@ -64,7 +82,6 @@ const Gravity = (() => {
     if (sameFile && prevAction === "edit" && currAction === "read") return "review";
     if (sameFile && prevAction === "edit" && currAction === "edit") return "iteration";
     // Cross-file patterns
-    if (currAction === "delegate") return "delegation";
     if (prevAction === "read" && currAction === "edit") return "prerequisite";
     if (prevAction === "edit" && currAction === "edit") return "coupling";
     if (prevAction === "edit" && currAction === "exec") return "validation";
@@ -78,11 +95,12 @@ const Gravity = (() => {
     return (n.editCount || 0) * 3 + (n.execCount || 0) * 2 + (n.readCount || 0);
   }
 
-  // --- Filter ---
-  let activeFilter = "all";
-  let recencyFilter = "all"; // "all", "active", "warm", "stale"
+  // --- Filter (multi-select: Set of active values, or contains "all") ---
+  let activeFilters = new Set(["all"]);
+  let recencyFilters = new Set(["all"]);
   let sessionFilter = "all"; // "all" or a sessionId
   let knownSessions = new Map(); // sessionId → { label, color }
+  let onSessionFilterChange = null; // callback when gravity UI changes session
 
   // --- Colors ---
   // Observatory (dark): blue-white palette based on importance brightness
@@ -110,7 +128,6 @@ const Gravity = (() => {
         validation:    dark ? "#80c0a0" : "#3a6a50",
         reference:     dark ? "#8090c0" : "#4a5a8a",
         "test-driven": dark ? "#d0a080" : "#8a5a3a",
-        delegation:    dark ? "#b090d0" : "#6a4a8a",
         sequence:      dark ? "#506070" : "#a0a8b0",
       })[edge.type] || (dark ? "#506070" : "#a0a8b0");
     }
@@ -120,7 +137,6 @@ const Gravity = (() => {
       validation:    dark ? "rgba(128,192,160,0.2)"  : "rgba(58,106,80,0.12)",
       reference:     dark ? "rgba(128,144,192,0.15)" : "rgba(74,90,138,0.1)",
       "test-driven": dark ? "rgba(208,160,128,0.2)"  : "rgba(138,90,58,0.12)",
-      delegation:    dark ? "rgba(176,144,208,0.2)"  : "rgba(106,74,138,0.12)",
       sequence:      dark ? "rgba(80,96,112,0.06)"   : "rgba(160,168,176,0.08)",
     })[edge.type] || (dark ? "rgba(80,96,112,0.06)" : "rgba(160,168,176,0.08)");
   }
@@ -194,7 +210,15 @@ const Gravity = (() => {
     const input = inner.tool_input || inner.input || {};
     if (input.file_path) return input.file_path;
     if (input.path && !input.command) return input.path;
-    if (input.command) { const m = input.command.match(/(?:^|\s)(\/\S+\.\w+)/); if (m) return m[1]; }
+    if (input.command) {
+      const cmd = input.command;
+      // Absolute path with extension (file)
+      const fileMatch = cmd.match(/(?:^|\s)(\/\S+\.\w+)/);
+      if (fileMatch) return fileMatch[1];
+      // Absolute directory path (for ls, mkdir, chmod, mv, cp, rm, etc.)
+      const dirMatch = cmd.match(/(?:^|\s)(\/(?:[^\s/]+\/)+[^\s/]+)/);
+      if (dirMatch) return dirMatch[1];
+    }
     return null;
   }
 
@@ -211,13 +235,23 @@ const Gravity = (() => {
     const fp = extractFilePath(entry);
     if (!fp || !toolName || !fp.startsWith("/") || fp.includes("/node_modules/") || fp.includes("/.git/")) return false;
 
-    const action = TOOL_ACTIONS[toolName] || "read";
+    let action = TOOL_ACTIONS[toolName] || "read";
+    let displayAction = action;
+    if (toolName === "Bash") {
+      const hook = (json._logstream_type && json.data) ? json.data : null;
+      const input = (hook || json).tool_input || (hook || json).input || {};
+      const subcmd = extractBashSubcommand(input.command);
+      if (subcmd) {
+        displayAction = subcmd;
+        action = BASH_CMD_CATEGORY[subcmd] || "exec";
+      }
+    }
     const sessionId = entry.sessionId || "default";
     const ts = entry.ts || Date.now();
     const prev = lastToolBySession.get(sessionId);
     const node = getOrCreateNode(fp, prev?.file);
     node.accessCount++;
-    node.lastAction = action;
+    node.lastAction = displayAction;
     node.lastAccessTs = ts;
     node.sessions.add(sessionId);
     if (action === "read") node.readCount++;
@@ -240,12 +274,12 @@ const Gravity = (() => {
         edge.weight++;
         edge.lastTs = ts;
         edge.sessions.add(sessionId);
-        edge.srcAction = prev.action;
-        edge.dstAction = action;
+        edge.srcAction = prev.displayAction || prev.action;
+        edge.dstAction = displayAction;
         getOrCreateNode(prev.file, fp);
       }
     }
-    lastToolBySession.set(sessionId, { tool: toolName, action, file: fp, ts });
+    lastToolBySession.set(sessionId, { tool: toolName, action, displayAction, file: fp, ts });
 
     // Track Claude's presence
     claudeCurrentFiles.clear();
@@ -370,7 +404,7 @@ const Gravity = (() => {
   }
 
   function nodeRadius(node) {
-    return Math.min(NODE_MAX_R, NODE_MIN_R + Math.sqrt(nodeImportance(node)) * 2.2) * nodeSizeScale;
+    return Math.min(NODE_MAX_R, NODE_MIN_R + Math.sqrt(nodeImportance(node)) * 2.2) * nodeSizeScale * mapScale;
   }
 
   // --- Camera ---
@@ -403,9 +437,12 @@ const Gravity = (() => {
     const age = Date.now() - node.lastAccessTs;
     if (age > STALE_CUTOFF) return false;
     // Recency filter
-    if (recencyFilter === "active" && age >= GLOW_DURATION) return false;
-    if (recencyFilter === "warm" && (age < GLOW_DURATION || age >= WARM_DURATION)) return false;
-    if (recencyFilter === "stale" && age < WARM_DURATION) return false;
+    if (!recencyFilters.has("all")) {
+      const isActive = age < GLOW_DURATION;
+      const isWarm = age >= GLOW_DURATION && age < WARM_DURATION;
+      const isStale = age >= WARM_DURATION;
+      if (!((recencyFilters.has("active") && isActive) || (recencyFilters.has("warm") && isWarm) || (recencyFilters.has("stale") && isStale))) return false;
+    }
     if (camZoom < 0.5) return node.accessCount >= 5;
     if (camZoom < 0.8) return node.accessCount >= 2;
     return true;
@@ -487,13 +524,12 @@ const Gravity = (() => {
   }
 
   const EDGE_TYPE_LABELS = {
-    prerequisite: "Read → Edit",
-    coupling: "Edit → Edit",
-    validation: "Edit → Run",
-    reference: "Read → Read",
-    "test-driven": "Run → Edit",
-    delegation: "→ Agent",
-    sequence: "Other",
+    prerequisite: "read → edit",
+    coupling: "edit → edit",
+    validation: "edit → run",
+    reference: "read → read",
+    "test-driven": "run → edit",
+    sequence: "→",
   };
 
   function drawEdgeLabel(edge, dark, mx, my) {
@@ -504,11 +540,11 @@ const Gravity = (() => {
     const x = mx !== undefined ? mx : (srcN.x + dstN.x) / 2;
     const y = my !== undefined ? my : (srcN.y + dstN.y) / 2;
 
-    ctx.font = '500 9px "SF Mono","JetBrains Mono",Menlo,monospace';
+    ctx.font = `500 ${sf(9)}px "SF Mono","JetBrains Mono",Menlo,monospace`;
     const tw = ctx.measureText(label).width;
-    const pad = 5;
+    const pad = 5 * mapScale;
     const bw = tw + pad * 2;
-    const bh = 18;
+    const bh = 18 * mapScale;
 
     // Background pill
     ctx.fillStyle = dark ? "rgba(5,5,16,0.85)" : "rgba(255,255,255,0.9)";
@@ -615,9 +651,9 @@ const Gravity = (() => {
     const label = shortName(node.id);
     const sub = `R:${info.reads} E:${info.edits} X:${info.execs} · ${info.lastAction}`;
 
-    ctx.font = '600 10px "SF Mono",Menlo,monospace';
+    ctx.font = `600 ${sf(10)}px "SF Mono",Menlo,monospace`;
     const labelW = ctx.measureText(label).width;
-    ctx.font = '400 8px "SF Mono",Menlo,monospace';
+    ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`;
     const subW = ctx.measureText(sub).width;
     const cardW = Math.max(labelW, subW) + 24;
     const cardH = 36;
@@ -642,10 +678,10 @@ const Gravity = (() => {
 
     // Text
     ctx.textAlign = "left"; ctx.textBaseline = "top";
-    ctx.font = '600 10px "SF Mono",Menlo,monospace';
+    ctx.font = `600 ${sf(10)}px "SF Mono",Menlo,monospace`;
     ctx.fillStyle = dark ? "rgba(200,215,240,0.9)" : "rgba(30,40,50,0.9)";
     ctx.fillText(label, cx + 10, cy + 6);
-    ctx.font = '400 8px "SF Mono",Menlo,monospace';
+    ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`;
     ctx.fillStyle = dark ? "rgba(200,215,240,0.4)" : "rgba(50,70,90,0.4)";
     ctx.fillText(sub, cx + 10, cy + 20);
 
@@ -671,7 +707,6 @@ const Gravity = (() => {
       validation: "validation",
       reference: "reference",
       "test-driven": "test-driven",
-      delegation: "delegation",
       iteration: "iteration",
       review: "review",
       sequence: "other",
@@ -685,15 +720,18 @@ const Gravity = (() => {
     if (hasPatterns) {
       html += `<div class="gc-section"><div class="gc-label">Behavior</div>`;
       if (node.iterationCount) {
-        html += `<div class="gc-edge">↻ ${node.iterationCount}× <span class="gc-type" data-tip="${NAMES.iteration}">Edit → Edit</span></div>`;
+        html += `<div class="gc-edge">↻ ${node.iterationCount}× <span class="gc-type">Edit → Edit</span></div>`;
       }
       if (node.reviewCount) {
-        html += `<div class="gc-edge">↩ ${node.reviewCount}× <span class="gc-type" data-tip="${NAMES.review}">Edit → Read</span></div>`;
+        html += `<div class="gc-edge">↩ ${node.reviewCount}× <span class="gc-type">Edit → Read</span></div>`;
       }
       for (const ei of info.edgeInfos) {
-        const name = NAMES[ei.type] || "";
-        const tip = ei.type === "sequence" ? (ei.actionArrow || "other") : name;
-        html += `<div class="gc-edge">${esc(ei.label)} <span class="gc-type" data-tip="${tip}">${esc(ei.typeLabel)}</span></div>`;
+        if (ei.type === "sequence") {
+          const arrow = ei.actionArrow || "→";
+          html += `<div class="gc-edge">${esc(ei.label)} <span class="gc-type">${esc(arrow)}</span></div>`;
+        } else {
+          html += `<div class="gc-edge">${esc(ei.label)} <span class="gc-type">${esc(ei.typeLabel)}</span></div>`;
+        }
       }
       html += `</div>`;
     }
@@ -750,6 +788,12 @@ const Gravity = (() => {
     const rect = canvas.parentElement.getBoundingClientRect();
     if (Math.round(rect.width) !== Math.round(width) || Math.round(rect.height) !== Math.round(height)) resizeCanvas();
 
+    // Periodically refresh session filter to drop stale sessions
+    if (!render._lastSessionRefresh || now - render._lastSessionRefresh > 30000) {
+      render._lastSessionRefresh = now;
+      rebuildSessionFilterUI();
+    }
+
     buildHoverNeighbors();
     updateCamera();
 
@@ -775,27 +819,45 @@ const Gravity = (() => {
 
     function sp(node) { return { x: spX(node), y: spY(node) }; }
 
-    // --- Edges ---
+    // --- Edges: consolidate per node-pair, use most recent direction ---
+    // Group edges by unordered node pair, pick the most recent for arrow direction
+    const pairMap = new Map(); // "nodeA|nodeB" → { edges[], newest }
     for (const edge of edges.values()) {
       if (!edgeVisible(edge)) continue;
       if (!edgeFilterMatch(edge)) continue;
       const srcN = nodes.get(edge.source);
       const dstN = nodes.get(edge.target);
       if (!srcN || !dstN || !nodeVisible(srcN) || !nodeVisible(dstN)) continue;
+      const pairKey = edge.source < edge.target ? `${edge.source}|${edge.target}` : `${edge.target}|${edge.source}`;
+      if (!pairMap.has(pairKey)) pairMap.set(pairKey, { edges: [], newest: edge });
+      const group = pairMap.get(pairKey);
+      group.edges.push(edge);
+      if (edge.lastTs > group.newest.lastTs) group.newest = edge;
+    }
 
-      const lw = Math.min(EDGE_MAX_W, EDGE_MIN_W + edge.weight * 0.35);
-      const age = now - edge.lastTs;
-      let opacity = age < GLOW_DURATION ? 0.8 : age < WARM_DURATION ? 0.5 : 0.3;
+    for (const { edges: groupEdges, newest } of pairMap.values()) {
+      // Aggregate weight and pick best opacity across all edges in this pair
+      let totalWeight = 0;
+      let bestAge = Infinity;
+      for (const e of groupEdges) {
+        totalWeight += e.weight;
+        bestAge = Math.min(bestAge, now - e.lastTs);
+      }
 
+      const lw = Math.min(EDGE_MAX_W, EDGE_MIN_W + totalWeight * 0.35) * mapScale;
+      let opacity = bestAge < GLOW_DURATION ? 0.8 : bestAge < WARM_DURATION ? 0.5 : 0.3;
+
+      // Arrow direction from most recent edge
+      const srcN = nodes.get(newest.source);
+      const dstN = nodes.get(newest.target);
       const connected = focusNode &&
-        (edge.source === focusNode.id || edge.target === focusNode.id);
+        (newest.source === focusNode.id || newest.target === focusNode.id);
       const hasFocus = !!focusNode;
 
       if (hasFocus && !connected) opacity *= 0.15;
       if (connected) opacity = Math.min(1, opacity * 1.8);
 
-      // Apply filter dimming
-      if (activeFilter !== "all") {
+      if (!activeFilters.has("all")) {
         const srcMatch = filterMatchAction(srcN);
         const dstMatch = filterMatchAction(dstN);
         if (!srcMatch || !dstMatch) opacity *= 0.15;
@@ -807,12 +869,12 @@ const Gravity = (() => {
       ctx.moveTo(sSrc.x, sSrc.y);
       ctx.lineTo(sDst.x, sDst.y);
 
-      ctx.strokeStyle = connected ? getEdgeColor(edge, dark, true) : getEdgeColor(edge, dark, false);
+      ctx.strokeStyle = connected ? getEdgeColor(newest, dark, true) : getEdgeColor(newest, dark, false);
       ctx.lineWidth = connected ? lw * 1.5 : lw;
       ctx.lineCap = "round";
       ctx.stroke();
 
-      // Direction arrow at midpoint
+      // Single direction arrow from most recent edge
       if (connected || (!hasFocus && opacity > 0.2)) {
         const mx = (sSrc.x + sDst.x) / 2;
         const my = (sSrc.y + sDst.y) / 2;
@@ -821,12 +883,14 @@ const Gravity = (() => {
         ctx.translate(mx, my);
         ctx.rotate(angle);
         ctx.beginPath();
-        ctx.moveTo(5, 0);
-        ctx.lineTo(-2.5, -2.5);
-        ctx.lineTo(-2.5, 2.5);
+        const as = 5 * mapScale;
+        const ah = 2.5 * mapScale;
+        ctx.moveTo(as, 0);
+        ctx.lineTo(-ah, -ah);
+        ctx.lineTo(-ah, ah);
         ctx.closePath();
         ctx.fillStyle = connected
-          ? getEdgeColor(edge, dark, true)
+          ? getEdgeColor(newest, dark, true)
           : (dark ? `rgba(120,140,170,${opacity * 0.5})` : `rgba(50,70,90,${opacity * 0.5})`);
         ctx.fill();
         ctx.restore();
@@ -862,7 +926,7 @@ const Gravity = (() => {
 
       let alpha = isGlowing ? 0.9 : isWarm ? 0.6 : 0.3;
       if (isNewNode) alpha = Math.max(alpha, 0.7 + introGlow * 0.3);
-      if (activeFilter !== "all" && !filterMatchAction(node)) alpha = 0.08;
+      if (!activeFilters.has("all") && !filterMatchAction(node)) alpha = 0.08;
       if (dimmed) alpha *= 0.2;
       if (isHovered || isSelected) alpha = 1;
 
@@ -870,13 +934,13 @@ const Gravity = (() => {
 
       if (dark) {
         // === OBSERVATORY: bright core + soft halo ===
-        const coreR = 2.5 + impNorm * 3;
+        const coreR = (2.5 + impNorm * 3) * mapScale;
         const color = getNodeColor(node, true);
         const rgb = parseRgb(color);
 
         // Soft halo (importance glow) — subtle, not overwhelming
         if (!dimmed && rgb) {
-          const haloR = coreR + 3 + impNorm * 8;
+          const haloR = coreR + (3 + impNorm * 8) * mapScale;
           const haloAlpha = isHovered ? 0.12 : (0.03 + impNorm * 0.06);
           const grad = ctx.createRadialGradient(x, y, coreR, x, y, haloR);
           grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${haloAlpha})`);
@@ -896,7 +960,7 @@ const Gravity = (() => {
         // Active file: subtle breathing pulse ring
         if (isGlowing && !dimmed && rgb) {
           const pulseT = ((now % 3000) / 3000);
-          const ringR = coreR + 3 + pulseT * 5;
+          const ringR = coreR + (3 + pulseT * 5) * mapScale;
           const ringAlpha = (1 - pulseT) * 0.2 * alpha;
           ctx.beginPath();
           ctx.arc(x, y, ringR, 0, Math.PI * 2);
@@ -918,12 +982,12 @@ const Gravity = (() => {
           // Inner bright flash
           if (introGlow > 0.5) {
             const flashAlpha = (introGlow - 0.5) * 2 * 0.2;
-            const flashGrad = ctx.createRadialGradient(x, y, coreR, x, y, coreR + 6);
+            const flashGrad = ctx.createRadialGradient(x, y, coreR, x, y, coreR + 6 * mapScale);
             flashGrad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${flashAlpha})`);
             flashGrad.addColorStop(1, "rgba(0,0,0,0)");
             ctx.fillStyle = flashGrad;
             ctx.beginPath();
-            ctx.arc(x, y, coreR + 6, 0, Math.PI * 2);
+            ctx.arc(x, y, coreR + 6 * mapScale, 0, Math.PI * 2);
             ctx.fill();
           }
         }
@@ -931,16 +995,16 @@ const Gravity = (() => {
         // Hover/select ring
         if (isHovered || isSelected) {
           ctx.beginPath();
-          ctx.arc(x, y, coreR + 2, 0, Math.PI * 2);
+          ctx.arc(x, y, coreR + 2 * mapScale, 0, Math.PI * 2);
           ctx.strokeStyle = "rgba(200,215,240,0.5)";
-          ctx.lineWidth = 1;
+          ctx.lineWidth = mapScale;
           ctx.stroke();
         }
 
         // Claude presence beacon
         if (claudeCurrentFiles.has(node.id) && !dimmed) {
           const beaconT = ((now % 2000) / 2000);
-          const beaconR = coreR + 4 + beaconT * 8;
+          const beaconR = coreR + (4 + beaconT * 8) * mapScale;
           const beaconAlpha = (1 - beaconT) * 0.3;
           ctx.beginPath();
           ctx.arc(x, y, beaconR, 0, Math.PI * 2);
@@ -951,8 +1015,8 @@ const Gravity = (() => {
 
       } else {
         // === BLUEPRINT: hollow circles, stroke weight = importance ===
-        const r = 5 + impNorm * 5;
-        const strokeW = 1 + impNorm * 1.5;
+        const r = (5 + impNorm * 5) * mapScale;
+        const strokeW = (1 + impNorm * 1.5) * mapScale;
         const isActive = claudeCurrentFiles.has(node.id);
 
         ctx.beginPath();
@@ -1043,7 +1107,7 @@ const Gravity = (() => {
 
         // Dir path on hover/select
         if (isHovered || isSelected) {
-          ctx.font = '400 8px "SF Mono",Menlo,monospace';
+          ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`;
           ctx.fillStyle = dark ? "rgba(200,215,240,0.35)" : "rgba(50,70,90,0.4)";
           ctx.fillText(node.dir, x + effectiveR + 8, y + 13);
         }
@@ -1070,10 +1134,10 @@ const Gravity = (() => {
   }
 
   function filterMatchAction(node) {
-    if (activeFilter === "all") return true;
-    return (activeFilter === "read" && node.readCount > 0) ||
-      (activeFilter === "edit" && node.editCount > 0) ||
-      (activeFilter === "exec" && node.execCount > 0);
+    if (activeFilters.has("all")) return true;
+    return (activeFilters.has("read") && node.readCount > 0) ||
+      (activeFilters.has("edit") && node.editCount > 0) ||
+      (activeFilters.has("exec") && node.execCount > 0);
   }
 
   function edgeFilterMatch(edge) {
@@ -1083,39 +1147,39 @@ const Gravity = (() => {
 
   function drawLegend(dark) {
     if (height < 400) return; // hide legend when panel is compact
-    const x = 12, y = height - 120;
+    const s = mapScale;
+    const x = 12 * s, y = height - 120 * s;
     const fg = dark ? "rgba(200,215,240,0.4)" : "rgba(50,70,90,0.4)";
     ctx.textAlign = "left"; ctx.textBaseline = "middle";
 
     const edgeItems = [
-      { l: "Prerequisite", c: dark ? "#a0b4d0" : "#3a5a7a" },
-      { l: "Coupling", c: dark ? "#c0a080" : "#6a5040" },
-      { l: "Validation", c: dark ? "#80c0a0" : "#3a6a50" },
-      { l: "Reference", c: dark ? "#8090c0" : "#4a5a8a" },
-      { l: "Test-driven", c: dark ? "#d0a080" : "#8a5a3a" },
-      { l: "Delegation", c: dark ? "#b090d0" : "#6a4a8a" },
+      { l: "Read → Edit", c: dark ? "#a0b4d0" : "#3a5a7a" },
+      { l: "Edit → Edit", c: dark ? "#c0a080" : "#6a5040" },
+      { l: "Edit → Run", c: dark ? "#80c0a0" : "#3a6a50" },
+      { l: "Read → Read", c: dark ? "#8090c0" : "#4a5a8a" },
+      { l: "Run → Edit", c: dark ? "#d0a080" : "#8a5a3a" },
     ];
 
     edgeItems.forEach((item, i) => {
-      const iy = y + i * 13;
-      const lx = x, rx = x + 16;
+      const iy = y + i * 13 * s;
+      const lx = x, rx = x + 16 * s;
       ctx.beginPath();
       ctx.moveTo(lx, iy);
       ctx.lineTo(rx, iy);
       ctx.strokeStyle = item.c;
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 * s;
       ctx.lineCap = "round";
       ctx.stroke();
 
       ctx.fillStyle = fg;
-      ctx.font = '400 8px -apple-system,sans-serif';
-      ctx.fillText(item.l, x + 22, iy);
+      ctx.font = `400 ${sf(8)}px -apple-system,sans-serif`;
+      ctx.fillText(item.l, x + 22 * s, iy);
     });
   }
 
   function drawStats(dark, now) {
     const fg = dark ? "rgba(200,215,240,0.3)" : "rgba(50,70,90,0.3)";
-    ctx.font = '400 8px "SF Mono",Menlo,monospace'; ctx.textAlign = "right"; ctx.textBaseline = "top";
+    ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`; ctx.textAlign = "right"; ctx.textBaseline = "top";
 
     let ac = 0, wc = 0, sc = 0, vn = 0;
     for (const node of nodes.values()) {
@@ -1320,6 +1384,9 @@ const Gravity = (() => {
     canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
     canvas.style.width = width + "px"; canvas.style.height = height + "px";
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Scale everything proportionally (baseline: 500px width)
+    mapScale = Math.max(0.55, Math.min(1, width / 500));
+    canvas.parentElement.style.setProperty("--map-scale", mapScale);
   }
 
   async function loadFullHistory() {
@@ -1382,19 +1449,30 @@ const Gravity = (() => {
     }
   }
 
+  function toggleFilterSet(set, value, btnSelector, dataAttr) {
+    if (value === "all") {
+      set.clear();
+      set.add("all");
+    } else {
+      set.delete("all");
+      if (set.has(value)) set.delete(value); else set.add(value);
+      if (set.size === 0) set.add("all");
+    }
+    document.querySelectorAll(btnSelector).forEach(b => b.classList.toggle("active", set.has(b.getAttribute(dataAttr))));
+  }
+
   function setRecencyFilter(type) {
-    recencyFilter = type;
-    document.querySelectorAll(".recency-filter-btn").forEach(b => b.classList.toggle("active", b.dataset.recency === type));
+    toggleFilterSet(recencyFilters, type, ".recency-filter-btn", "data-recency");
   }
 
   function setFilter(type) {
-    activeFilter = type;
-    document.querySelectorAll(".filter-btn").forEach(b => b.classList.toggle("active", b.dataset.filter === type));
+    toggleFilterSet(activeFilters, type, ".filter-btn", "data-filter");
   }
 
-  function setSessionFilter(id) {
+  function setSessionFilter(id, _fromUI) {
     sessionFilter = id;
     document.querySelectorAll(".session-filter-btn").forEach(b => b.classList.toggle("active", b.dataset.session === id));
+    if (_fromUI && onSessionFilterChange) onSessionFilterChange(id);
   }
 
   function registerSession(id, label, color) {
@@ -1408,30 +1486,56 @@ const Gravity = (() => {
     rebuildSessionFilterUI();
   }
 
+  function isSessionActive(sessionId) {
+    const now = Date.now();
+    for (const node of nodes.values()) {
+      if (node.sessions.has(sessionId) && (now - node.lastAccessTs) < STALE_CUTOFF) return true;
+    }
+    return false;
+  }
+
   function rebuildSessionFilterUI() {
     const bar = document.getElementById("session-filter-bar");
     if (!bar) return;
     bar.innerHTML = "";
 
-    // "All" button
+    // Filter to non-stale sessions
+    const activeSessions = [...knownSessions.entries()].filter(([id]) => isSessionActive(id));
+
+    // Single session: just show its name, no "All" button
+    if (activeSessions.length <= 1) {
+      if (activeSessions.length === 1) {
+        const [id, info] = activeSessions[0];
+        const btn = document.createElement("button");
+        btn.className = "session-filter-btn active";
+        btn.dataset.session = id;
+        btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span>${info.label}`;
+        bar.appendChild(btn);
+        // Auto-select the single session
+        sessionFilter = id;
+      }
+      bar.style.display = activeSessions.length === 1 ? "" : "none";
+      return;
+    }
+
+    // Multiple sessions: show "All" + each session
     const allBtn = document.createElement("button");
     allBtn.className = `session-filter-btn ${sessionFilter === "all" ? "active" : ""}`;
     allBtn.dataset.session = "all";
     allBtn.textContent = "All";
-    allBtn.onclick = () => setSessionFilter("all");
+    allBtn.onclick = () => setSessionFilter("all", true);
     bar.appendChild(allBtn);
 
-    for (const [id, info] of knownSessions) {
+    for (const [id, info] of activeSessions) {
       const btn = document.createElement("button");
       btn.className = `session-filter-btn ${sessionFilter === id ? "active" : ""}`;
       btn.dataset.session = id;
       btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span>${info.label}`;
-      btn.onclick = () => setSessionFilter(id);
+      btn.onclick = () => setSessionFilter(id, true);
       bar.appendChild(btn);
     }
 
-    // Hide bar if only 1 or 0 sessions
-    bar.style.display = knownSessions.size > 1 ? "" : "none";
+    bar.style.display = "";
   }
 
   function getStats() {
@@ -1441,5 +1545,7 @@ const Gravity = (() => {
     return { visible, total: nodes.size, edges: edges.size, zoom: Math.round(camZoom * 100) + "%" };
   }
 
-  return { init, addEntry, addEntries, destroy, reset, getTooltip, getStats, zoom, deselect, getNodes, getEdges, setFilter, setRecencyFilter, setSessionFilter, registerSession, unregisterSession, setEdgeLengthScale, setNodeSizeScale };
+  function setOnSessionFilterChange(cb) { onSessionFilterChange = cb; }
+
+  return { init, addEntry, addEntries, destroy, reset, getTooltip, getStats, zoom, deselect, getNodes, getEdges, setFilter, setRecencyFilter, setSessionFilter, registerSession, unregisterSession, setEdgeLengthScale, setNodeSizeScale, setOnSessionFilterChange };
 })();

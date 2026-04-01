@@ -32,6 +32,7 @@
       </button>
       <span><span class="conn-dot connecting" id="conn-dot"></span><span id="conn-status">connecting</span></span>
       <span><span class="stat-val" id="line-count">0</span> events</span>
+      <button class="pin-btn active" id="lock-toggle" onclick="toggleLock()" title="Pin window (⌘⇧H)">📌</button>
       <button class="mode-toggle-btn" id="mode-toggle-btn" onclick="toggleMode()" title="Compact mode">&#8598;</button>
     </div>
     <div class="scanline" id="scanline"><div class="scanline-bar"></div></div>
@@ -62,6 +63,7 @@
       </svg>
     </button>
     <div class="minimal-topbar-right">
+      <button class="pin-btn active" id="lock-toggle-mini" onclick="toggleLock()" title="Pin window (⌘⇧H)">📌</button>
       <button class="mode-toggle-btn" id="mode-toggle-btn-mini" onclick="toggleMode()" title="Expand to full window">&#8599;</button>
     </div>
   </div>
@@ -76,6 +78,7 @@
       <div class="filter-trigger" id="filter-trigger">All types</div>
       <div class="filter-menu" id="filter-menu"></div>
     </div>
+    <button class="btn" id="view-toggle-btn" onclick="toggleView()" title="Map (m)">Map</button>
     <div class="toolbar-sep"></div>
     <div class="toolbar-right">
       <span class="grid-controls" id="grid-controls" style="display:none">
@@ -84,9 +87,7 @@
         <button class="btn btn-sm" onclick="setGridCols(gridCols+1)" title="More columns">+</button>
       </span>
       <div class="toolbar-sep" id="grid-sep" style="display:none"></div>
-      <button class="btn" id="view-toggle-btn" onclick="toggleView()" title="Toggle gravity map (m)">Map</button>
-      <button class="btn" id="autohide-btn" onclick="toggleAutoHide()" title="Auto-hide when inactive">Auto-hide</button>
-      <button class="btn" onclick="clearLogs()" title="Clear all">Clear</button>
+      <button class="btn" onclick="clearLogs()" title="Clear">Clear</button>
     </div>
   </div>
 
@@ -111,7 +112,7 @@
     </div>
     <div class="session-filter-bar" id="session-filter-bar" style="display:none"></div>
     <div class="gravity-sliders">
-      <label><span>Spread</span><input type="range" min="10" max="300" value="100" oninput="Gravity.setEdgeLengthScale(this.value/100)"></label>
+      <label><span>Spread</span><input type="range" min="10" max="300" value="155" oninput="Gravity.setEdgeLengthScale(0.1+(this.value-10)/290*1.4)"></label>
     </div>
     <div class="universe-vignette"></div>
   </div>

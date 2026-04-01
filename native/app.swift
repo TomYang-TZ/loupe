@@ -14,6 +14,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     var autoHideEnabled = false
     var autoHideObserver: Any?
     var autoHideSuppressed = false
+    var blurObserver: Any?
+    var focusObserver: Any?
 
     // Saved frames for switching between compact/full
     let compactSize = NSSize(width: 420, height: 600)
@@ -138,6 +140,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
                 return nil
             }
             return event
+        }
+
+        // Fade on blur when not auto-hiding
+        blurObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            guard let self = self, !self.autoHideEnabled else { return }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.25
+                self.window.animator().alphaValue = 0.55
+            }
+        }
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                self.window.animator().alphaValue = 1.0
+            }
         }
 
         // Force compact size on launch (autosave may have restored a different size)

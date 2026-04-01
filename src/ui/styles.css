@@ -157,6 +157,16 @@ header {
 }
 .tab-bar::-webkit-scrollbar { height: 0; }
 
+.tab-brand {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 6px 8px 6px 0;
+  white-space: nowrap;
+  user-select: none;
+}
+
 .session-tab {
   padding: 6px 12px;
   font-size: 11px;
@@ -394,6 +404,23 @@ body.minimal .session-tab .tab-dot {
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .btn.active { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
 .btn-sm { padding: 2px 6px; }
+
+.pin-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px;
+  filter: grayscale(1);
+  opacity: 0.35;
+  transition: filter 0.2s, opacity 0.2s;
+}
+.pin-btn:hover { opacity: 0.6; }
+.pin-btn.active {
+  filter: none;
+  opacity: 1;
+}
 
 .grid-controls { display: flex; align-items: center; gap: 3px; }
 .grid-label { font-size: 9px; font-family: var(--font-sans); color: var(--text-ghost); min-width: 28px; text-align: center; }
@@ -1130,10 +1157,21 @@ mark { background: rgba(250, 204, 21, 0.25); color: var(--text); border-radius: 
 
 /* ===== Minimal Mode (menu bar popover) ===== */
 body.minimal header { display: none; }
-body.minimal .toolbar { padding: 4px 8px; gap: 4px; }
-body.minimal .toolbar .search-box { width: 100px; }
-body.minimal .toolbar .btn { font-size: 9px; padding: 2px 5px; }
+body.minimal .toolbar { padding: 3px 6px; gap: 3px; }
+body.minimal .toolbar .search-box { width: 70px; }
+body.minimal .toolbar .search-box input { font-size: 9px; padding: 3px 6px 3px 14px; height: 22px; box-sizing: border-box; }
+body.minimal .toolbar .search-box .search-icon { font-size: 8px; left: 4px; }
+body.minimal .toolbar .btn { font-size: 9px; padding: 3px 6px; height: 22px; box-sizing: border-box; }
+body.minimal .toolbar .filter-trigger { font-size: 9px; padding: 3px 16px 3px 6px; height: 22px; box-sizing: border-box; }
+body.minimal .toolbar .toolbar-right { margin-left: 0; }
 body.minimal .toolbar .toolbar-sep { display: none; }
+body.minimal .tab-bar { min-height: 24px; }
+body.minimal .session-tab { padding: 4px 8px; font-size: 10px; }
+body.minimal .tab-brand { font-size: 10px; padding: 4px 6px 4px 0; }
+body.minimal .minimal-topbar .theme-toggle { padding: 2px; }
+body.minimal .minimal-topbar .theme-toggle svg { width: 14px; height: 14px; }
+body.minimal .minimal-topbar .pin-btn { font-size: 10px; }
+body.minimal .minimal-topbar .mode-toggle-btn { font-size: 8px; padding: 2px 4px; }
 
 .minimal-bar {
   display: none;
@@ -1347,7 +1385,8 @@ body.minimal .minimal-topbar { display: flex; }
   position: absolute;
   top: 4px;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--map-scale, 1));
+  transform-origin: top center;
   display: flex;
   gap: 4px;
   z-index: 10;
@@ -1430,9 +1469,10 @@ body.minimal .minimal-topbar { display: flex; }
 /* Session filter bar (gravity map) */
 .session-filter-bar {
   position: absolute;
-  top: 40px;
+  top: calc(40px * var(--map-scale, 1));
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--map-scale, 1));
+  transform-origin: top center;
   display: flex;
   gap: 2px;
   z-index: 10;
@@ -1693,6 +1733,8 @@ body.minimal .minimal-topbar { display: flex; }
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transform: scale(var(--map-scale, 1));
+  transform-origin: bottom right;
 }
 .gravity-sliders label {
   display: flex;
