@@ -1,8 +1,6 @@
 # Loupe
 
-Real-time log viewer for Claude Code sessions. Streams tool calls, results, errors, and thinking blocks into a floating macOS window.
-
-*T'as loupé ? Loupe_*
+Real-time log viewer and gravity map for Claude Code sessions. Streams tool calls, results, errors, and thinking blocks into a floating macOS window with a force-directed file relationship graph and multi-session support.
 
 ## Install
 

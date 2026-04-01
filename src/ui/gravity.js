@@ -132,13 +132,13 @@ const Gravity = (() => {
       })[edge.type] || (dark ? "#506070" : "#a0a8b0");
     }
     return ({
-      prerequisite:  dark ? "rgba(160,180,208,0.25)" : "rgba(58,90,122,0.15)",
-      coupling:      dark ? "rgba(192,160,128,0.2)"  : "rgba(106,80,64,0.12)",
-      validation:    dark ? "rgba(128,192,160,0.2)"  : "rgba(58,106,80,0.12)",
-      reference:     dark ? "rgba(128,144,192,0.15)" : "rgba(74,90,138,0.1)",
-      "test-driven": dark ? "rgba(208,160,128,0.2)"  : "rgba(138,90,58,0.12)",
-      sequence:      dark ? "rgba(80,96,112,0.06)"   : "rgba(160,168,176,0.08)",
-    })[edge.type] || (dark ? "rgba(80,96,112,0.06)" : "rgba(160,168,176,0.08)");
+      prerequisite:  dark ? "rgba(160,180,208,0.55)" : "rgba(58,90,122,0.3)",
+      coupling:      dark ? "rgba(192,160,128,0.5)"  : "rgba(106,80,64,0.25)",
+      validation:    dark ? "rgba(128,192,160,0.5)"  : "rgba(58,106,80,0.25)",
+      reference:     dark ? "rgba(128,144,192,0.45)" : "rgba(74,90,138,0.2)",
+      "test-driven": dark ? "rgba(208,160,128,0.5)"  : "rgba(138,90,58,0.25)",
+      sequence:      dark ? "rgba(80,96,112,0.25)"   : "rgba(160,168,176,0.15)",
+    })[edge.type] || (dark ? "rgba(80,96,112,0.25)" : "rgba(160,168,176,0.15)");
   }
 
   // No dash patterns — all edges are solid lines in both themes
@@ -844,7 +844,7 @@ const Gravity = (() => {
       }
 
       const lw = Math.min(EDGE_MAX_W, EDGE_MIN_W + totalWeight * 0.35) * mapScale;
-      let opacity = bestAge < GLOW_DURATION ? 0.8 : bestAge < WARM_DURATION ? 0.5 : 0.3;
+      let opacity = bestAge < GLOW_DURATION ? 0.9 : bestAge < WARM_DURATION ? 0.7 : 0.5;
 
       // Arrow direction from most recent edge
       const srcN = nodes.get(newest.source);
@@ -923,9 +923,9 @@ const Gravity = (() => {
       const isNewNode = introAge < NEW_GLOW_DURATION;
       const introGlow = isNewNode ? 1 - (introAge / NEW_GLOW_DURATION) : 0;
 
-      let alpha = isGlowing ? 0.9 : isWarm ? 0.6 : 0.3;
+      let alpha = isGlowing ? 1.0 : isWarm ? 0.8 : 0.5;
       if (isNewNode) alpha = Math.max(alpha, 0.7 + introGlow * 0.3);
-      if (!activeFilters.has("all") && !filterMatchAction(node)) alpha = 0.08;
+      if (!activeFilters.has("all") && !filterMatchAction(node)) alpha = 0.15;
       if (dimmed) alpha *= 0.2;
       if (isHovered || isSelected) alpha = 1;
 
@@ -933,14 +933,16 @@ const Gravity = (() => {
 
       if (dark) {
         // === OBSERVATORY: bright core + soft halo ===
-        const coreR = (2.5 + impNorm * 3) * mapScale;
-        const color = getNodeColor(node, true);
+        // New nodes get a boosted core size that settles down
+        const introBoost = isNewNode ? introGlow * 4 : 0;
+        const coreR = (2.5 + impNorm * 3 + introBoost) * mapScale;
+        const color = isNewNode ? `rgb(${Math.round(200 + introGlow * 55)},${Math.round(220 + introGlow * 35)},255)` : getNodeColor(node, true);
         const rgb = parseRgb(color);
 
-        // Soft halo (importance glow) — subtle, not overwhelming
+        // Soft halo (importance glow) — boosted for new nodes
         if (!dimmed && rgb) {
-          const haloR = coreR + (3 + impNorm * 8) * mapScale;
-          const haloAlpha = isHovered ? 0.12 : (0.03 + impNorm * 0.06);
+          const haloR = coreR + (3 + impNorm * 8 + introBoost * 2) * mapScale;
+          const haloAlpha = isNewNode ? (0.15 + introGlow * 0.3) : (isHovered ? 0.12 : (0.03 + impNorm * 0.06));
           const grad = ctx.createRadialGradient(x, y, coreR, x, y, haloR);
           grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${haloAlpha})`);
           grad.addColorStop(1, "rgba(0,0,0,0)");
@@ -971,16 +973,16 @@ const Gravity = (() => {
         // New node intro glow (expanding ring that fades)
         if (isNewNode && !dimmed && rgb) {
           const expandT = introAge / NEW_GLOW_DURATION;
-          const glowR = coreR + 4 + expandT * 10;
-          const glowAlpha = introGlow * 0.4;
+          const glowR = coreR + (6 + expandT * 14) * mapScale;
+          const glowAlpha = introGlow * 0.7;
           ctx.beginPath();
           ctx.arc(x, y, glowR, 0, Math.PI * 2);
           ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${glowAlpha})`;
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth = 2 * mapScale;
           ctx.stroke();
           // Inner bright flash
-          if (introGlow > 0.5) {
-            const flashAlpha = (introGlow - 0.5) * 2 * 0.2;
+          if (introGlow > 0.3) {
+            const flashAlpha = (introGlow - 0.3) * 1.4 * 0.4;
             const flashGrad = ctx.createRadialGradient(x, y, coreR, x, y, coreR + 6 * mapScale);
             flashGrad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${flashAlpha})`);
             flashGrad.addColorStop(1, "rgba(0,0,0,0)");
@@ -1014,8 +1016,9 @@ const Gravity = (() => {
 
       } else {
         // === BLUEPRINT: hollow circles, stroke weight = importance ===
-        const r = (5 + impNorm * 5) * mapScale;
-        const strokeW = (1 + impNorm * 1.5) * mapScale;
+        const introBoostL = isNewNode ? introGlow * 4 : 0;
+        const r = (5 + impNorm * 5 + introBoostL) * mapScale;
+        const strokeW = (1 + impNorm * 1.5 + (isNewNode ? introGlow * 2 : 0)) * mapScale;
         const isActive = claudeCurrentFiles.has(node.id);
 
         ctx.beginPath();
@@ -1023,13 +1026,13 @@ const Gravity = (() => {
 
         // Active = filled, otherwise hollow
         if (isActive || isGlowing) {
-          ctx.fillStyle = `rgba(50,90,70,${dimmed ? 0.05 : 0.15})`;
+          ctx.fillStyle = `rgba(50,90,70,${dimmed ? 0.08 : 0.2})`;
           ctx.fill();
-          ctx.strokeStyle = dimmed ? "rgba(50,90,70,0.15)" : "rgba(50,90,70,0.6)";
+          ctx.strokeStyle = dimmed ? "rgba(50,90,70,0.2)" : "rgba(50,90,70,0.7)";
         } else {
-          ctx.fillStyle = `rgba(50,70,90,${dimmed ? 0.01 : 0.02})`;
+          ctx.fillStyle = `rgba(50,70,90,${dimmed ? 0.02 : 0.05})`;
           ctx.fill();
-          ctx.strokeStyle = dimmed ? "rgba(50,70,90,0.08)" : `rgba(50,70,90,${0.15 + impNorm * 0.4})`;
+          ctx.strokeStyle = dimmed ? "rgba(50,70,90,0.12)" : `rgba(50,70,90,${0.25 + impNorm * 0.45})`;
         }
         ctx.lineWidth = strokeW;
         ctx.stroke();
@@ -1049,12 +1052,12 @@ const Gravity = (() => {
         // New node intro glow
         if (isNewNode && !dimmed) {
           const expandT = introAge / NEW_GLOW_DURATION;
-          const glowR = r + 3 + expandT * 8;
-          const glowAlpha = introGlow * 0.3;
+          const glowR = r + (5 + expandT * 12) * mapScale;
+          const glowAlpha = introGlow * 0.6;
           ctx.beginPath();
           ctx.arc(x, y, glowR, 0, Math.PI * 2);
           ctx.strokeStyle = `rgba(50,90,70,${glowAlpha})`;
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth = 2 * mapScale;
           ctx.stroke();
         }
 
