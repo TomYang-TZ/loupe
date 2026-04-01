@@ -20,6 +20,9 @@ const Gravity = (() => {
   let camX = 0, camY = 0, camZoom = 0.85;
   let targetCamX = 0, targetCamY = 0;
   let isDragging = false, dragStartX = 0, dragStartY = 0, dragCamX = 0, dragCamY = 0;
+  let miniDragging = false;
+  // Minimap geometry (updated each frame by drawMinimap)
+  let miniRect = null; // { mx, my, mw, mh, minX, minY, scale }
   let hoveredNode = null;
   let selectedNode = null;
   let draggingNode = null;
@@ -418,6 +421,13 @@ const Gravity = (() => {
       const node = nodes.get(path); if (!node) continue;
       const w = age < GLOW_DURATION ? 3 : 1;
       cx += node.x * w; cy += node.y * w; tw += w;
+    }
+    // Fallback: if no active/warm files, center on all visible nodes
+    if (tw === 0 && !userDragged) {
+      for (const n of nodes.values()) {
+        if (!nodeVisible(n)) continue;
+        cx += n.x; cy += n.y; tw++;
+      }
     }
     if (tw > 0 && !userDragged) {
       targetCamX = cx / tw - width / 2;
@@ -1133,6 +1143,67 @@ const Gravity = (() => {
 
     drawLegend(dark);
     drawStats(dark, now);
+    drawMinimap(dark);
+  }
+
+  function drawMinimap(dark) {
+    if (nodes.size === 0) { miniRect = null; return; }
+    const mw = 80 * mapScale, mh = 60 * mapScale;
+    const mx = 8, my = height - 8 - mh;
+
+    // Compute bounding box of all nodes
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of nodes.values()) {
+      const sx = spX(n), sy = spY(n);
+      if (sx < minX) minX = sx; if (sx > maxX) maxX = sx;
+      if (sy < minY) minY = sy; if (sy > maxY) maxY = sy;
+    }
+    const pad = 30;
+    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+    const bw = maxX - minX || 1, bh = maxY - minY || 1;
+    const scale = Math.min(mw / bw, mh / bh);
+
+    // Store for drag interaction
+    miniRect = { mx, my, mw, mh, minX, minY, scale };
+
+    // Background
+    ctx.fillStyle = dark ? "rgba(20,28,45,0.85)" : "rgba(240,245,250,0.7)";
+    ctx.fillRect(mx, my, mw, mh);
+    ctx.strokeStyle = dark ? "rgba(200,215,240,0.3)" : "rgba(50,70,90,0.15)";
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(mx, my, mw, mh);
+
+    // Draw nodes as dots
+    for (const n of nodes.values()) {
+      if (!nodeVisible(n)) continue;
+      const sx = spX(n), sy = spY(n);
+      const dx = mx + (sx - minX) * scale;
+      const dy = my + (sy - minY) * scale;
+      const age = Date.now() - n.lastAccessTs;
+      const dotAlpha = age < GLOW_DURATION ? 1.0 : age < WARM_DURATION ? 0.7 : 0.4;
+      ctx.fillStyle = dark ? `rgba(200,215,240,${dotAlpha})` : `rgba(50,70,90,${dotAlpha})`;
+      ctx.beginPath();
+      ctx.arc(dx, dy, 1.5 * mapScale, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Viewport rectangle
+    const vx1 = camX, vy1 = camY;
+    const vx2 = camX + width / camZoom, vy2 = camY + height / camZoom;
+    const rx = mx + (vx1 - minX) * scale;
+    const ry = my + (vy1 - minY) * scale;
+    const rw = (vx2 - vx1) * scale;
+    const rh = (vy2 - vy1) * scale;
+    // Clamp viewport rect to minimap bounds
+    const crx = Math.max(mx, Math.min(mx + mw - 2, rx));
+    const cry = Math.max(my, Math.min(my + mh - 2, ry));
+    const crw = Math.min(rw, mx + mw - crx);
+    const crh = Math.min(rh, my + mh - cry);
+    ctx.fillStyle = dark ? "rgba(160,180,208,0.08)" : "rgba(58,90,122,0.06)";
+    ctx.fillRect(crx, cry, crw, crh);
+    ctx.strokeStyle = dark ? "rgba(160,180,208,0.6)" : "rgba(58,90,122,0.5)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(crx, cry, crw, crh);
   }
 
   function filterMatchAction(node) {
@@ -1232,8 +1303,23 @@ const Gravity = (() => {
       if (e.button !== 0) return;
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-      const hit = nodeAt(mx, my);
 
+      // Check if click is on minimap
+      if (miniRect && mx >= miniRect.mx && mx <= miniRect.mx + miniRect.mw &&
+          my >= miniRect.my && my <= miniRect.my + miniRect.mh) {
+        miniDragging = true;
+        userDragged = true;
+        // Jump camera to clicked position
+        const worldX = miniRect.minX + (mx - miniRect.mx) / miniRect.scale;
+        const worldY = miniRect.minY + (my - miniRect.my) / miniRect.scale;
+        targetCamX = worldX - width / (2 * camZoom);
+        targetCamY = worldY - height / (2 * camZoom);
+        camX = targetCamX; camY = targetCamY;
+        canvas.style.cursor = "crosshair";
+        return;
+      }
+
+      const hit = nodeAt(mx, my);
       mouseDownPos = { x: e.clientX, y: e.clientY, hit, mx, my };
 
       if (hit) {
@@ -1253,6 +1339,16 @@ const Gravity = (() => {
     canvas.addEventListener("mousemove", (e) => {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+      // Minimap drag
+      if (miniDragging && miniRect) {
+        const worldX = miniRect.minX + (mx - miniRect.mx) / miniRect.scale;
+        const worldY = miniRect.minY + (my - miniRect.my) / miniRect.scale;
+        targetCamX = worldX - width / (2 * camZoom);
+        targetCamY = worldY - height / (2 * camZoom);
+        camX = targetCamX; camY = targetCamY;
+        return;
+      }
 
       if (draggingNode) {
         // Only start moving if past click threshold (avoid jitter on click)
@@ -1330,6 +1426,10 @@ const Gravity = (() => {
       }
 
       releaseNode();
+      if (miniDragging) {
+        miniDragging = false;
+        canvas.style.cursor = "grab";
+      }
       if (isDragging) {
         isDragging = false;
         targetCamX = camX;
@@ -1341,6 +1441,7 @@ const Gravity = (() => {
 
     document.addEventListener("mouseup", () => {
       releaseNode();
+      miniDragging = false;
       if (isDragging) {
         isDragging = false;
         targetCamX = camX;
@@ -1389,6 +1490,10 @@ const Gravity = (() => {
     // Scale everything proportionally (baseline: 500px width)
     mapScale = Math.max(0.55, Math.min(1, width / 500));
     canvas.parentElement.style.setProperty("--map-scale", mapScale);
+    // Set initial zoom based on canvas size (smaller canvas = more zoomed out)
+    if (!userDragged && camZoom === 0.85) {
+      camZoom = Math.max(0.5, Math.min(0.85, height / 700));
+    }
   }
 
   async function loadFullHistory() {
@@ -1529,8 +1634,7 @@ const Gravity = (() => {
     if (!bar) return;
     bar.innerHTML = "";
 
-    // Filter to non-stale sessions
-    const activeSessions = [...knownSessions.entries()].filter(([id]) => isSessionActive(id));
+    const activeSessions = [...knownSessions.entries()];
 
     // Single session: just show its name, no "All" button
     if (activeSessions.length <= 1) {
@@ -1539,7 +1643,7 @@ const Gravity = (() => {
         const btn = document.createElement("button");
         btn.className = "session-filter-btn active";
         btn.dataset.session = id;
-        btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span>${info.label}`;
+        btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span><span class="sf-label">${info.label}</span>`;
         bar.appendChild(btn);
         // Auto-select the single session
         sessionFilters.clear(); sessionFilters.add(id);
@@ -1560,7 +1664,7 @@ const Gravity = (() => {
       const btn = document.createElement("button");
       btn.className = `session-filter-btn ${sessionFilters.has(id) ? "active" : ""}`;
       btn.dataset.session = id;
-      btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span>${info.label}<span class="sf-close">&times;</span>`;
+      btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span><span class="sf-label">${info.label}</span><span class="sf-close">&times;</span>`;
       btn.onclick = (e) => {
         if (e.target.classList.contains("sf-close")) {
           unregisterSession(id);

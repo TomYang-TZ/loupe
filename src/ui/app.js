@@ -951,9 +951,9 @@ function rebuildTabs() {
     tabBar.appendChild(brand);
   }
 
-  // Single session: in minimal mode the brand is enough; in full mode show session name
+  // Single session: just show its name (brand already shows in minimal mode)
   if (sessions.size <= 1) {
-    if (sessions.size === 1 && !isMinimalMode()) {
+    if (sessions.size === 1) {
       const [id, info] = [...sessions.entries()][0];
       const tab = document.createElement("div");
       tab.className = "session-tab active";
@@ -1080,7 +1080,10 @@ let locked = true; // default: locked (window stays)
 
 window.toggleLock = () => {
   locked = !locked;
-  document.querySelectorAll("#lock-toggle, #lock-toggle-mini").forEach(el => el.classList.toggle("active", locked));
+  // Sync both lock checkboxes
+  document.querySelectorAll("#lock-toggle, #lock-toggle-mini, #lock-toggle-popover").forEach(el => {
+    if (el.checked !== locked) el.checked = locked;
+  });
   // Auto-hide is the inverse of lock
   if (window.webkit?.messageHandlers?.autoHide) {
     window.webkit.messageHandlers.autoHide.postMessage(!locked);
@@ -1315,7 +1318,9 @@ const mapDivider = document.getElementById("map-divider");
 
 window.toggleView = () => {
   gravityView = !gravityView;
-  viewToggleBtn.classList.toggle("active", gravityView);
+  document.querySelectorAll("#view-toggle-btn, #view-toggle-btn-mini").forEach(el => {
+    el.classList.toggle("active", gravityView);
+  });
   if (gravityView) {
     if (!gravityInitialized) {
       Gravity.init(gravityCanvas);

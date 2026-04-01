@@ -32,7 +32,8 @@
       </button>
       <span><span class="conn-dot connecting" id="conn-dot"></span><span id="conn-status">connecting</span></span>
       <span><span class="stat-val" id="line-count">0</span> events</span>
-      <button class="pin-btn active" id="lock-toggle" onclick="toggleLock()" title="Pin window (⌘⇧H)">📌</button>
+      <button class="scope-btn" id="view-toggle-btn" onclick="toggleView()" title="Map (m)"><div class="scope-icon"><svg class="scope-tube" viewBox="0 0 20 10" fill="currentColor"><rect x="2" y="3" width="16" height="5" rx="1.5"/><rect x="0" y="2" width="5" height="7" rx="1"/></svg><svg class="scope-stand" viewBox="0 0 12 8" fill="currentColor"><path d="M3 0 L6 8 L9 0" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></div></button>
+      <span class="lock-wrap" title="Pin window (⌘⇧H)"><input type="checkbox" id="lock-toggle" checked onchange="toggleLock()"><label class="lock-label" for="lock-toggle"><div class="lock-wrapper"><div class="shackle"></div><svg class="lock-body" viewBox="0 0 15 10" fill="white"><rect width="15" height="10" rx="2"/></svg></div></label></span>
       <button class="mode-toggle-btn" id="mode-toggle-btn" onclick="toggleMode()" title="Compact mode">&#8598;</button>
     </div>
     <div class="scanline" id="scanline"><div class="scanline-bar"></div></div>
@@ -63,7 +64,8 @@
       </svg>
     </button>
     <div class="minimal-topbar-right">
-      <button class="pin-btn active" id="lock-toggle-mini" onclick="toggleLock()" title="Pin window (⌘⇧H)">📌</button>
+      <button class="scope-btn" id="view-toggle-btn-mini" onclick="toggleView()" title="Map (m)"><div class="scope-icon"><svg class="scope-tube" viewBox="0 0 20 10" fill="currentColor"><rect x="2" y="3" width="16" height="5" rx="1.5"/><rect x="0" y="2" width="5" height="7" rx="1"/></svg><svg class="scope-stand" viewBox="0 0 12 8" fill="currentColor"><path d="M3 0 L6 8 L9 0" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></div></button>
+      <span class="lock-wrap" title="Pin window (⌘⇧H)"><input type="checkbox" id="lock-toggle-mini" checked onchange="toggleLock()"><label class="lock-label" for="lock-toggle-mini"><div class="lock-wrapper"><div class="shackle"></div><svg class="lock-body" viewBox="0 0 15 10" fill="white"><rect width="15" height="10" rx="2"/></svg></div></label></span>
       <button class="mode-toggle-btn" id="mode-toggle-btn-mini" onclick="toggleMode()" title="Expand to full window">&#8599;</button>
     </div>
   </div>
@@ -78,7 +80,6 @@
       <div class="filter-trigger" id="filter-trigger">All types</div>
       <div class="filter-menu" id="filter-menu"></div>
     </div>
-    <button class="btn" id="view-toggle-btn" onclick="toggleView()" title="Map (m)">Map</button>
     <div class="toolbar-sep"></div>
     <div class="toolbar-right">
       <span class="grid-controls" id="grid-controls" style="display:none">
@@ -127,7 +128,11 @@
 <!-- Map Popover -->
 <div class="map-popover-overlay" id="map-popover-overlay" style="display:none" onclick="if(event.target===this)toggleMapPopover()">
   <div class="map-popover" id="map-popover">
-    <button class="map-popover-close" onclick="toggleMapPopover()">&times;</button>
+    <div class="map-popover-controls">
+      <button class="scope-btn" onclick="toggleView(); toggleMapPopover();" title="Close map (m)"><div class="scope-icon"><svg class="scope-tube" viewBox="0 0 20 10" fill="currentColor"><rect x="2" y="3" width="16" height="5" rx="1.5"/><rect x="0" y="2" width="5" height="7" rx="1"/></svg><svg class="scope-stand" viewBox="0 0 12 8" fill="currentColor"><path d="M3 0 L6 8 L9 0" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></div></button>
+      <span class="lock-wrap" title="Pin window (⌘⇧H)"><input type="checkbox" id="lock-toggle-popover" checked onchange="toggleLock()"><label class="lock-label" for="lock-toggle-popover"><div class="lock-wrapper"><div class="shackle"></div><svg class="lock-body" viewBox="0 0 15 10" fill="white"><rect width="15" height="10" rx="2"/></svg></div></label></span>
+      <button class="map-popover-close" onclick="toggleMapPopover()">&times;</button>
+    </div>
   </div>
 </div>
 
