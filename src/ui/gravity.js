@@ -1356,8 +1356,8 @@ const Gravity = (() => {
             Math.abs(e.clientY - mouseDownPos.y) < CLICK_THRESHOLD) return;
         // Directly set node position (no simulation needed)
         const wx = mx / camZoom + camX, wy = my / camZoom + camY;
-        const nx = spreadCX + (wx - spreadCX) / edgeLengthScale;
-        const ny = spreadCY + (wy - spreadCY) / edgeLengthScale;
+        const nx = spreadCX + (wx - spreadCX) / (edgeLengthScale * mapScale);
+        const ny = spreadCY + (wy - spreadCY) / (edgeLengthScale * mapScale);
         draggingNode.x = nx;
         draggingNode.y = ny;
         draggingNode.vx = 0;
