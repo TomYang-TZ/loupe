@@ -1488,14 +1488,18 @@ body.minimal .minimal-topbar { display: flex; }
 }
 
 .session-filter-btn {
-  font: 400 10px "SF Mono", Menlo, monospace;
-  padding: 4px 12px;
+  font: 400 9px "SF Mono", Menlo, monospace;
+  padding: 3px 8px;
   border: none;
-  border-radius: 12px;
+  border-radius: 10px;
   background: transparent;
   color: rgba(200, 215, 240, 0.4);
   cursor: pointer;
   transition: all 0.2s;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -1526,6 +1530,16 @@ body.minimal .minimal-topbar { display: flex; }
   border-radius: 50%;
   display: inline-block;
 }
+.sf-close {
+  opacity: 0;
+  font-size: 10px;
+  line-height: 1;
+  width: 0;
+  overflow: hidden;
+  transition: opacity 0.15s, width 0.15s;
+}
+.session-filter-btn:hover .sf-close { opacity: 0.6; width: auto; }
+.sf-close:hover { opacity: 1 !important; }
 
 /* Gravity node detail card */
 .gravity-card {

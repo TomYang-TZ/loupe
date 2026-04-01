@@ -32,8 +32,8 @@ const Gravity = (() => {
   let lastRenderTime = 0;
 
   // Config
-  const GLOW_DURATION = 60000;
-  const WARM_DURATION = 5 * 60000;
+  const GLOW_DURATION = 3 * 60000;
+  const WARM_DURATION = 7 * 60000;
   const STALE_CUTOFF = 60 * 60 * 1000;
   const NODE_MIN_R = 3;
   const NODE_MAX_R = 20;
@@ -98,7 +98,7 @@ const Gravity = (() => {
   // --- Filter (multi-select: Set of active values, or contains "all") ---
   let activeFilters = new Set(["all"]);
   let recencyFilters = new Set(["all"]);
-  let sessionFilter = "all"; // "all" or a sessionId
+  let sessionFilters = new Set(["all"]); // multi-select like other filters
   let knownSessions = new Map(); // sessionId → { label, color }
   let onSessionFilterChange = null; // callback when gravity UI changes session
 
@@ -433,7 +433,7 @@ const Gravity = (() => {
   function nodeVisible(node) {
     if (node === hoveredNode || node === selectedNode) return true;
     // Session filter: hide nodes not in selected session
-    if (sessionFilter !== "all" && !node.sessions.has(sessionFilter)) return false;
+    if (!sessionFilters.has("all") && ![...node.sessions].some(s => sessionFilters.has(s))) return false;
     const age = Date.now() - node.lastAccessTs;
     if (age > STALE_CUTOFF) return false;
     // Recency filter
@@ -808,11 +808,10 @@ const Gravity = (() => {
 
     const focusNode = hoveredNode || selectedNode;
 
-    // --- Compute spread center of mass (once per frame) ---
+    // --- Compute spread center of mass from ALL nodes (stable across filters) ---
     spreadCX = 0; spreadCY = 0;
     let spreadCount = 0;
     for (const n of nodes.values()) {
-      if (!nodeVisible(n)) continue;
       spreadCX += n.x; spreadCY += n.y; spreadCount++;
     }
     if (spreadCount > 0) { spreadCX /= spreadCount; spreadCY /= spreadCount; }
@@ -1141,7 +1140,7 @@ const Gravity = (() => {
   }
 
   function edgeFilterMatch(edge) {
-    if (sessionFilter !== "all" && !edge.sessions.has(sessionFilter)) return false;
+    if (!sessionFilters.has("all") && ![...edge.sessions].some(s => sessionFilters.has(s))) return false;
     return true;
   }
 
@@ -1470,9 +1469,23 @@ const Gravity = (() => {
   }
 
   function setSessionFilter(id, _fromUI) {
-    sessionFilter = id;
-    document.querySelectorAll(".session-filter-btn").forEach(b => b.classList.toggle("active", b.dataset.session === id));
-    if (_fromUI && onSessionFilterChange) onSessionFilterChange(id);
+    if (_fromUI) {
+      // Toggle behavior from map UI clicks
+      toggleFilterSet(sessionFilters, id, ".session-filter-btn", "data-session");
+      if (onSessionFilterChange) {
+        // Only sync to app if exactly one session or "all" — don't snap on multi-select
+        if (sessionFilters.has("all")) onSessionFilterChange("all");
+        else if (sessionFilters.size === 1) onSessionFilterChange([...sessionFilters][0]);
+        // Multi-select: don't notify app, let it keep its current tab
+      }
+    } else {
+      // Direct set from app tab sync — no toggle, just set
+      sessionFilters.clear();
+      sessionFilters.add(id);
+      document.querySelectorAll(".session-filter-btn").forEach(b =>
+        b.classList.toggle("active", sessionFilters.has(b.getAttribute("data-session")))
+      );
+    }
   }
 
   function registerSession(id, label, color) {
@@ -1482,8 +1495,22 @@ const Gravity = (() => {
 
   function unregisterSession(id) {
     knownSessions.delete(id);
-    if (sessionFilter === id) sessionFilter = "all";
+    sessionFilters.delete(id);
+    if (sessionFilters.size === 0) sessionFilters.add("all");
+    // Remove nodes that only belong to this session, clean others
+    for (const [fp, node] of nodes) {
+      node.sessions.delete(id);
+      if (node.sessions.size === 0) nodes.delete(fp);
+    }
+    // Remove edges that reference deleted nodes
+    for (const [key, edge] of edges) {
+      edge.sessions.delete(id);
+      if (edge.sessions.size === 0 || !nodes.has(edge.source) || !nodes.has(edge.target)) edges.delete(key);
+    }
+    lastToolBySession.delete(id);
+    rebuildSimulation();
     rebuildSessionFilterUI();
+    if (onSessionFilterChange) onSessionFilterChange(sessionFilters.has("all") ? "all" : [...sessionFilters][0] || "all");
   }
 
   function isSessionActive(sessionId) {
@@ -1512,7 +1539,7 @@ const Gravity = (() => {
         btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span>${info.label}`;
         bar.appendChild(btn);
         // Auto-select the single session
-        sessionFilter = id;
+        sessionFilters.clear(); sessionFilters.add(id);
       }
       bar.style.display = activeSessions.length === 1 ? "" : "none";
       return;
@@ -1520,7 +1547,7 @@ const Gravity = (() => {
 
     // Multiple sessions: show "All" + each session
     const allBtn = document.createElement("button");
-    allBtn.className = `session-filter-btn ${sessionFilter === "all" ? "active" : ""}`;
+    allBtn.className = `session-filter-btn ${sessionFilters.has("all") ? "active" : ""}`;
     allBtn.dataset.session = "all";
     allBtn.textContent = "All";
     allBtn.onclick = () => setSessionFilter("all", true);
@@ -1528,10 +1555,16 @@ const Gravity = (() => {
 
     for (const [id, info] of activeSessions) {
       const btn = document.createElement("button");
-      btn.className = `session-filter-btn ${sessionFilter === id ? "active" : ""}`;
+      btn.className = `session-filter-btn ${sessionFilters.has(id) ? "active" : ""}`;
       btn.dataset.session = id;
-      btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span>${info.label}`;
-      btn.onclick = () => setSessionFilter(id, true);
+      btn.innerHTML = `<span class="sf-dot" style="background:${info.color}"></span>${info.label}<span class="sf-close">&times;</span>`;
+      btn.onclick = (e) => {
+        if (e.target.classList.contains("sf-close")) {
+          unregisterSession(id);
+        } else {
+          setSessionFilter(id, true);
+        }
+      };
       bar.appendChild(btn);
     }
 

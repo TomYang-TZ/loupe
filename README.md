@@ -26,9 +26,17 @@ Press `?` in the app for all shortcuts.
 | `e` | Toggle error filter |
 | `1`-`9` | Jump to session |
 
+## Web access
+
+Loupe runs a local server — you can also open it in any browser at:
+
+```
+http://localhost:8390
+```
+
 ## Manual start
 
 ```bash
-node src/server/index.js ~/.claude/logs/loupe.jsonl --json
+node src/server/index.js ~/.claude/logs/loupe.jsonl --json --port 8390
 open Loupe.app
 ```
