@@ -1483,15 +1483,20 @@ body.minimal .minimal-topbar { display: flex; }
 .gravity-filter-row {
   position: absolute;
   top: 4px;
-  left: 50%;
-  transform: translateX(-50%) scale(var(--map-scale, 1));
-  transform-origin: top center;
+  left: 8px;
+  transform: scale(var(--map-scale, 1));
+  transform-origin: top left;
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+  opacity: 0.75;
+  transition: opacity 0.25s;
+  gap: 3px;
   z-index: 10;
 }
+.gravity-filter-row:hover { opacity: 1; }
 
 /* Filter bar */
+.mode-filter-bar,
 .universe-filter-bar, .recency-filter-bar {
   display: flex;
   gap: 2px;
@@ -1501,6 +1506,7 @@ body.minimal .minimal-topbar { display: flex; }
   padding: 3px;
   backdrop-filter: blur(8px);
 }
+[data-theme="light"] .mode-filter-bar,
 [data-theme="light"] .universe-filter-bar,
 [data-theme="light"] .recency-filter-bar {
   background: rgba(255, 255, 255, 0.8);
@@ -1567,13 +1573,9 @@ body.minimal .minimal-topbar { display: flex; }
 
 /* Session filter bar (gravity map) */
 .session-filter-bar {
-  position: absolute;
-  top: calc(40px * var(--map-scale, 1));
-  left: 50%;
-  transform: translateX(-50%) scale(var(--map-scale, 1));
-  transform-origin: top center;
   display: flex;
   gap: 2px;
+  width: fit-content;
   z-index: 10;
   background: rgba(5, 5, 16, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.06);
@@ -1636,14 +1638,11 @@ body.minimal .minimal-topbar { display: flex; }
   max-width: 60px;
 }
 .sf-close {
-  opacity: 0;
+  display: none;
   font-size: 10px;
   line-height: 1;
-  width: 0;
-  overflow: hidden;
-  transition: opacity 0.15s, width 0.15s;
 }
-.session-filter-btn:hover .sf-close { opacity: 0.6; width: auto; }
+.session-filter-btn:hover .sf-close { display: inline; opacity: 0.6; }
 .sf-close:hover { opacity: 1 !important; }
 
 /* Gravity node detail card */
@@ -1911,6 +1910,110 @@ body.minimal .minimal-topbar { display: flex; }
 /* Vignette overlay — hidden, no longer used */
 .universe-vignette {
   display: none;
+}
+
+/* ===== Mode Toggle (Files / Flow) ===== */
+.mode-filter-bar {
+  margin: 0;
+  padding: 2px 3px;
+  align-self: flex-start;
+}
+.mode-btn {
+  font: 400 9px "SF Mono", Menlo, monospace;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: rgba(200, 215, 240, 0.4);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+[data-theme="light"] .mode-btn {
+  color: rgba(50, 70, 90, 0.4);
+}
+.mode-btn:hover {
+  color: rgba(200, 215, 240, 0.7);
+}
+[data-theme="light"] .mode-btn:hover {
+  color: rgba(50, 70, 90, 0.7);
+}
+.mode-btn.active {
+  background: rgba(160, 180, 208, 0.3);
+  color: rgba(160, 180, 208, 0.95);
+}
+[data-theme="light"] .mode-btn.active {
+  background: rgba(58, 90, 122, 0.2);
+  color: rgba(58, 90, 122, 0.9);
+}
+
+/* ===== Momentum Map ===== */
+#momentum-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.momentum-tooltip {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  z-index: 20;
+  background: rgba(5, 5, 16, 0.88);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: 400 9px "SF Mono", Menlo, monospace;
+  color: rgba(200, 215, 240, 0.7);
+  max-width: 180px;
+  line-height: 1.4;
+  line-height: 1.5;
+}
+[data-theme="light"] .momentum-tooltip {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  color: rgba(50, 70, 90, 0.7);
+}
+
+.momentum-tip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.momentum-tip-state {
+  font-weight: 600;
+  font-size: 9px;
+}
+.momentum-tip-duration {
+  opacity: 0.5;
+  font-size: 8px;
+}
+.momentum-tip-actions {
+  opacity: 0.6;
+  font-size: 8px;
+}
+.momentum-tip-files {
+  opacity: 0.5;
+  font-size: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.momentum-tip-progress {
+  font-size: 8px;
+  font-weight: 500;
+}
+.momentum-tip-pattern {
+  font-size: 8px;
+  opacity: 0.7;
+}
+.momentum-tip-trigger {
+  font-size: 8px;
+  color: #ef4444;
+  opacity: 0.8;
 }
 
 /* ===== Reduced Motion ===== */

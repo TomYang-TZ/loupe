@@ -309,6 +309,22 @@ const Gravity = (() => {
       dirGroups.get(d).push(n);
     }
 
+    // Session groups for multi-session clustering
+    const sessionGroups = new Map();
+    const multiSession = sessionFilters.has("all") || sessionFilters.size > 1;
+    if (multiSession) {
+      for (const n of nodeArray) {
+        // Primary session = most recent one that accessed this node
+        let primarySession = null;
+        // Use last session that touched this file (sessions is a Set, pick last added)
+        for (const s of n.sessions) primarySession = s;
+        if (primarySession) {
+          if (!sessionGroups.has(primarySession)) sessionGroups.set(primarySession, []);
+          sessionGroups.get(primarySession).push(n);
+        }
+      }
+    }
+
     // Build adjacency for angular separation force
     const adjacency = new Map();
     for (const e of edgeArray) {
@@ -323,12 +339,14 @@ const Gravity = (() => {
     simulation = d3.forceSimulation(nodeArray)
       .force("charge", d3.forceManyBody().strength(-220).distanceMax(500))
       .force("link", d3.forceLink(edgeArray).id(d => d.id).distance(d => {
-        const sr = nodeRadius(d.source), tr = nodeRadius(d.target);
-        return 100 + sr + tr;
+        // Important nodes pull closer together; less important drift apart
+        const imp = (getImportance(d.source) + getImportance(d.target)) / 2;
+        return Math.max(40, 120 - imp * 2);
       }).strength(e => 0.08 + e.weight * 0.008))
       .force("center", d3.forceCenter(width / 2, height / 2).strength(0.012))
       .force("collision", d3.forceCollide().radius(d => nodeRadius(d) * 2.5 + 20).strength(0.9))
       .force("cluster", clusterForce(dirGroups, 0.05))
+      .force("sessionCluster", multiSession && sessionGroups.size > 1 ? clusterForce(sessionGroups, 0.04) : null)
       .force("angular", angularSeparationForce(adjacency, 0.4))
       .velocityDecay(0.4)
       .alphaDecay(0.05)
@@ -808,7 +826,14 @@ const Gravity = (() => {
     updateCamera();
 
     // Background
-    ctx.fillStyle = dark ? "#050510" : "#f4f3f0";
+    if (dark) {
+      const bgGrad = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, Math.max(width, height) * 0.7);
+      bgGrad.addColorStop(0, "#1a1e2e");
+      bgGrad.addColorStop(1, "#0c0f18");
+      ctx.fillStyle = bgGrad;
+    } else {
+      ctx.fillStyle = "#f4f3f0";
+    }
     ctx.fillRect(0, 0, width, height);
     drawBackground(dark);
 
@@ -1086,6 +1111,43 @@ const Gravity = (() => {
           ctx.arc(x, y, 1.5, 0, Math.PI * 2);
           ctx.fillStyle = "rgba(50,70,90,0.25)";
           ctx.fill();
+        }
+      }
+
+      // --- Momentum phase ring (from Momentum.getFileState) ---
+      if (typeof Momentum !== "undefined" && Momentum.getFileState && isGlowing && !dimmed) {
+        const mState = Momentum.getFileState(node.id);
+        if (mState) {
+          const mAge = now - mState.ts;
+          if (mAge < GLOW_DURATION) {
+            const mAlpha = Math.max(0.1, 0.7 * (1 - mAge / GLOW_DURATION));
+            const mPhaseColors = {
+              exploring: "#8b5cf6", implementing: "#22c55e", testing: "#06b6d4",
+              debugging: "#ef4444", planning: "#f59e0b",
+            };
+            const mRingColor = mPhaseColors[mState.phase] || "#8b5cf6";
+            const baseR = dark ? (2.5 + impNorm * 3) * mapScale : (5 + impNorm * 5) * mapScale;
+            const mRingR = baseR + 3 * mapScale;
+            ctx.save();
+            ctx.globalAlpha = mAlpha;
+            ctx.strokeStyle = mRingColor;
+            ctx.lineWidth = 2 * mapScale;
+            if (mState.progress === "drifting") {
+              ctx.setLineDash([4 * mapScale, 3 * mapScale]);
+            } else if (mState.progress === "stuck") {
+              const pulse = 0.5 + 0.5 * Math.sin(now / 500);
+              ctx.globalAlpha = mAlpha * pulse;
+            }
+            ctx.beginPath();
+            ctx.arc(x, y, mRingR, 0, Math.PI * 2);
+            ctx.stroke();
+            if (mState.progress === "breakthrough") {
+              ctx.shadowColor = mRingColor;
+              ctx.shadowBlur = 6 * mapScale;
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
         }
       }
 
@@ -1650,6 +1712,16 @@ const Gravity = (() => {
       }
       bar.style.display = activeSessions.length === 1 ? "" : "none";
       return;
+    }
+
+    // When transitioning from single to multi, reset to "all"
+    if (!sessionFilters.has("all") && sessionFilters.size === 1) {
+      const onlyId = [...sessionFilters][0];
+      // If the only selected session was the auto-selected single session, switch to "all"
+      if (activeSessions.some(([id]) => id === onlyId)) {
+        sessionFilters.clear();
+        sessionFilters.add("all");
+      }
     }
 
     // Multiple sessions: show "All" + each session

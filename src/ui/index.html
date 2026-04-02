@@ -95,9 +95,15 @@
   <div class="gravity-container" id="gravity-container" style="display:none">
     <button class="gravity-enlarge-btn" id="gravity-enlarge-btn" onclick="toggleMapPopover()" title="Enlarge map">⤢</button>
     <canvas id="gravity-canvas"></canvas>
+    <canvas id="momentum-canvas" style="display:none"></canvas>
     <div class="gravity-tooltip" id="gravity-tooltip"></div>
+    <div class="momentum-tooltip" id="momentum-tooltip"></div>
     <div class="gravity-card" id="gravity-card" style="display:none"></div>
     <div class="gravity-filter-row">
+      <div class="mode-filter-bar" id="mode-filter-bar">
+        <button class="mode-btn active" data-mode="files" onclick="setMapMode('files')">Files</button>
+        <button class="mode-btn" data-mode="flow" onclick="setMapMode('flow')">Flow</button>
+      </div>
       <div class="universe-filter-bar" id="universe-filter-bar">
         <button class="filter-btn active" data-filter="all" onclick="Gravity.setFilter && Gravity.setFilter('all')">All</button>
         <button class="filter-btn" data-filter="read" onclick="Gravity.setFilter && Gravity.setFilter('read')">Read</button>
@@ -110,10 +116,13 @@
         <button class="recency-filter-btn" data-recency="warm" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('warm')">Warm</button>
         <button class="recency-filter-btn" data-recency="stale" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('stale')">Stale</button>
       </div>
+      <div class="session-filter-bar" id="session-filter-bar" style="display:none"></div>
     </div>
-    <div class="session-filter-bar" id="session-filter-bar" style="display:none"></div>
-    <div class="gravity-sliders">
+    <div class="gravity-sliders" id="gravity-sliders">
       <label><span>Spread</span><input type="range" min="10" max="300" value="155" oninput="Gravity.setEdgeLengthScale(0.1+(this.value-10)/290*1.4)"></label>
+    </div>
+    <div class="gravity-sliders" id="momentum-sliders" style="display:none">
+      <label><span>Spread</span><input type="range" min="10" max="300" value="155" oninput="Momentum.setEdgeLengthScale(0.2+(this.value-10)/290*2.8)"></label>
     </div>
     <div class="universe-vignette"></div>
   </div>
@@ -151,6 +160,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="gravity.js"></script>
+<script src="momentum.js"></script>
 <script src="tiling.js"></script>
 <script src="app.js"></script>
 </body>

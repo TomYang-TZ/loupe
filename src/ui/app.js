@@ -294,6 +294,7 @@ function resetAll() {
   firstEventTs = null;
   sessions.clear();
   colorIdx = 0;
+  if (momentumInitialized) Momentum.reset();
   rebuildTabs();
   rebuildPanes();
 }
@@ -468,11 +469,13 @@ function handleLine(msg) {
     newSession = true;
     rebuildTabs();
     if (Gravity.registerSession) Gravity.registerSession(sessionId, sLabel, sColor);
+    if (momentumInitialized) Momentum.registerSession(sessionId, sLabel, sColor);
   }
   if (sessionId && sessions.has(sessionId)) {
     const sInfo = sessions.get(sessionId);
     sInfo.count++;
     sInfo.lastEventTs = msg.ts;
+    if (sInfo.stale) { sInfo.stale = false; rebuildTabs(); }
     if (activeSession !== "all" && activeSession !== sessionId) {
       const tab = tabBar.querySelector(`[data-session="${sessionId}"] .tab-dot`);
       if (tab) tab.classList.add("has-activity");
@@ -484,6 +487,7 @@ function handleLine(msg) {
 
   // Feed to universe renderer if initialized
   if (gravityInitialized) Gravity.addEntry(entry);
+  if (momentumInitialized) Momentum.addEntry(entry);
 
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
@@ -968,12 +972,12 @@ function rebuildTabs() {
     const allTab = document.createElement("div");
     allTab.className = `session-tab ${activeSession === "all" ? "active" : ""}`;
     allTab.dataset.session = "all";
-    allTab.textContent = "All";
+    allTab.innerHTML = 'All <span class="tab-shortcut">1</span>';
     allTab.onclick = () => switchSession("all");
     tabBar.appendChild(allTab);
   }
 
-  let tabIdx = 1;
+  let tabIdx = 2;
   const now = Date.now();
   for (const id of sessionOrder) {
     const info = sessions.get(id);
@@ -1021,6 +1025,7 @@ function switchSession(id) {
   if (dot) dot.classList.remove("has-activity");
   // Sync gravity map session filter with active tab
   if (Gravity.setSessionFilter) Gravity.setSessionFilter(id === "all" ? "all" : id);
+  if (momentumInitialized) Momentum.setSessionFilter(id === "all" ? "all" : id);
   rebuildTabs();
   rebuildView();
   updateGridControlsVisibility();
@@ -1032,29 +1037,26 @@ function removeSession(id) {
   for (let i = entries.length - 1; i >= 0; i--) { if (entries[i].sessionId === id) entries.splice(i, 1); }
   if (activeSession === id) activeSession = "all";
   if (Gravity.unregisterSession) Gravity.unregisterSession(id);
+  if (momentumInitialized) Momentum.unregisterSession(id);
   rebuildTabs();
   rebuildView();
 }
 
 function pruneSessionTab(id) {
-  sessions.delete(id);
-  sessionOrder = sessionOrder.filter(s => s !== id);
-  if (activeSession === id) activeSession = "all";
+  // Mark as stale instead of removing — keep session and entries intact
+  const sInfo = sessions.get(id);
+  if (sInfo) sInfo.stale = true;
   rebuildTabs();
-  rebuildView();
 }
 
 function reconcileSessions(serverList) {
   const serverIds = new Set(serverList.map(s => s.id));
   let changed = false;
-  // Remove local sessions not in server's list (batch — no rebuild per removal)
+  // Mark sessions not in server's list as stale (don't delete)
   for (const id of [...sessions.keys()]) {
     if (!serverIds.has(id)) {
-      sessions.delete(id);
-      sessionOrder = sessionOrder.filter(s => s !== id);
-      if (activeSession === id) activeSession = "all";
-      if (Gravity.unregisterSession) Gravity.unregisterSession(id);
-      changed = true;
+      const sInfo = sessions.get(id);
+      if (sInfo && !sInfo.stale) { sInfo.stale = true; changed = true; }
     }
   }
   // Add missing sessions from server
@@ -1197,6 +1199,7 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "?" && !inSearch) { toggleHelp(); return; }
   if (e.key === "m" && !inSearch) { toggleView(); return; }
+  if (e.key === "n" && e.metaKey && e.shiftKey) { e.preventDefault(); setMapMode(mapMode === "files" ? "flow" : "files"); return; }
   if (e.key === "t" && e.metaKey) { e.preventDefault(); toggleTheme(); return; }
   if ((e.key === "=" || e.key === "+") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(1.2); return; }
   if ((e.key === "-" || e.key === "_") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(0.8); return; }
@@ -1229,8 +1232,8 @@ document.addEventListener("keydown", (e) => {
     rebuildView();
   }
   if (e.key === "g") { jumpToBottom(); }
-  if (e.key === "0") { switchSession("all"); }
-  if (e.key >= "1" && e.key <= "9") { const idx = parseInt(e.key) - 1; const ids = [...sessions.keys()]; if (idx < ids.length) switchSession(ids[idx]); }
+  if (e.key === "1") { switchSession("all"); }
+  if (e.key >= "2" && e.key <= "9") { const idx = parseInt(e.key) - 2; const ids = sessionOrder; if (idx < ids.length) switchSession(ids[idx]); }
 });
 
 function focusEntry(visible, idx) {
@@ -1305,6 +1308,47 @@ function onModeChange() {
 // Watch for body class changes (Swift toggles 'minimal')
 new MutationObserver(() => onModeChange()).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
+// ===== Map Mode (Files / Flow) =====
+let mapMode = "files"; // "files" | "flow"
+let momentumInitialized = false;
+const momentumCanvas = document.getElementById("momentum-canvas");
+
+window.setMapMode = (mode) => {
+  mapMode = mode;
+  // Open the map section if not already open
+  if (!gravityView) { toggleView(); return; } // toggleView will call setMapMode(mapMode) on open
+  document.querySelectorAll(".mode-btn").forEach(b =>
+    b.classList.toggle("active", b.dataset.mode === mode)
+  );
+  if (mode === "files") {
+    gravityCanvas.style.display = "";
+    momentumCanvas.style.display = "none";
+    // Show gravity-specific UI
+    document.getElementById("universe-filter-bar").style.display = "";
+    document.querySelector(".recency-filter-bar").style.display = "";
+    document.getElementById("gravity-sliders").style.display = "";
+    document.getElementById("momentum-sliders").style.display = "none";
+  } else {
+    // Initialize momentum on first use
+    if (!momentumInitialized) {
+      Momentum.init(momentumCanvas);
+      Momentum.addEntries(entries);
+      momentumInitialized = true;
+      Momentum.setOnSessionFilterChange((id) => { switchSession(id); });
+      Momentum.setOnClickSpan((entryId) => { openModal(entryId); });
+    }
+    // Sync momentum session filter with current active session
+    Momentum.setSessionFilter(activeSession === "all" ? "all" : activeSession);
+    gravityCanvas.style.display = "none";
+    momentumCanvas.style.display = "";
+    // Hide gravity-specific UI, show momentum UI
+    document.getElementById("universe-filter-bar").style.display = "none";
+    document.querySelector(".recency-filter-bar").style.display = "none";
+    document.getElementById("gravity-sliders").style.display = "none";
+    document.getElementById("momentum-sliders").style.display = "";
+  }
+};
+
 // ===== Universe Map View =====
 let gravityView = false;
 let gravityInitialized = false;
@@ -1326,7 +1370,6 @@ window.toggleView = () => {
       Gravity.init(gravityCanvas);
       Gravity.addEntries(entries);
       gravityInitialized = true;
-      // Sync gravity session filter → log panel tabs
       Gravity.setOnSessionFilterChange((id) => {
         switchSession(id);
       });
@@ -1335,10 +1378,13 @@ window.toggleView = () => {
     gravityContainer.style.flex = "0 0 35%";
     gravityContainer.style.minHeight = "120px";
     mapDivider.style.display = "";
+    // Restore the mode the user was on before closing
+    setMapMode(mapMode);
   } else {
     if (mapPopoverOpen) toggleMapPopover();
     gravityContainer.style.display = "none";
     mapDivider.style.display = "none";
+    // Don't reset mapMode — remember it for when the map reopens
   }
 };
 
