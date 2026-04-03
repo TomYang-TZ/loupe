@@ -1643,10 +1643,10 @@ const Gravity = (() => {
       // Toggle behavior from map UI clicks
       toggleFilterSet(sessionFilters, id, ".session-filter-btn", "data-session");
       if (onSessionFilterChange) {
-        // Only sync to app if exactly one session or "all" — don't snap on multi-select
+        // Sync to app: single session or "all" as string, multi-select as Set
         if (sessionFilters.has("all")) onSessionFilterChange("all");
         else if (sessionFilters.size === 1) onSessionFilterChange([...sessionFilters][0]);
-        // Multi-select: don't notify app, let it keep its current tab
+        else onSessionFilterChange(new Set(sessionFilters));
       }
     } else {
       // Direct set from app tab sync — no toggle, just set
@@ -1714,15 +1714,13 @@ const Gravity = (() => {
       return;
     }
 
-    // When transitioning from single to multi, reset to "all"
-    if (!sessionFilters.has("all") && sessionFilters.size === 1) {
-      const onlyId = [...sessionFilters][0];
-      // If the only selected session was the auto-selected single session, switch to "all"
-      if (activeSessions.some(([id]) => id === onlyId)) {
-        sessionFilters.clear();
-        sessionFilters.add("all");
-      }
+    // On first transition from 1→2+ sessions, reset auto-selected single to "all"
+    if (!rebuildSessionFilterUI._wasMulti && !sessionFilters.has("all") && sessionFilters.size === 1) {
+      sessionFilters.clear();
+      sessionFilters.add("all");
+      if (onSessionFilterChange) onSessionFilterChange("all");
     }
+    rebuildSessionFilterUI._wasMulti = true;
 
     // Multiple sessions: show "All" + each session
     const allBtn = document.createElement("button");

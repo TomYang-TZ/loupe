@@ -24,7 +24,7 @@ const Momentum = (() => {
   // Session registry
   const sessionColors = new Map();
   const sessionLabels = new Map();
-  let sessionFilter = "all";
+  let sessionFilters = new Set(["all"]); // multi-select like gravity
   let onSessionFilterChange = null;
 
   // Interaction
@@ -54,16 +54,31 @@ const Momentum = (() => {
   let rebuildTimer = null;
 
   // --- Constants ---
-  const PHASE_COLORS = {
-    exploring:    { dark: "#8b5cf6", light: "#6d28d9" },
-    implementing: { dark: "#22c55e", light: "#15803d" },
-    testing:      { dark: "#06b6d4", light: "#0e7490" },
-    debugging:    { dark: "#ef4444", light: "#b91c1c" },
-    planning:     { dark: "#f59e0b", light: "#b45309" },
+  // Monochrome palette — phase distinguished by position/label only
+  const MONO = {
+    // Dark mode: warm white spectrum
+    dark: {
+      stroke: [226, 232, 240],     // slate node strokes
+      label: [255, 248, 240],      // warm white labels
+      edge: [255, 248, 240],       // warm white edges
+      fill: [226, 232, 240],       // near-empty node fill
+      phaseLbl: [255, 248, 240],   // phase label text
+      hullStroke: [148, 163, 184], // session hull
+    },
+    // Light mode: pure black
+    light: {
+      stroke: [0, 0, 0],
+      label: [0, 0, 0],
+      edge: [0, 0, 0],
+      fill: [0, 0, 0],
+      phaseLbl: [0, 0, 0],
+      hullStroke: [0, 0, 0],
+    },
   };
 
+  // Progress rings — the ONLY color on the map
   const PROGRESS_COLORS = {
-    approaching:  "#22c55e",
+    approaching:  "#06b6d4",
     drifting:     "#eab308",
     stuck:        "#ef4444",
     breakthrough: "#3b82f6",
@@ -404,7 +419,7 @@ const Momentum = (() => {
     for (let i = 2; i < recent.length; i++) {
       if (recent[i] === recent[i - 2] && recent[i - 1] === recent[i - 3]) repeats++;
     }
-    return Math.min(1, repeats / (recent.length / 2));
+    return Math.min(1, repeats / (recent.length - 2));
   }
 
   function detectNarrowing(window, span) {
@@ -508,7 +523,7 @@ const Momentum = (() => {
   function collectAllSpans() {
     const spans = [];
     for (const [sid, state] of sessionState) {
-      if (sessionFilter !== "all" && sessionFilter !== sid) continue;
+      if (!sessionFilters.has("all") && !sessionFilters.has(sid)) continue;
       for (const s of state.spans) spans.push(s);
       if (state.current) spans.push(state.current);
     }
@@ -522,7 +537,7 @@ const Momentum = (() => {
 
     // Build sequential edges
     for (const [sid, state] of sessionState) {
-      if (sessionFilter !== "all" && sessionFilter !== sid) continue;
+      if (!sessionFilters.has("all") && !sessionFilters.has(sid)) continue;
       const spans = [...state.spans];
       if (state.current) spans.push(state.current);
       for (let i = 1; i < spans.length; i++) {
@@ -653,10 +668,7 @@ const Momentum = (() => {
     return document.documentElement.getAttribute("data-theme") !== "light";
   }
 
-  function phaseColor(phase) {
-    const mode = isDark() ? "dark" : "light";
-    return (PHASE_COLORS[phase] || PHASE_COLORS.exploring)[mode];
-  }
+  function mono() { return isDark() ? MONO.dark : MONO.light; }
 
   function resizeCanvas() {
     if (!canvas) return;
@@ -680,19 +692,20 @@ const Momentum = (() => {
     if (now - lastRenderTime < 16) return; // ~60fps for smooth simulation
     lastRenderTime = now;
 
-    resizeCanvas();
+    const rect = canvas.parentElement.getBoundingClientRect();
+    if (Math.round(rect.width) !== Math.round(width) || Math.round(rect.height) !== Math.round(height)) resizeCanvas();
     ctx.clearRect(0, 0, width, height);
 
     const dark = isDark();
 
-    // Background — subtle radial gradient for depth
+    // Background
     if (dark) {
       const bgGrad = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, Math.max(width, height) * 0.7);
-      bgGrad.addColorStop(0, "#1a1e2e");
-      bgGrad.addColorStop(1, "#0c0f18");
+      bgGrad.addColorStop(0, "#0e1118");
+      bgGrad.addColorStop(1, "#06080a");
       ctx.fillStyle = bgGrad;
     } else {
-      ctx.fillStyle = "#f4f3f0";
+      ctx.fillStyle = "#fafafa";
     }
     ctx.fillRect(0, 0, width, height);
 
@@ -712,14 +725,14 @@ const Momentum = (() => {
     ctx.translate(-camX * camZoom, -camY * camZoom);
     ctx.scale(camZoom, camZoom);
 
-    // Draw session circles (faint circular territory per session)
-    drawSessionCircles(dark);
+    // Draw session convex hulls
+    drawSessionHulls(dark);
 
-    // Draw phase cluster backgrounds
-    drawClusterBackgrounds(dark, now);
+    // Draw floating phase labels
+    drawClusterLabels(dark);
 
     // Draw edges
-    drawEdges(dark, now);
+    drawEdges(dark);
 
     // Draw nodes
     drawNodes(dark, now);
@@ -755,14 +768,18 @@ const Momentum = (() => {
     ctx.lineWidth = 0.5;
     ctx.strokeRect(mx, my, mw, mh);
 
-    // Draw nodes as colored dots
+    // Draw nodes as monochrome dots
+    const m = mono();
+    const firstTs = simNodes.length > 0 ? simNodes[0].startTs : 0;
+    const lastTs = simNodes.length > 0 ? simNodes[simNodes.length - 1].endTs : 1;
+    const mmRange = Math.max(1, lastTs - firstTs);
     for (const n of simNodes) {
       if (n.x == null) continue;
       const nx = spX(n), ny = spY(n);
       const dx = mx + (nx - minX) * scale;
       const dy = my + (ny - minY) * scale;
-      ctx.fillStyle = phaseColor(n.phase);
-      ctx.globalAlpha = 0.8;
+      const age = (lastTs - n.endTs) / mmRange;
+      ctx.fillStyle = `rgba(${m.stroke},${0.4 + (1 - age) * 0.5})`;
       ctx.beginPath();
       ctx.arc(dx, dy, Math.max(1.5, 2 * mapScale), 0, Math.PI * 2);
       ctx.fill();
@@ -787,7 +804,7 @@ const Momentum = (() => {
     ctx.strokeRect(crx, cry, crw, crh);
   }
 
-  function drawSessionCircles(dark) {
+  function drawSessionHulls(dark) {
     const sessionGroups = new Map();
     for (const n of simNodes) {
       if (n.x == null) continue;
@@ -796,177 +813,134 @@ const Momentum = (() => {
     }
     if (sessionGroups.size < 2) return;
 
-    function hexToRgb(hex) {
-      return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+    const m = mono();
+
+    // Convex hull (Andrew's monotone chain)
+    function convexHull(points) {
+      points = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+      if (points.length <= 1) return points;
+      const cross = (O, A, B) => (A.x - O.x) * (B.y - O.y) - (A.y - O.y) * (B.x - O.x);
+      const lower = [];
+      for (const p of points) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+      const upper = [];
+      for (let i = points.length - 1; i >= 0; i--) { const p = points[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+      return lower.slice(0, -1).concat(upper.slice(0, -1));
     }
 
     for (const [sid, nodes] of sessionGroups) {
-      if (nodes.length === 0) continue;
-      const color = sessionColors.get(sid) || (dark ? "#a1a1aa" : "#71717a");
-      const [cr, cg, cb] = hexToRgb(color);
+      if (nodes.length < 1) continue;
 
-      let cx = 0, cy = 0;
-      for (const n of nodes) { cx += spX(n); cy += spY(n); }
-      cx /= nodes.length; cy /= nodes.length;
-      let maxDist = 0;
-      for (const n of nodes) {
-        const dx = spX(n) - cx, dy = spY(n) - cy;
-        maxDist = Math.max(maxDist, Math.sqrt(dx * dx + dy * dy) + nodeRadius(n));
-      }
-      const radius = maxDist + 40 * mapScale;
-      const seed = sid.length + nodes.length;
-
-      // Draw wobbly blob with radial gradient fill (fades at edges)
-      ctx.save();
-
-      // Build wobbly path
-      const pts = 12;
-      const blobPoints = [];
-      for (let i = 0; i < pts; i++) {
-        const angle = (i / pts) * Math.PI * 2;
-        const wobble = 1 + 0.12 * Math.sin(angle * 3.7 + seed * 1.3) * Math.cos(angle * 2.1 + seed * 0.7);
-        const r = radius * wobble;
-        blobPoints.push({ x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r });
-      }
-
-      // Smooth closed curve through points
-      ctx.beginPath();
-      ctx.moveTo(blobPoints[0].x, blobPoints[0].y);
-      for (let i = 0; i < pts; i++) {
-        const curr = blobPoints[i];
-        const next = blobPoints[(i + 1) % pts];
-        const cpx = (curr.x + next.x) / 2;
-        const cpy = (curr.y + next.y) / 2;
-        ctx.quadraticCurveTo(curr.x, curr.y, cpx, cpy);
-      }
-      ctx.closePath();
-
-      // Clip to blob shape, then fill with radial gradient for fade effect
-      ctx.save();
-      ctx.clip();
-      const outerR = radius * 1.15;
-      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, outerR);
-      // In dark mode, blend toward lighter tint so it's visible against #050510
-      const dr = dark ? Math.min(255, cr + 80) : cr;
-      const dg = dark ? Math.min(255, cg + 80) : cg;
-      const db = dark ? Math.min(255, cb + 80) : cb;
-      const alpha = dark ? 0.18 : 0.12;
-      grad.addColorStop(0, `rgba(${dr},${dg},${db},${alpha})`);
-      grad.addColorStop(0.6, `rgba(${dr},${dg},${db},${alpha * 0.6})`);
-      grad.addColorStop(1, `rgba(${dr},${dg},${db},0)`);
-      ctx.fillStyle = grad;
-      ctx.fillRect(cx - outerR, cy - outerR, outerR * 2, outerR * 2);
-      ctx.restore();
-
-      // Session label above
-      let topY = Infinity;
-      for (const n of nodes) { topY = Math.min(topY, spY(n) - nodeRadius(n)); }
+      // Session label above topmost node
+      let topY = Infinity, sumX = 0;
+      for (const n of nodes) { topY = Math.min(topY, spY(n) - nodeRadius(n)); sumX += spX(n); }
       const label = sessionLabels.get(sid) || sid.slice(0, 8);
-      ctx.globalAlpha = dark ? 0.35 : 0.45;
-      ctx.fillStyle = color;
-      ctx.font = `600 ${Math.round(11 * mapScale)}px "SF Mono", monospace`;
+      ctx.save();
+      ctx.globalAlpha = dark ? 0.2 : 0.25;
+      ctx.fillStyle = `rgba(${m.phaseLbl},1)`;
+      ctx.font = `400 ${Math.round(9 * mapScale)}px "SF Mono", monospace`;
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
-      ctx.fillText(label, cx, topY - 14 * mapScale);
-
+      ctx.fillText(label, sumX / nodes.length, topY - 10 * mapScale);
       ctx.restore();
     }
   }
 
-  function drawClusterBackgrounds(dark, now) {
-    const clusters = new Map(); // clusterKey -> { minX, minY, maxX, maxY, count, phase, sessionId }
+  function drawClusterLabels(dark) {
+    const m = mono();
+    // Group nodes by cluster to find centroid and bottom edge for label placement
+    const clusters = new Map();
     for (const n of simNodes) {
       if (n.x == null) continue;
       const r = nodeRadius(n);
       const k = clusterKey(n);
       if (!clusters.has(k)) {
-        clusters.set(k, { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, count: 0, phase: n.phase, sessionId: n.sessionId });
+        clusters.set(k, { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, sumX: 0, count: 0, phase: n.phase, sessionId: n.sessionId });
       }
       const c = clusters.get(k);
-      c.minX = Math.min(c.minX, spX(n) - r);
-      c.minY = Math.min(c.minY, spY(n) - r);
-      c.maxX = Math.max(c.maxX, spX(n) + r);
-      c.maxY = Math.max(c.maxY, spY(n) + r);
+      const nx = spX(n), ny = spY(n);
+      c.minX = Math.min(c.minX, nx - r);
+      c.minY = Math.min(c.minY, ny - r);
+      c.maxX = Math.max(c.maxX, nx + r);
+      c.maxY = Math.max(c.maxY, ny + r);
+      c.sumX += nx;
       c.count++;
     }
 
     clusterRects.clear();
     for (const [key, bounds] of clusters) {
       if (bounds.count < 1) continue;
-      const pad = 24 * mapScale;
+      const pad = 20 * mapScale;
       const x = bounds.minX - pad;
       const y = bounds.minY - pad;
       const w = bounds.maxX - bounds.minX + pad * 2;
       const h = bounds.maxY - bounds.minY + pad * 2;
       clusterRects.set(key, { x, y, w, h, phase: bounds.phase });
-      const color = phaseColor(bounds.phase);
 
+      // Subtle cluster background — sharp corners
       ctx.save();
-      ctx.fillStyle = color;
-      ctx.globalAlpha = dark ? 0.15 : 0.12;
-      drawRoundedRect(x, y, w, h, 12);
-      ctx.fill();
-      ctx.strokeStyle = color;
-      ctx.globalAlpha = dark ? 0.35 : 0.35;
-      ctx.lineWidth = 1;
-      drawRoundedRect(x, y, w, h, 12);
-      ctx.stroke();
+      ctx.fillStyle = dark ? "rgba(255,255,255,0.06)" : `rgba(${m.fill},0.03)`;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = dark ? "rgba(255,255,255,0.1)" : `rgba(${m.stroke},0.05)`;
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(x, y, w, h);
+      ctx.restore();
 
-      // Phase label below cluster (session identity comes from the circle)
-      const label = bounds.phase;
-      ctx.globalAlpha = dark ? 0.6 : 0.7;
+      // Phase label below cluster
+      ctx.save();
+      ctx.fillStyle = `rgba(${m.phaseLbl},${dark ? 0.55 : 0.45})`;
       ctx.font = `500 ${Math.round(10 * mapScale)}px "SF Mono", monospace`;
-      ctx.fillStyle = dark ? "rgba(220,230,255,0.9)" : color;
       ctx.textAlign = "center";
       ctx.textBaseline = "top";
-      ctx.fillText(label, x + w / 2, y + h + 4);
+      ctx.fillText(bounds.phase, bounds.sumX / bounds.count, y + h + 4 * mapScale);
       ctx.restore();
     }
   }
 
-  function drawEdges(dark, now) {
-    const arrowSize = 6;
+  function drawEdges(dark) {
+    const m = mono();
+    const firstTs = simNodes.length > 0 ? simNodes[0].startTs : 0;
+    const lastTs = simNodes.length > 0 ? simNodes[simNodes.length - 1].endTs : 1;
+    const range = Math.max(1, lastTs - firstTs);
+
     for (const link of simLinks) {
       const s = link.source;
       const t = link.target;
       if (s.x == null || t.x == null) continue;
 
       const sx1 = spX(s), sy1 = spY(s), sx2 = spX(t), sy2 = spY(t);
-      const dx = sx2 - sx1;
-      const dy = sy2 - sy1;
+      const dx = sx2 - sx1, dy = sy2 - sy1;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist < 1) continue;
 
-      const sr = nodeRadius(s);
-      const tr = nodeRadius(t);
-      // Shorten to node edges
-      const ratio = (dist - sr - tr) / dist;
-      if (ratio <= 0) continue;
-      const x1 = sx1 + dx * (sr / dist);
-      const y1 = sy1 + dy * (sr / dist);
-      const x2 = sx1 + dx * (1 - tr / dist);
-      const y2 = sy1 + dy * (1 - tr / dist);
+      const sr = nodeRadius(s), tr = nodeRadius(t);
+      if (dist - sr - tr <= 0) continue;
 
-      const destColor = phaseColor(t.phase);
-      const thickness = Math.min(3, 1 + (link.freq - 1) * 0.4);
+      // Shorten to node edges
+      const x1 = sx1 + dx * (sr / dist), y1 = sy1 + dy * (sr / dist);
+      const x2 = sx1 + dx * (1 - tr / dist), y2 = sy1 + dy * (1 - tr / dist);
+
+      // Opacity based on avg recency
+      const sAge = (lastTs - s.endTs) / range;
+      const tAge = (lastTs - t.endTs) / range;
+      const avgAge = (sAge + tAge) / 2;
+      const edgeAlpha = dark ? 0.12 + (1 - avgAge) * 0.2 : 0.06 + (1 - avgAge) * 0.12;
 
       ctx.save();
-      ctx.strokeStyle = destColor;
-      ctx.globalAlpha = dark ? 0.25 : 0.3;
-      ctx.lineWidth = thickness;
+      ctx.strokeStyle = `rgba(${m.edge},${edgeAlpha})`;
+      ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
       ctx.stroke();
 
-      // Arrow at target end
+      // Small arrowhead at target
       const angle = Math.atan2(y2 - y1, x2 - x1);
-      ctx.fillStyle = destColor;
-      ctx.globalAlpha = dark ? 0.35 : 0.4;
+      const aSize = 4;
+      ctx.fillStyle = `rgba(${m.edge},${edgeAlpha})`;
       ctx.beginPath();
       ctx.moveTo(x2, y2);
-      ctx.lineTo(x2 - arrowSize * Math.cos(angle - 0.4), y2 - arrowSize * Math.sin(angle - 0.4));
-      ctx.lineTo(x2 - arrowSize * Math.cos(angle + 0.4), y2 - arrowSize * Math.sin(angle + 0.4));
+      ctx.lineTo(x2 - aSize * Math.cos(angle - 0.4), y2 - aSize * Math.sin(angle - 0.4));
+      ctx.lineTo(x2 - aSize * Math.cos(angle + 0.4), y2 - aSize * Math.sin(angle + 0.4));
       ctx.closePath();
       ctx.fill();
       ctx.restore();
@@ -974,6 +948,7 @@ const Momentum = (() => {
   }
 
   function drawNodes(dark, now) {
+    const m = mono();
     const firstTs = simNodes.length > 0 ? simNodes[0].startTs : now;
     const lastTs = simNodes.length > 0 ? simNodes[simNodes.length - 1].endTs : now;
     const range = Math.max(1, lastTs - firstTs);
@@ -982,56 +957,53 @@ const Momentum = (() => {
       if (node.x == null) continue;
       const x = spX(node), y = spY(node);
       const r = nodeRadius(node);
-      const color = phaseColor(node.phase);
 
-      // Opacity based on recency
-      const age = (lastTs - node.endTs) / range;
-      const alpha = Math.max(0.55, 1 - age * 0.4);
+      // Age 0 = newest, 1 = oldest (clamped to prevent runaway stroke width)
+      const age = Math.max(0, Math.min(1, (lastTs - node.endTs) / range));
 
-      // --- Progress ring ---
+      // --- Progress ring (only color on the map) ---
       if (node.progress) {
         const ringColor = PROGRESS_COLORS[node.progress];
-        const ringR = r + 3;
+        const p = node.patterns;
+        let intensity = 0.5;
+        if (node.progress === "stuck") intensity = Math.max(p.looping, p.backtracking);
+        else if (node.progress === "drifting") intensity = Math.max(p.goalDrift, p.explosion);
+        else if (node.progress === "approaching") intensity = p.narrowing;
+        else if (node.progress === "breakthrough") intensity = p.breakthrough;
+        intensity = Math.max(0.3, Math.min(1, intensity));
+
+        const lineW = 1 + intensity * 1.5;
+        const ringAlpha = (0.3 + intensity * 0.5) * (0.6 + (1 - age) * 0.4);
+        const ringR = r + 3 + intensity * 2;
+
         ctx.save();
+        ctx.strokeStyle = ringColor;
 
         if (node.progress === "stuck") {
-          // Pulsing red ring
-          const pulse = 0.4 + 0.4 * Math.sin(now / 500);
-          ctx.globalAlpha = pulse * alpha;
-          ctx.strokeStyle = ringColor;
-          ctx.lineWidth = 2.5;
+          const pulseSpeed = 300 + (1 - intensity) * 400;
+          const pulse = 0.3 + 0.7 * Math.sin(now / pulseSpeed);
+          ctx.globalAlpha = ringAlpha * pulse;
+          ctx.lineWidth = lineW;
           ctx.beginPath();
           ctx.arc(x, y, ringR, 0, Math.PI * 2);
           ctx.stroke();
-          // Glow
-          ctx.globalAlpha = pulse * alpha * 0.3;
-          ctx.beginPath();
-          ctx.arc(x, y, ringR + 4, 0, Math.PI * 2);
-          ctx.stroke();
         } else if (node.progress === "drifting") {
-          // Dashed yellow ring
-          ctx.globalAlpha = 0.7 * alpha;
-          ctx.strokeStyle = ringColor;
-          ctx.lineWidth = 2;
-          ctx.setLineDash([4, 3]);
+          ctx.globalAlpha = ringAlpha * 0.7;
+          ctx.lineWidth = lineW;
           ctx.beginPath();
           ctx.arc(x, y, ringR, 0, Math.PI * 2);
           ctx.stroke();
         } else if (node.progress === "breakthrough") {
-          // Glowing blue ring
-          ctx.globalAlpha = 0.8 * alpha;
-          ctx.strokeStyle = ringColor;
-          ctx.lineWidth = 2.5;
+          ctx.globalAlpha = ringAlpha;
+          ctx.lineWidth = lineW;
           ctx.shadowColor = ringColor;
-          ctx.shadowBlur = 8;
+          ctx.shadowBlur = intensity * 10;
           ctx.beginPath();
           ctx.arc(x, y, ringR, 0, Math.PI * 2);
           ctx.stroke();
         } else if (node.progress === "approaching") {
-          // Solid green ring
-          ctx.globalAlpha = 0.6 * alpha;
-          ctx.strokeStyle = ringColor;
-          ctx.lineWidth = 2;
+          ctx.globalAlpha = ringAlpha;
+          ctx.lineWidth = lineW;
           ctx.beginPath();
           ctx.arc(x, y, ringR, 0, Math.PI * 2);
           ctx.stroke();
@@ -1040,63 +1012,48 @@ const Momentum = (() => {
         ctx.restore();
       }
 
-      // --- Node fill ---
+      // --- Hollow wireframe node ---
+      const strokeAlpha = dark ? 0.25 + (1 - age) * 0.45 : 0.1 + (1 - age) * 0.2;
+      const strokeW = dark ? 0.75 + (1 - age) * 0.75 : 0.5 + (1 - age) * 0.5;
+      const fillAlpha = dark ? 0.01 + (1 - age) * 0.03 : 0;
+
+      // Near-empty fill
       ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = color;
+      ctx.fillStyle = `rgba(${m.fill},${fillAlpha})`;
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
 
-      // Soft halo
-      if (dark) {
-        const grad = ctx.createRadialGradient(x, y, r * 0.5, x, y, r * 1.8);
-        grad.addColorStop(0, color);
-        grad.addColorStop(1, "transparent");
-        ctx.globalAlpha = 0.1 * alpha;
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(x, y, r * 1.8, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      // Stroke
+      ctx.strokeStyle = `rgba(${m.stroke},${strokeAlpha})`;
+      ctx.lineWidth = strokeW;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.stroke();
       ctx.restore();
 
-      // --- Sequence number label ---
+      // --- Sequence label ---
+      const labelAlpha = dark ? 0.55 + (1 - age) * 0.4 : 0.4 + (1 - age) * 0.45;
+      const seq = String(node.sequenceNum);
       ctx.save();
-      ctx.globalAlpha = Math.max(0.9, alpha);
-      ctx.fillStyle = "#fff";
-      ctx.font = `bold ${Math.max(9, r * 0.85)}px "SF Mono", monospace`;
+      ctx.fillStyle = `rgba(${m.label},${labelAlpha})`;
+      ctx.font = `500 ${Math.max(8, r * 0.7)}px "SF Mono", monospace`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(String(node.sequenceNum), x, y + 0.5);
+      ctx.fillText(seq, x, y + 0.5);
       ctx.restore();
 
       // --- Hover highlight ---
       if (hoveredNode && hoveredNode.id === node.id) {
         ctx.save();
-        ctx.strokeStyle = dark ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.5)";
+        ctx.strokeStyle = dark ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.4)";
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(x, y, r + 1, 0, Math.PI * 2);
+        ctx.arc(x, y, r + 2, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
       }
     }
-  }
-
-  function drawRoundedRect(x, y, w, h, r) {
-    r = Math.min(r, w / 2, h / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
   }
 
   function drawEmptyState() {
@@ -1289,7 +1246,7 @@ const Momentum = (() => {
     const progressColor = span.progress ? PROGRESS_COLORS[span.progress] : "";
 
     let html = `<div class="momentum-tip-header">
-      <span class="momentum-tip-state" style="color:${phaseColor(span.phase)}">#${span.sequenceNum} ${phaseLabel}</span>
+      <span class="momentum-tip-state">#${span.sequenceNum} ${phaseLabel}</span>
       <span class="momentum-tip-duration">${duration}s</span>
     </div>`;
 
@@ -1386,8 +1343,15 @@ const Momentum = (() => {
     scheduleRebuild();
   }
 
-  function setSessionFilter(id) {
-    sessionFilter = id;
+  function setSessionFilter(filter) {
+    if (filter instanceof Set) {
+      // Multi-select from shared session filter bar
+      sessionFilters = new Set(filter);
+    } else {
+      // Direct set from app tab sync — single session or "all"
+      sessionFilters.clear();
+      sessionFilters.add(filter);
+    }
     rebuildSimulation();
   }
 

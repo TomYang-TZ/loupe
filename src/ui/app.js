@@ -1332,6 +1332,10 @@ window.setMapMode = (mode) => {
     // Initialize momentum on first use
     if (!momentumInitialized) {
       Momentum.init(momentumCanvas);
+      // Register all known sessions before processing entries
+      for (const [id, info] of sessions) {
+        Momentum.registerSession(id, info.label, info.color);
+      }
       Momentum.addEntries(entries);
       momentumInitialized = true;
       Momentum.setOnSessionFilterChange((id) => { switchSession(id); });
@@ -1370,8 +1374,13 @@ window.toggleView = () => {
       Gravity.init(gravityCanvas);
       Gravity.addEntries(entries);
       gravityInitialized = true;
-      Gravity.setOnSessionFilterChange((id) => {
-        switchSession(id);
+      Gravity.setOnSessionFilterChange((filter) => {
+        if (filter instanceof Set) {
+          // Multi-select: sync momentum without switching app tabs
+          if (momentumInitialized) Momentum.setSessionFilter(filter);
+        } else {
+          switchSession(filter);
+        }
       });
     }
     gravityContainer.style.display = "";
