@@ -35,7 +35,7 @@ let lastEventTime = 0;
 const sessions = new Map();
 
 // ===== Task/Query Grouping State =====
-const TASK_GAP_MS = 3 * 60 * 1000; // 3 minutes between queries = new task
+const TASK_GAP_MS = 5 * 60 * 1000; // 5 minutes between queries = new task
 let taskIdCounter = 0;
 let queryIdCounter = 0;
 
@@ -59,26 +59,44 @@ function assignToGroup(entry) {
   const gs = getGroupState(sid);
 
   // user_query or thinking with userQuery = new query boundary
-  const isQueryBoundary = (entry.category === "user_query" && entry.userQuery) ||
-                          (entry.category === "thinking" && entry.userQuery && !gs.currentQuery?.userQuery);
+  // But skip if the current query already has the same userQuery (dedup)
+  const isDuplicate = gs.currentQuery && entry.userQuery &&
+    gs.currentQuery.userQuery === entry.userQuery;
+  const isQueryBoundary = !isDuplicate && (
+    (entry.category === "user_query" && entry.userQuery) ||
+    (entry.category === "thinking" && entry.userQuery)
+  );
   if (isQueryBoundary) {
     // Close current agent stack (shouldn't happen, but defensive)
     gs.agentStack = [];
 
+    // If current query is a preamble (no userQuery), absorb its items into the new query
+    const preambleItems = (gs.currentQuery && !gs.currentQuery.userQuery) ? gs.currentQuery.items : null;
+    if (preambleItems && gs.currentTask) {
+      // Remove the preamble query from the task
+      const idx = gs.currentTask.queries.indexOf(gs.currentQuery);
+      if (idx !== -1) gs.currentTask.queries.splice(idx, 1);
+      // If the task is now empty and this is the only task, reuse it
+      if (gs.currentTask.queries.length === 0) {
+        gs.currentTask.startTs = entry.ts;
+      }
+    }
+
     const prevEndTs = gs.currentQuery ? gs.currentQuery.endTs : 0;
     const gap = entry.ts - prevEndTs;
 
-    // New task if first query or gap > 3 min
-    if (!gs.currentTask || gap > TASK_GAP_MS) {
-      gs.currentTask = { id: ++taskIdCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
-      gs.tasks.push(gs.currentTask);
+    // New task if first query or gap > 5 min
+    if (!gs.currentTask || (gs.currentTask.queries.length === 0 && gs.tasks.length === 0) || gap > TASK_GAP_MS) {
+      if (!gs.currentTask || gs.currentTask.queries.length > 0) {
+        gs.currentTask = { id: ++taskIdCounter, seqNum: taskIdCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
+        gs.tasks.push(gs.currentTask);
+      }
     }
 
-    // New query
-    gs.currentQuery = { id: ++queryIdCounter, userQuery: entry.userQuery, thinkingEntry: entry.category === "thinking" ? entry : null, startTs: entry.ts, endTs: entry.ts, items: [], el: null, actionsEl: null, headerEl: null, collapsed: true };
+    // New query — include absorbed preamble items
+    gs.currentQuery = { id: ++queryIdCounter, userQuery: entry.userQuery, thinkingEntry: entry.category === "thinking" ? entry : null, startTs: entry.ts, endTs: entry.ts, items: preambleItems || [], el: null, actionsEl: null, headerEl: null, collapsed: true };
     gs.currentTask.queries.push(gs.currentQuery);
     gs.currentTask.endTs = entry.ts;
-    // user_query entries are not rendered as actions — they're represented by the query header
     return;
   }
 
@@ -91,7 +109,7 @@ function assignToGroup(entry) {
   // Ensure we have a current query (preamble)
   if (!gs.currentQuery) {
     if (!gs.currentTask) {
-      gs.currentTask = { id: ++taskIdCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
+      gs.currentTask = { id: ++taskIdCounter, seqNum: taskIdCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
       gs.tasks.push(gs.currentTask);
     }
     gs.currentQuery = { id: ++queryIdCounter, userQuery: null, thinkingEntry: null, startTs: entry.ts, endTs: entry.ts, items: [], el: null, actionsEl: null, headerEl: null, collapsed: true };
@@ -659,20 +677,47 @@ function countItemActions(items) {
   return count;
 }
 
-function renderTaskHeader(task, idx) {
+function renderTaskHeader(task) {
   const div = document.createElement("div");
   div.className = "task-header";
   const qCount = task.queries.length;
-  div.innerHTML = `<span class="task-label">Task ${idx + 1}</span><span class="task-time">${formatTimeRange(task.startTs, task.endTs)}</span><span class="task-qcount">${qCount} ${qCount === 1 ? "query" : "queries"}</span>`;
+  const chevron = task.collapsed ? "\u25B6" : "\u25BC";
+  div.innerHTML = `<span class="task-chevron">${chevron}</span><span class="task-label">Task ${task.seqNum}</span><span class="task-time">${formatTimeRange(task.startTs, task.endTs)}</span><span class="task-qcount">${qCount} ${qCount === 1 ? "query" : "queries"}</span>`;
   return div;
+}
+
+function bindTaskHeaderClick(task) {
+  task.headerEl.addEventListener("click", () => {
+    const isCollapsed = task.bodyEl.classList.toggle("collapsed");
+    task.headerEl.querySelector(".task-chevron").textContent = isCollapsed ? "\u25B6" : "\u25BC";
+    task.collapsed = isCollapsed;
+  });
 }
 
 function renderQueryHeader(query) {
   const div = document.createElement("div");
   div.className = "query-header";
   const actionCount = countItemActions(query.items);
-  const qText = query.userQuery ? esc(query.userQuery) : "(preamble)";
-  div.innerHTML = `<span class="query-chevron">\u25B6</span><span class="query-badge">Q</span><span class="query-text">${qText}</span><span class="query-count">${actionCount}</span><span class="query-time">${formatTimeRange(query.startTs, query.endTs)}</span>`;
+  const qText = query.userQuery ? esc(query.userQuery) : "No user query found";
+  div.innerHTML = `<span class="query-chevron">\u25B6</span><span class="query-badge">Q</span><span class="query-text-wrap"><span class="query-text">${qText}</span>${query.userQuery ? `<span class="query-tooltip">${esc(query.userQuery)}</span>` : ""}<span class="query-copied">Copied!</span></span><span class="query-count">${actionCount}</span><span class="query-time">${formatTimeRange(query.startTs, query.endTs)}</span>`;
+
+  // Click on query text copies the full query
+  if (query.userQuery) {
+    const wrapEl = div.querySelector(".query-text-wrap");
+    wrapEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(query.userQuery).then(() => {
+        const copiedEl = wrapEl.querySelector(".query-copied");
+        copiedEl.classList.add("visible");
+        wrapEl.classList.add("just-copied");
+        setTimeout(() => {
+          copiedEl.classList.remove("visible");
+          wrapEl.classList.remove("just-copied");
+        }, 1000);
+      });
+    });
+  }
+
   return div;
 }
 
@@ -777,11 +822,11 @@ function renderQueryGroup(query, matchFn) {
   return wrap;
 }
 
-function renderTaskGroup(task, idx, matchFn) {
+function renderTaskGroup(task, matchFn) {
   const wrap = document.createElement("div");
   wrap.className = "task-group";
 
-  const header = renderTaskHeader(task, idx);
+  const header = renderTaskHeader(task);
   wrap.appendChild(header);
 
   const bodyEl = document.createElement("div");
@@ -797,6 +842,7 @@ function renderTaskGroup(task, idx, matchFn) {
   task.el = wrap;
   task.bodyEl = bodyEl;
   task.headerEl = header;
+  bindTaskHeaderClick(task);
   return wrap;
 }
 
@@ -810,7 +856,7 @@ function renderGroupedEntries(container, sessionId) {
 
   for (let i = 0; i < gs.tasks.length; i++) {
     const task = gs.tasks[i];
-    const taskEl = renderTaskGroup(task, i, matchFn);
+    const taskEl = renderTaskGroup(task, matchFn);
     container.appendChild(taskEl);
     // Count visible entries
     taskEl.querySelectorAll(".log-entry").forEach(() => matchCount++);
@@ -837,10 +883,9 @@ function appendEntryGrouped(entry) {
 
   // Ensure task DOM exists
   if (!task.el) {
-    const idx = gs.tasks.indexOf(task);
     const taskEl = document.createElement("div");
     taskEl.className = "task-group";
-    const header = renderTaskHeader(task, idx);
+    const header = renderTaskHeader(task);
     taskEl.appendChild(header);
     const bodyEl = document.createElement("div");
     bodyEl.className = "task-body";
@@ -848,13 +893,14 @@ function appendEntryGrouped(entry) {
     task.el = taskEl;
     task.bodyEl = bodyEl;
     task.headerEl = header;
+    bindTaskHeaderClick(task);
     container.appendChild(taskEl);
   } else {
     // Update task header (time range, query count may have changed)
-    const idx = gs.tasks.indexOf(task);
-    const newHeader = renderTaskHeader(task, idx);
+    const newHeader = renderTaskHeader(task);
     task.el.replaceChild(newHeader, task.headerEl);
     task.headerEl = newHeader;
+    bindTaskHeaderClick(task);
   }
 
   // Ensure query DOM exists
@@ -1578,20 +1624,24 @@ window.toggleExpandAll = () => {
   const btn = document.getElementById("expand-all-btn");
   btn.textContent = allExpanded ? "Collapse All" : "Expand All";
 
-  // Toggle all query and agent groups
+  // Toggle all task, query, and agent groups
+  document.querySelectorAll(".task-body").forEach(el => {
+    el.classList.toggle("collapsed", !allExpanded);
+  });
   document.querySelectorAll(".query-actions").forEach(el => {
     el.classList.toggle("collapsed", !allExpanded);
   });
   document.querySelectorAll(".agent-children").forEach(el => {
     el.classList.toggle("collapsed", !allExpanded);
   });
-  document.querySelectorAll(".query-chevron, .agent-chevron").forEach(el => {
+  document.querySelectorAll(".task-chevron, .query-chevron, .agent-chevron").forEach(el => {
     el.textContent = allExpanded ? "\u25BC" : "\u25B6";
   });
 
-  // Update query collapsed state in data model
+  // Update collapsed state in data model
   for (const gs of sessionGroups.values()) {
     for (const task of gs.tasks) {
+      task.collapsed = !allExpanded;
       for (const query of task.queries) {
         query.collapsed = !allExpanded;
       }
@@ -1756,6 +1806,9 @@ document.addEventListener("keydown", (e) => {
   }
 
   const inSearch = document.activeElement === searchInput;
+
+  // Let standard text editing shortcuts through when in search input
+  if (inSearch && (e.metaKey || e.ctrlKey) && ["v","c","x","a","z"].includes(e.key)) return;
 
   if (e.key === "?" && !inSearch) { toggleHelp(); return; }
   if (e.key === "m" && !inSearch) { toggleView(); return; }

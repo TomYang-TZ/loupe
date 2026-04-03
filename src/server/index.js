@@ -301,6 +301,67 @@ function condenseEntry(obj) {
   return null;
 }
 
+// --- Raw session transcript condensation ---
+function condenseRawEntry(obj) {
+  const type = obj.type;
+
+  // User message
+  if (type === "user") {
+    if (obj.isMeta) return null; // skip meta messages (image refs, etc.)
+    const content = obj.message?.content;
+    let text = typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.filter(b => typeof b === "string" || b.type === "text").map(b => typeof b === "string" ? b : b.text).join(" ")
+        : "";
+    text = text.replace(/\s*\[Image #\d+\]\s*/g, " ").trim();
+    if (!text) return null;
+    return `[USER] ${text.slice(0, 300)}`;
+  }
+
+  // Assistant message
+  if (type === "assistant" && obj.message?.content) {
+    const parts = [];
+    for (const block of obj.message.content) {
+      if (block.type === "thinking" && block.thinking) {
+        parts.push(`[THINK] ${block.thinking.slice(0, 200).replace(/\n/g, " ")}`);
+      } else if (block.type === "tool_use") {
+        const name = block.name || "unknown";
+        const input = block.input || {};
+        let detail = "";
+        if (input.file_path) detail = input.file_path;
+        else if (input.command) detail = input.command.split("\n")[0].slice(0, 120);
+        else if (input.pattern) detail = `pattern: ${input.pattern}`;
+        else if (input.prompt) detail = input.prompt.slice(0, 80);
+        else if (input.description) detail = input.description;
+        else detail = Object.keys(input).slice(0, 3).join(", ");
+        parts.push(`[USE ${name}] ${detail}`);
+      } else if (block.type === "text" && block.text) {
+        parts.push(`[TEXT] ${block.text.slice(0, 150).replace(/\n/g, " ")}`);
+      }
+    }
+    // Include token usage if available
+    const usage = obj.message?.usage;
+    const tokenInfo = usage ? ` (${usage.input_tokens || 0}in/${usage.output_tokens || 0}out)` : "";
+    return parts.length > 0 ? parts.join("\n") + tokenInfo : null;
+  }
+
+  // Tool result
+  if (type === "tool_result" || type === "tool_response") {
+    const isError = obj.is_error;
+    const content = obj.content || obj.output || "";
+    const text = typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.map(b => typeof b === "string" ? b : b.text || "").join(" ")
+        : String(content);
+    const prefix = isError ? "[ERROR]" : "[RESULT]";
+    return `${prefix} ${text.split("\n")[0].slice(0, 200)}`;
+  }
+
+  return null;
+}
+
 // --- HTTP server ---
 const server = http.createServer((req, res) => {
   const fullUrl = req.url;
@@ -371,26 +432,45 @@ const server = http.createServer((req, res) => {
           return;
         }
 
-        // Read and filter log file
-        const content = fs.readFileSync(filePath, "utf-8");
-        const lines = content.split("\n").filter(l => l.trim());
-        const sessionLines = [];
-        for (const line of lines) {
-          try {
-            const obj = JSON.parse(line);
-            const inner = (obj._logstream_type && obj.data) ? obj.data : obj;
-            if (inner.session_id === sessionId) sessionLines.push(obj);
-          } catch {}
-        }
+        // Find the raw session transcript file
+        const claudeProjectsDir = path.join(process.env.HOME, ".claude", "projects");
+        let rawSessionFile = null;
+        try {
+          for (const projDir of fs.readdirSync(claudeProjectsDir)) {
+            const candidate = path.join(claudeProjectsDir, projDir, `${sessionId}.jsonl`);
+            if (fs.existsSync(candidate)) {
+              rawSessionFile = candidate;
+              break;
+            }
+          }
+        } catch {}
 
-        if (sessionLines.length === 0) {
+        if (!rawSessionFile) {
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "No entries found for this session" }));
+          res.end(JSON.stringify({ error: "Raw session file not found for this session" }));
           return;
         }
 
-        // Condense entries to compact summary lines
-        const condensed = sessionLines.map(obj => condenseEntry(obj)).filter(Boolean);
+        // Read the raw session transcript
+        const content = fs.readFileSync(rawSessionFile, "utf-8");
+        const lines = content.split("\n").filter(l => l.trim());
+
+        // Condense each raw transcript entry
+        const condensed = [];
+        for (const line of lines) {
+          try {
+            const obj = JSON.parse(line);
+            const summary = condenseRawEntry(obj);
+            if (summary) condensed.push(summary);
+          } catch {}
+        }
+
+        if (condensed.length === 0) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "No entries found in session transcript" }));
+          return;
+        }
+
         // Cap at 500 lines: keep first 100 + last 400
         let condensedLog;
         if (condensed.length > 500) {
@@ -401,7 +481,7 @@ const server = http.createServer((req, res) => {
           condensedLog = condensed.join("\n");
         }
 
-        const prompt = `You are analyzing a Claude Code agent session log. The log shows an AI coding agent working on a task. Each line is a condensed log entry.
+        const prompt = `You are analyzing a Claude Code agent session. Below is the full condensed transcript from the raw session log — it includes user messages, assistant thinking, tool calls, tool results, and errors.
 
 Analyze the session and provide a structured analysis:
 
@@ -424,7 +504,7 @@ What new information or change in approach led to progress? Were there any files
 Rate 1-10 with brief justification. Consider: time in loops, directness of approach, unnecessary tool calls.
 
 ---
-SESSION LOG (${condensed.length} entries):
+SESSION LOG (${condensed.length} entries from raw transcript):
 ${condensedLog}`;
 
         try {

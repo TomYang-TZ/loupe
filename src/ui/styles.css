@@ -2037,14 +2037,28 @@ body.minimal .minimal-topbar { display: flex; }
   letter-spacing: 0.5px;
   text-transform: uppercase;
   user-select: none;
+  cursor: pointer;
   position: sticky;
   top: 0;
   z-index: 2;
   background: var(--bg, #0c0c0e);
 }
+.task-header:hover {
+  color: rgba(255, 248, 240, 0.6);
+}
 [data-theme="light"] .task-header {
   color: rgba(0, 0, 0, 0.35);
   background: var(--bg, #f8f8f8);
+}
+[data-theme="light"] .task-header:hover {
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.task-chevron {
+  font-size: 8px;
+  width: 10px;
+  text-align: center;
+  flex-shrink: 0;
 }
 
 .task-label {
@@ -2060,6 +2074,9 @@ body.minimal .minimal-topbar { display: flex; }
 
 .task-body {
   padding-left: 4px;
+}
+.task-body.collapsed {
+  display: none;
 }
 
 .query-group {
@@ -2123,12 +2140,95 @@ body.minimal .minimal-topbar { display: flex; }
   color: #7c3aed;
 }
 
-.query-text {
+.query-text-wrap {
   flex: 1;
   min-width: 0;
+  position: relative;
+  cursor: pointer;
+}
+.query-text {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Custom tooltip */
+.query-tooltip {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 100;
+  max-width: 420px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #1e1e22;
+  color: rgba(255, 248, 240, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+.query-tooltip::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 16px;
+  width: 8px;
+  height: 8px;
+  background: #1e1e22;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  transform: rotate(45deg);
+}
+[data-theme="light"] .query-tooltip {
+  background: #fff;
+  color: rgba(0, 0, 0, 0.85);
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+[data-theme="light"] .query-tooltip::before {
+  background: #fff;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+.query-text-wrap:hover .query-tooltip {
+  display: block;
+}
+.query-text-wrap.just-copied .query-tooltip {
+  display: none;
+}
+
+/* Copied feedback — overlays on top of query text */
+.query-copied {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 248, 240, 0.55);
+  pointer-events: none;
+  align-items: center;
+  justify-content: flex-end;
+}
+[data-theme="light"] .query-copied {
+  color: rgba(0, 0, 0, 0.45);
+}
+.query-text-wrap.just-copied .query-text {
+  filter: blur(3px);
+  transition: filter 0.15s;
+}
+.query-copied.visible {
+  display: flex;
+  animation: copied-fade 1s ease forwards;
+}
+@keyframes copied-fade {
+  0%, 60% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .query-count {
