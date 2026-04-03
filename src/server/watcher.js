@@ -116,7 +116,23 @@ function processFile(filePath) {
               : "";
           // Strip [Image #N] references from the text
           text = text.replace(/\s*\[Image #\d+\]\s*/g, " ").trim();
-          if (text) lastUserQuery.set(filePath, text);
+          if (text) {
+            lastUserQuery.set(filePath, text);
+            // Emit user_query entry so the UI can use it as a query boundary
+            const sessionId = path.basename(filePath, ".jsonl");
+            const userImages = (lastUserImages.get(filePath) || []).length > 0 ? lastUserImages.get(filePath) : null;
+            const queryEntry = {
+              _logstream_type: "user_query",
+              _ts: new Date().toISOString(),
+              data: {
+                session_id: sessionId,
+                type: "user_query",
+                user_query: text,
+                user_images: userImages,
+              },
+            };
+            fs.appendFileSync(outputFile, JSON.stringify(queryEntry) + "\n");
+          }
         }
         if (obj.type === "assistant" && obj.message?.content) {
           const sessionId = path.basename(filePath, ".jsonl");

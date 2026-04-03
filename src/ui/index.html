@@ -88,6 +88,8 @@
         <button class="btn btn-sm" onclick="setGridCols(gridCols+1)" title="More columns">+</button>
       </span>
       <div class="toolbar-sep" id="grid-sep" style="display:none"></div>
+      <button class="expand-all-btn" id="expand-all-btn" onclick="toggleExpandAll()" title="Expand/Collapse all queries">Expand All</button>
+      <button class="replay-btn" id="replay-btn" onclick="requestReplayAnalysis()" title="Analyze session with Claude">Replay</button>
       <button class="btn" onclick="clearLogs()" title="Clear">Clear</button>
     </div>
   </div>

@@ -4,7 +4,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { WebSocketServer } = require("ws");
-const { fork } = require("child_process");
+const { fork, execSync } = require("child_process");
 
 const args = process.argv.slice(2);
 let port = 8390;
@@ -243,6 +243,64 @@ async function sendBacklog(ws) {
   }
 }
 
+// --- Entry condensation for replay analysis ---
+function condenseEntry(obj) {
+  const type = obj._logstream_type;
+  const inner = obj.data || obj;
+  const ts = obj._ts ? new Date(obj._ts).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "??:??:??";
+
+  if (type === "user_query") {
+    const q = inner.user_query || "";
+    return `[${ts}] USER QUERY: "${q.slice(0, 200)}"`;
+  }
+
+  if (type === "thinking") {
+    const thinking = (inner.thinking || "").slice(0, 150).replace(/\n/g, " ");
+    const q = inner.user_query ? ` (Q: "${inner.user_query.slice(0, 100)}")` : "";
+    return `[${ts}] THINK: "${thinking}"${q}`;
+  }
+
+  if (type === "PreToolUse") {
+    const toolName = inner.tool_name || "unknown";
+    const input = inner.tool_input || {};
+
+    if (toolName === "Agent") {
+      const desc = input.description || input.prompt?.slice(0, 80) || "agent";
+      return `[${ts}] AGENT spawn: "${desc}"`;
+    }
+
+    let detail = "";
+    if (input.file_path) detail = input.file_path;
+    else if (input.command) detail = input.command.split("\n")[0].slice(0, 120);
+    else if (input.pattern) detail = `pattern: ${input.pattern}`;
+    else if (input.query) detail = input.query.slice(0, 80);
+    else detail = Object.keys(input).slice(0, 3).join(", ");
+
+    return `[${ts}] USE ${toolName} → ${detail}`;
+  }
+
+  if (type === "PostToolUse") {
+    const toolName = inner.tool_name || "unknown";
+    const resp = inner.tool_response || {};
+    const isError = inner.is_error || inner.error;
+
+    if (toolName === "Agent") {
+      const text = resp.content?.[0]?.text || resp.status || "";
+      return `[${ts}] AGENT result: "${(typeof text === "string" ? text : "").split("\n")[0].slice(0, 120)}"`;
+    }
+
+    if (isError) {
+      const errMsg = typeof inner.error === "string" ? inner.error : (inner.tool_result || resp.stderr || "error");
+      return `[${ts}] ERROR ${toolName}: ${String(errMsg).split("\n")[0].slice(0, 150)}`;
+    }
+
+    // Skip non-error PostToolUse (too verbose for analysis)
+    return null;
+  }
+
+  return null;
+}
+
 // --- HTTP server ---
 const server = http.createServer((req, res) => {
   const fullUrl = req.url;
@@ -297,6 +355,97 @@ const server = http.createServer((req, res) => {
       res.writeHead(500);
       res.end(JSON.stringify({ error: err.message }));
     }
+    return;
+  }
+
+  // API: Replay analysis via Claude CLI
+  if (url === "/api/replay-analysis" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const { sessionId } = JSON.parse(body);
+        if (!sessionId) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "sessionId required" }));
+          return;
+        }
+
+        // Read and filter log file
+        const content = fs.readFileSync(filePath, "utf-8");
+        const lines = content.split("\n").filter(l => l.trim());
+        const sessionLines = [];
+        for (const line of lines) {
+          try {
+            const obj = JSON.parse(line);
+            const inner = (obj._logstream_type && obj.data) ? obj.data : obj;
+            if (inner.session_id === sessionId) sessionLines.push(obj);
+          } catch {}
+        }
+
+        if (sessionLines.length === 0) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "No entries found for this session" }));
+          return;
+        }
+
+        // Condense entries to compact summary lines
+        const condensed = sessionLines.map(obj => condenseEntry(obj)).filter(Boolean);
+        // Cap at 500 lines: keep first 100 + last 400
+        let condensedLog;
+        if (condensed.length > 500) {
+          const head = condensed.slice(0, 100);
+          const tail = condensed.slice(-400);
+          condensedLog = [...head, `\n... (${condensed.length - 500} entries omitted) ...\n`, ...tail].join("\n");
+        } else {
+          condensedLog = condensed.join("\n");
+        }
+
+        const prompt = `You are analyzing a Claude Code agent session log. The log shows an AI coding agent working on a task. Each line is a condensed log entry.
+
+Analyze the session and provide a structured analysis:
+
+## Summary
+What was the agent trying to accomplish? What was the outcome?
+
+## Approach Timeline
+Key phases: what did the agent do first, what pivots occurred, what was the final approach?
+
+## Loops & Inefficiencies
+Where did the agent repeat itself or get stuck? Which files/tools were revisited unnecessarily? What eventually broke each loop?
+
+## Root Cause
+If there was a bug or issue, what was the actual root cause vs what the agent initially investigated?
+
+## Key Insights
+What new information or change in approach led to progress? Were there any files or configs that should have been checked earlier?
+
+## Efficiency Rating
+Rate 1-10 with brief justification. Consider: time in loops, directness of approach, unnecessary tool calls.
+
+---
+SESSION LOG (${condensed.length} entries):
+${condensedLog}`;
+
+        try {
+          const analysis = execSync("claude --print -m sonnet", {
+            input: prompt,
+            timeout: 120000,
+            encoding: "utf-8",
+            maxBuffer: 2 * 1024 * 1024,
+          });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ analysis }));
+        } catch (err) {
+          const msg = err.stderr ? err.stderr.toString().slice(0, 200) : err.message;
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Claude CLI failed: ${msg}` }));
+        }
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
     return;
   }
 

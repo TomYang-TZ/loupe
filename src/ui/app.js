@@ -34,6 +34,108 @@ let firstEventTs = null;
 let lastEventTime = 0;
 const sessions = new Map();
 
+// ===== Task/Query Grouping State =====
+const TASK_GAP_MS = 3 * 60 * 1000; // 3 minutes between queries = new task
+let taskIdCounter = 0;
+let queryIdCounter = 0;
+
+// Per-session grouping state: sessionId -> GroupState
+const sessionGroups = new Map();
+
+function getGroupState(sessionId) {
+  if (!sessionGroups.has(sessionId)) {
+    sessionGroups.set(sessionId, {
+      tasks: [],
+      currentTask: null,
+      currentQuery: null,
+      agentStack: [],   // stack of { agentEntry, children: [], el: null, childrenEl: null }
+    });
+  }
+  return sessionGroups.get(sessionId);
+}
+
+function assignToGroup(entry) {
+  const sid = entry.sessionId || "default";
+  const gs = getGroupState(sid);
+
+  // user_query or thinking with userQuery = new query boundary
+  const isQueryBoundary = (entry.category === "user_query" && entry.userQuery) ||
+                          (entry.category === "thinking" && entry.userQuery && !gs.currentQuery?.userQuery);
+  if (isQueryBoundary) {
+    // Close current agent stack (shouldn't happen, but defensive)
+    gs.agentStack = [];
+
+    const prevEndTs = gs.currentQuery ? gs.currentQuery.endTs : 0;
+    const gap = entry.ts - prevEndTs;
+
+    // New task if first query or gap > 3 min
+    if (!gs.currentTask || gap > TASK_GAP_MS) {
+      gs.currentTask = { id: ++taskIdCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
+      gs.tasks.push(gs.currentTask);
+    }
+
+    // New query
+    gs.currentQuery = { id: ++queryIdCounter, userQuery: entry.userQuery, thinkingEntry: entry.category === "thinking" ? entry : null, startTs: entry.ts, endTs: entry.ts, items: [], el: null, actionsEl: null, headerEl: null, collapsed: true };
+    gs.currentTask.queries.push(gs.currentQuery);
+    gs.currentTask.endTs = entry.ts;
+    // user_query entries are not rendered as actions — they're represented by the query header
+    return;
+  }
+
+  // If thinking arrives after user_query already set the boundary, attach it as the thinkingEntry
+  if (entry.category === "thinking" && entry.userQuery && gs.currentQuery && gs.currentQuery.userQuery === entry.userQuery) {
+    gs.currentQuery.thinkingEntry = entry;
+    // Don't return — let it fall through to be added as an item so the thinking text is accessible
+  }
+
+  // Ensure we have a current query (preamble)
+  if (!gs.currentQuery) {
+    if (!gs.currentTask) {
+      gs.currentTask = { id: ++taskIdCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
+      gs.tasks.push(gs.currentTask);
+    }
+    gs.currentQuery = { id: ++queryIdCounter, userQuery: null, thinkingEntry: null, startTs: entry.ts, endTs: entry.ts, items: [], el: null, actionsEl: null, headerEl: null, collapsed: true };
+    gs.currentTask.queries.push(gs.currentQuery);
+  }
+
+  // Sub-agent spawn: push onto stack
+  if (entry.category === "sub_agent") {
+    const ag = { agentEntry: entry, children: [], resultEntry: null, el: null, childrenEl: null };
+    if (gs.agentStack.length > 0) {
+      gs.agentStack[gs.agentStack.length - 1].children.push(ag);
+    } else {
+      gs.currentQuery.items.push(ag);
+    }
+    gs.agentStack.push(ag);
+    gs.currentQuery.endTs = entry.ts;
+    gs.currentTask.endTs = entry.ts;
+    return;
+  }
+
+  // Sub-agent result: pop stack
+  if (entry.category === "sub_agent_result") {
+    if (gs.agentStack.length > 0) {
+      const ag = gs.agentStack.pop();
+      ag.resultEntry = entry;
+    } else {
+      // Orphan result, treat as regular item
+      gs.currentQuery.items.push(entry);
+    }
+    gs.currentQuery.endTs = entry.ts;
+    gs.currentTask.endTs = entry.ts;
+    return;
+  }
+
+  // Regular entry: add to top-of-stack agent or current query
+  if (gs.agentStack.length > 0) {
+    gs.agentStack[gs.agentStack.length - 1].children.push(entry);
+  } else {
+    gs.currentQuery.items.push(entry);
+  }
+  gs.currentQuery.endTs = entry.ts;
+  gs.currentTask.endTs = entry.ts;
+}
+
 // DOM
 const paneContainer = document.getElementById("pane-container");
 const scrollFab = document.getElementById("scroll-fab");
@@ -293,6 +395,9 @@ function resetAll() {
   lineCounter = 0;
   firstEventTs = null;
   sessions.clear();
+  sessionGroups.clear();
+  taskIdCounter = 0;
+  queryIdCounter = 0;
   colorIdx = 0;
   if (momentumInitialized) Momentum.reset();
   rebuildTabs();
@@ -321,8 +426,10 @@ function categorize(msg) {
         return "post_tool";
       }
       if (hook.hookType === "thinking") return "thinking";
+      if (hook.hookType === "user_query") return "user_query";
     }
     const t = json.type;
+    if (t === "user_query") return "user_query";
     if (t === "thinking" || json.thinking) return "thinking";
     if (t === "tool_use") return "tool_use";
     if (t === "tool_result") return json.is_error ? "error" : "tool_result";
@@ -485,6 +592,9 @@ function handleLine(msg) {
   const entry = { id: lineCounter, category, title, summary, body, raw: msg.data, json: msg.json, ts: msg.ts, sessionId, userQuery, userImages, meta };
   entries.push(entry);
 
+  // Assign to task/query group
+  assignToGroup(entry);
+
   // Feed to universe renderer if initialized
   if (gravityInitialized) Gravity.addEntry(entry);
   if (momentumInitialized) Momentum.addEntry(entry);
@@ -493,16 +603,7 @@ function handleLine(msg) {
     rebuildPanes();
     rebuildAllPaneContents();
   } else if (matchesAll(entry)) {
-    const container = getContainerFor(entry);
-    if (container) {
-      const empty = container.querySelector(".empty-state");
-      if (empty) empty.remove();
-      const el = renderEntry(entry);
-      el.classList.add("flash");
-      container.appendChild(el);
-      entry.el = el;
-      if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
-    }
+    appendEntryGrouped(entry);
   }
 
   lineCountEl.textContent = lineCounter;
@@ -513,7 +614,7 @@ function formatTime(ts) {
 }
 
 function badgeLabel(cat) {
-  return { tool_use: "USE", tool_result: "RESULT", post_tool: "POST", error: "ERROR", thinking: "THINK", text: "TEXT", sub_agent: "AGENT", sub_agent_result: "AGENT" }[cat] || cat.toUpperCase();
+  return { tool_use: "USE", tool_result: "RESULT", post_tool: "POST", error: "ERROR", thinking: "THINK", text: "TEXT", sub_agent: "AGENT", sub_agent_result: "AGENT", user_query: "QUERY" }[cat] || cat.toUpperCase();
 }
 
 function esc(str) { const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
@@ -536,6 +637,346 @@ function renderEntry(entry) {
 
   div.addEventListener("click", () => openModal(entry.id));
   return div;
+}
+
+// ===== Grouped Rendering =====
+
+function formatTimeRange(startTs, endTs) {
+  const s = formatTime(startTs);
+  const e = formatTime(endTs);
+  return s === e ? s : `${s}–${e}`;
+}
+
+function countItemActions(items) {
+  let count = 0;
+  for (const item of items) {
+    if (item.agentEntry) {
+      count += 1 + item.children.length + (item.resultEntry ? 1 : 0);
+    } else {
+      count++;
+    }
+  }
+  return count;
+}
+
+function renderTaskHeader(task, idx) {
+  const div = document.createElement("div");
+  div.className = "task-header";
+  const qCount = task.queries.length;
+  div.innerHTML = `<span class="task-label">Task ${idx + 1}</span><span class="task-time">${formatTimeRange(task.startTs, task.endTs)}</span><span class="task-qcount">${qCount} ${qCount === 1 ? "query" : "queries"}</span>`;
+  return div;
+}
+
+function renderQueryHeader(query) {
+  const div = document.createElement("div");
+  div.className = "query-header";
+  const actionCount = countItemActions(query.items);
+  const qText = query.userQuery ? esc(query.userQuery) : "(preamble)";
+  div.innerHTML = `<span class="query-chevron">\u25B6</span><span class="query-badge">Q</span><span class="query-text">${qText}</span><span class="query-count">${actionCount}</span><span class="query-time">${formatTimeRange(query.startTs, query.endTs)}</span>`;
+  return div;
+}
+
+function renderAgentHeader(agentEntry) {
+  const div = document.createElement("div");
+  div.className = "agent-header";
+  div.innerHTML = `<span class="agent-chevron">\u25B6</span><span class="entry-badge cat-sub_agent">AGENT</span><span class="agent-desc">${esc(agentEntry.title || agentEntry.summary || "Agent")}</span><span class="entry-time">${formatTime(agentEntry.ts)}</span>`;
+  return div;
+}
+
+function renderAgentGroup(ag, matchFn) {
+  const wrap = document.createElement("div");
+  wrap.className = "agent-group";
+
+  const header = renderAgentHeader(ag.agentEntry);
+  wrap.appendChild(header);
+
+  const childrenEl = document.createElement("div");
+  childrenEl.className = "agent-children collapsed";
+
+  for (const child of ag.children) {
+    if (child.agentEntry) {
+      // Nested agent
+      const nested = renderAgentGroup(child, matchFn);
+      if (nested) childrenEl.appendChild(nested);
+    } else {
+      if (matchFn && !matchFn(child)) continue;
+      const el = renderEntry(child);
+      childrenEl.appendChild(el);
+      child.el = el;
+    }
+  }
+  if (ag.resultEntry) {
+    if (!matchFn || matchFn(ag.resultEntry)) {
+      const resEl = renderEntry(ag.resultEntry);
+      childrenEl.appendChild(resEl);
+      ag.resultEntry.el = resEl;
+    }
+  }
+
+  wrap.appendChild(childrenEl);
+
+  header.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const isCollapsed = childrenEl.classList.toggle("collapsed");
+    header.querySelector(".agent-chevron").textContent = isCollapsed ? "\u25B6" : "\u25BC";
+  });
+
+  // Click agent header row itself opens modal for the agent entry
+  header.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    openModal(ag.agentEntry.id);
+  });
+
+  ag.el = wrap;
+  ag.childrenEl = childrenEl;
+  return wrap;
+}
+
+function renderQueryGroup(query, matchFn) {
+  const wrap = document.createElement("div");
+  wrap.className = "query-group";
+
+  const header = renderQueryHeader(query);
+  wrap.appendChild(header);
+
+  const actionsEl = document.createElement("div");
+  actionsEl.className = "query-actions collapsed";
+
+  for (const item of query.items) {
+    if (item.agentEntry) {
+      const agEl = renderAgentGroup(item, matchFn);
+      if (agEl) actionsEl.appendChild(agEl);
+    } else {
+      if (matchFn && !matchFn(item)) continue;
+      const el = renderEntry(item);
+      actionsEl.appendChild(el);
+      item.el = el;
+    }
+  }
+
+  wrap.appendChild(actionsEl);
+
+  header.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const isCollapsed = actionsEl.classList.toggle("collapsed");
+    header.querySelector(".query-chevron").textContent = isCollapsed ? "\u25B6" : "\u25BC";
+    query.collapsed = isCollapsed;
+  });
+
+  // Double-click opens thinking entry modal
+  if (query.thinkingEntry) {
+    header.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      openModal(query.thinkingEntry.id);
+    });
+  }
+
+  query.el = wrap;
+  query.actionsEl = actionsEl;
+  query.headerEl = header;
+  return wrap;
+}
+
+function renderTaskGroup(task, idx, matchFn) {
+  const wrap = document.createElement("div");
+  wrap.className = "task-group";
+
+  const header = renderTaskHeader(task, idx);
+  wrap.appendChild(header);
+
+  const bodyEl = document.createElement("div");
+  bodyEl.className = "task-body";
+
+  for (const query of task.queries) {
+    const qEl = renderQueryGroup(query, matchFn);
+    bodyEl.appendChild(qEl);
+  }
+
+  wrap.appendChild(bodyEl);
+
+  task.el = wrap;
+  task.bodyEl = bodyEl;
+  task.headerEl = header;
+  return wrap;
+}
+
+// Render all grouped entries for a given session into a container
+function renderGroupedEntries(container, sessionId) {
+  const gs = sessionGroups.get(sessionId);
+  if (!gs) return 0;
+
+  const matchFn = (entry) => matchesFilter(entry) && matchesSearch(entry);
+  let matchCount = 0;
+
+  for (let i = 0; i < gs.tasks.length; i++) {
+    const task = gs.tasks[i];
+    const taskEl = renderTaskGroup(task, i, matchFn);
+    container.appendChild(taskEl);
+    // Count visible entries
+    taskEl.querySelectorAll(".log-entry").forEach(() => matchCount++);
+  }
+
+  return matchCount;
+}
+
+// Real-time append: insert entry into its correct grouped DOM position
+function appendEntryGrouped(entry) {
+  const container = getContainerFor(entry);
+  if (!container) return;
+
+  const empty = container.querySelector(".empty-state");
+  if (empty) empty.remove();
+
+  const sid = entry.sessionId || "default";
+  const gs = sessionGroups.get(sid);
+  if (!gs) return;
+
+  const task = gs.currentTask;
+  const query = gs.currentQuery;
+  if (!task || !query) return;
+
+  // Ensure task DOM exists
+  if (!task.el) {
+    const idx = gs.tasks.indexOf(task);
+    const taskEl = document.createElement("div");
+    taskEl.className = "task-group";
+    const header = renderTaskHeader(task, idx);
+    taskEl.appendChild(header);
+    const bodyEl = document.createElement("div");
+    bodyEl.className = "task-body";
+    taskEl.appendChild(bodyEl);
+    task.el = taskEl;
+    task.bodyEl = bodyEl;
+    task.headerEl = header;
+    container.appendChild(taskEl);
+  } else {
+    // Update task header (time range, query count may have changed)
+    const idx = gs.tasks.indexOf(task);
+    const newHeader = renderTaskHeader(task, idx);
+    task.el.replaceChild(newHeader, task.headerEl);
+    task.headerEl = newHeader;
+  }
+
+  // Ensure query DOM exists
+  if (!query.el) {
+    const matchFn = (e) => matchesFilter(e) && matchesSearch(e);
+    const qEl = renderQueryGroup(query, matchFn);
+    task.bodyEl.appendChild(qEl);
+  } else {
+    // Update query header (action count may have changed)
+    const newQHeader = renderQueryHeader(query);
+    // Preserve collapse state in new header
+    if (!query.collapsed) {
+      newQHeader.querySelector(".query-chevron").textContent = "\u25BC";
+    }
+    // Re-bind click handler
+    newQHeader.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const isCollapsed = query.actionsEl.classList.toggle("collapsed");
+      newQHeader.querySelector(".query-chevron").textContent = isCollapsed ? "\u25B6" : "\u25BC";
+      query.collapsed = isCollapsed;
+    });
+    if (query.thinkingEntry) {
+      newQHeader.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        openModal(query.thinkingEntry.id);
+      });
+    }
+    query.el.replaceChild(newQHeader, query.headerEl);
+    query.headerEl = newQHeader;
+  }
+
+  // user_query and thinking entries that started a new query are represented by the query header
+  if (entry.category === "user_query") {
+    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
+    return;
+  }
+  if (entry.category === "thinking" && entry.userQuery && query.thinkingEntry === entry && query.items.length === 0) {
+    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
+    return;
+  }
+
+  // For sub_agent and sub_agent_result, the agent group rendering handles it
+  if (entry.category === "sub_agent") {
+    // Find the agent group just created by assignToGroup
+    const ag = findAgentGroupForEntry(gs, entry);
+    if (ag) {
+      const agEl = renderAgentGroup(ag, (e) => matchesFilter(e) && matchesSearch(e));
+      if (agEl) {
+        // Insert into correct parent
+        if (gs.agentStack.length > 1) {
+          // Nested: parent agent's childrenEl
+          const parentAg = gs.agentStack[gs.agentStack.length - 2];
+          if (parentAg && parentAg.childrenEl) parentAg.childrenEl.appendChild(agEl);
+        } else {
+          query.actionsEl.appendChild(agEl);
+        }
+      }
+    }
+    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
+    return;
+  }
+
+  if (entry.category === "sub_agent_result") {
+    // Result was already attached to agent group by assignToGroup
+    // Re-render the agent group or just append result entry
+    // Find the agent group that just got its result
+    const ag = findAgentGroupForResult(gs, entry);
+    if (ag && ag.childrenEl) {
+      if (matchesFilter(entry) && matchesSearch(entry)) {
+        const resEl = renderEntry(entry);
+        resEl.classList.add("flash");
+        ag.childrenEl.appendChild(resEl);
+        entry.el = resEl;
+      }
+    }
+    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
+    return;
+  }
+
+  // Regular entry
+  if (!matchesFilter(entry) || !matchesSearch(entry)) return;
+
+  const el = renderEntry(entry);
+  el.classList.add("flash");
+
+  // Append to top-of-stack agent or query actions
+  if (gs.agentStack.length > 0) {
+    const topAg = gs.agentStack[gs.agentStack.length - 1];
+    if (topAg.childrenEl) topAg.childrenEl.appendChild(el);
+    else query.actionsEl.appendChild(el);
+  } else {
+    query.actionsEl.appendChild(el);
+  }
+
+  entry.el = el;
+  if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
+}
+
+function findAgentGroupForEntry(gs, entry) {
+  // The entry was just pushed as the last item on the agent stack
+  if (gs.agentStack.length > 0) {
+    const top = gs.agentStack[gs.agentStack.length - 1];
+    if (top.agentEntry === entry) return top;
+  }
+  return null;
+}
+
+function findAgentGroupForResult(gs, entry) {
+  // The result was just popped off the stack — search recent query items
+  const query = gs.currentQuery;
+  if (!query) return null;
+  function searchItems(items) {
+    for (const item of items) {
+      if (item.agentEntry && item.resultEntry === entry) return item;
+      if (item.agentEntry) {
+        const found = searchItems(item.children);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  return searchItems(query.items);
 }
 
 // ===== Detail Modal =====
@@ -714,6 +1155,7 @@ function addModalSection(label, obj) {
 
 function closeModal() {
   modalOverlay.classList.remove("visible");
+  modalOverlay.classList.remove("modal-replay");
   modalEntryId = null;
 }
 
@@ -793,6 +1235,7 @@ function spanOf(text, cls) { const s = document.createElement("span"); s.classNa
 // ===== Filtering =====
 function matchesAll(entry) { return matchesFilter(entry) && matchesSession(entry) && matchesSearch(entry); }
 function matchesFilter(entry) {
+  if (entry.category === "user_query") return true; // always show (represented by query header)
   if (entry.category === "sub_agent_result") return !hiddenTypes.has("sub_agent");
   return !hiddenTypes.has(entry.category);
 }
@@ -913,16 +1356,43 @@ function rebuildView() {
 function rebuildAllPaneContents() {
   for (const p of panes.values()) p.scrollEl.innerHTML = "";
 
+  // Clear DOM references in group state so they get re-created
+  for (const gs of sessionGroups.values()) {
+    for (const task of gs.tasks) {
+      task.el = null; task.bodyEl = null; task.headerEl = null;
+      for (const query of task.queries) {
+        query.el = null; query.actionsEl = null; query.headerEl = null;
+        function clearAgentEls(items) {
+          for (const item of items) {
+            if (item.agentEntry) { item.el = null; item.childrenEl = null; clearAgentEls(item.children); }
+          }
+        }
+        clearAgentEls(query.items);
+      }
+    }
+  }
+
   let matchCount = 0;
-  for (const entry of entries) {
-    if (matchesFilter(entry) && matchesSearch(entry)) {
-      if (activeSession !== "all" && !matchesSession(entry)) continue;
-      const container = getContainerFor(entry);
-      if (container) {
-        const el = renderEntry(entry);
-        container.appendChild(el);
-        entry.el = el;
-        matchCount++;
+
+  if (activeSession !== "all") {
+    // Single session: render grouped
+    const container = panes.get("main")?.scrollEl;
+    if (container) {
+      matchCount = renderGroupedEntries(container, activeSession);
+    }
+  } else if (sessions.size <= 1) {
+    // Single session in "all" mode
+    const sid = sessions.keys().next().value || "default";
+    const container = panes.get("main")?.scrollEl;
+    if (container) {
+      matchCount = renderGroupedEntries(container, sid);
+    }
+  } else {
+    // Multi-session: render grouped per pane
+    for (const [sid] of sessions) {
+      const pane = panes.get(sid);
+      if (pane) {
+        matchCount += renderGroupedEntries(pane.scrollEl, sid);
       }
     }
   }
@@ -1100,6 +1570,92 @@ function scrollAllToBottom() { for (const p of panes.values()) p.scrollEl.scroll
 // ===== Actions =====
 window.collapseAll = () => { /* no-op: entries don't expand inline anymore */ };
 
+// ===== Expand/Collapse All =====
+let allExpanded = false;
+
+window.toggleExpandAll = () => {
+  allExpanded = !allExpanded;
+  const btn = document.getElementById("expand-all-btn");
+  btn.textContent = allExpanded ? "Collapse All" : "Expand All";
+
+  // Toggle all query and agent groups
+  document.querySelectorAll(".query-actions").forEach(el => {
+    el.classList.toggle("collapsed", !allExpanded);
+  });
+  document.querySelectorAll(".agent-children").forEach(el => {
+    el.classList.toggle("collapsed", !allExpanded);
+  });
+  document.querySelectorAll(".query-chevron, .agent-chevron").forEach(el => {
+    el.textContent = allExpanded ? "\u25BC" : "\u25B6";
+  });
+
+  // Update query collapsed state in data model
+  for (const gs of sessionGroups.values()) {
+    for (const task of gs.tasks) {
+      for (const query of task.queries) {
+        query.collapsed = !allExpanded;
+      }
+    }
+  }
+};
+
+// ===== Replay Analysis =====
+window.requestReplayAnalysis = async () => {
+  const btn = document.getElementById("replay-btn");
+  const sid = activeSession === "all" ? (sessions.keys().next().value || null) : activeSession;
+  if (!sid) return;
+
+  btn.classList.add("loading");
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = "Analyzing...";
+
+  try {
+    const resp = await fetch("/api/replay-analysis", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: sid }),
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      showReplayModal(`<div class="replay-error">${esc(data.error)}</div>`);
+    } else {
+      showReplayModal(`<div class="replay-content">${renderMarkdown(data.analysis)}</div>`);
+    }
+  } catch (err) {
+    showReplayModal(`<div class="replay-error">Request failed: ${esc(err.message)}</div>`);
+  } finally {
+    btn.classList.remove("loading");
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+};
+
+function renderMarkdown(text) {
+  if (!text) return "";
+  return text
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/^## (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\n\n/g, "<br><br>")
+    .replace(/\n- /g, "<br>• ")
+    .replace(/\n(\d+)\. /g, "<br>$1. ");
+}
+
+function showReplayModal(html) {
+  modalOverlay.classList.add("modal-replay");
+  modalBadge.className = "modal-badge cat-thinking";
+  modalBadge.textContent = "REPLAY";
+  modalTool.textContent = "Session Analysis";
+  modalTime.textContent = formatTime(Date.now());
+  modalPanel.classList.remove("modal-thinking");
+  modalBody.innerHTML = html;
+  modalOverlay.classList.add("visible");
+}
+
 window.clearLogs = () => {
   if (activeSession === "all") {
     // Clear everything
@@ -1107,6 +1663,9 @@ window.clearLogs = () => {
     lineCounter = 0;
     firstEventTs = null;
     sessions.clear();
+    sessionGroups.clear();
+    taskIdCounter = 0;
+    queryIdCounter = 0;
     colorIdx = 0;
     rebuildTabs();
     rebuildPanes();
@@ -1116,6 +1675,7 @@ window.clearLogs = () => {
     for (let i = entries.length - 1; i >= 0; i--) {
       if (entries[i].sessionId === activeSession) entries.splice(i, 1);
     }
+    sessionGroups.delete(activeSession);
     rebuildView();
   }
 };
