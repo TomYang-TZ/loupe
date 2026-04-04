@@ -389,22 +389,25 @@ class IslandView: NSView {
 
         // Phase label
         let label = thinkingActive ? "thinking" : currentPhase
-        let attrs: [NSAttributedString.Key: Any] = [
+        let labelAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
             .foregroundColor: NSColor(white: 0.85, alpha: Double(alpha))
         ]
-        NSAttributedString(string: label, attributes: attrs)
-            .draw(at: NSPoint(x: dotX + dotR + 10, y: midY - 7))
+        let labelStr = NSAttributedString(string: label, attributes: labelAttrs)
+        let labelX = dotX + dotR + 10
+        labelStr.draw(at: NSPoint(x: labelX, y: midY - 7))
 
-        // Right side: tool name + brief detail (clipped to pill)
+        // Right side: tool name + brief detail (must not overlap phase label)
         if let tool = activeToolName {
             var rightText = tool
             if let detail = activeToolDetail, !detail.isEmpty {
                 let shortDetail = detail.count > 15 ? String(detail.suffix(13)) : detail
                 rightText = "\(tool) \(shortDetail)"
             }
-            // Truncate to fit available space
-            let availW = rect.width * 0.45
+            let labelEndX = labelX + labelStr.size().width + 12  // gap after phase label
+            let availW = rect.maxX - 14 - labelEndX
+            guard availW > 30 else { return }  // too narrow, skip
+
             let toolAttrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
                 .foregroundColor: NSColor(white: 0.5, alpha: Double(alpha))
@@ -590,6 +593,7 @@ class IslandView: NSView {
         self.recentTools = recentTools
         self.activeFile = activeFile
         self.elapsedSeconds = elapsed
+        needsDisplay = true
     }
 }
 
