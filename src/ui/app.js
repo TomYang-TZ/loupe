@@ -175,6 +175,92 @@ function assignToGroup(entry) {
   gs.currentTask.endTs = entry.ts;
 }
 
+// ===== Dynamic Island Bridge =====
+// Sends condensed state signals to the native app's Dynamic Island
+const islandState = {
+  phase: "idle",
+  progress: null,
+  tool: null,
+  files: 0,
+  sessions: 0,
+  tokens: 0,
+  thinking: false,
+  _fileSet: new Set(),
+  _totalTokens: 0,
+};
+
+function updateIslandFromEntry(entry) {
+  const cat = entry.category;
+
+  // Track thinking state
+  if (cat === "thinking") {
+    islandState.thinking = true;
+    islandState.phase = "exploring";
+  }
+
+  // Track tool usage for phase inference
+  if (cat === "tool_use" || cat === "pre_tool") {
+    islandState.thinking = false;
+    const toolName = entry.json?.data?.tool_name || entry.json?.tool_name || entry.title || "";
+    islandState.tool = toolName;
+
+    // Infer phase from tool patterns
+    if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) {
+      islandState.phase = "exploring";
+    } else if (["Edit", "Write", "NotebookEdit"].some(t => toolName.includes(t))) {
+      islandState.phase = "implementing";
+    } else if (toolName.includes("Bash")) {
+      // Could be testing or debugging — keep current phase or default to implementing
+      const cmd = entry.json?.data?.tool_input?.command || "";
+      if (/test|jest|pytest|cargo test|npm test/.test(cmd)) {
+        islandState.phase = "testing";
+      } else if (islandState.phase === "idle") {
+        islandState.phase = "implementing";
+      }
+    } else if (toolName.includes("Agent")) {
+      islandState.phase = "planning";
+    }
+
+    // Track unique files
+    const fp = entry.json?.data?.tool_input?.file_path;
+    if (fp) islandState._fileSet.add(fp);
+    islandState.files = islandState._fileSet.size;
+  }
+
+  // Track errors for "stuck" signal
+  if (cat === "error") {
+    islandState.progress = "stuck";
+  } else if (cat === "tool_result" || cat === "post_tool") {
+    if (islandState.progress === "stuck") islandState.progress = null;
+  }
+
+  // Track tokens
+  const usage = entry.json?.data?.message?.usage || entry.json?.message?.usage;
+  if (usage) {
+    islandState._totalTokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
+    islandState.tokens = islandState._totalTokens;
+  }
+
+  // Session count
+  islandState.sessions = sessions.size;
+
+  sendIslandUpdate();
+}
+
+function sendIslandUpdate() {
+  try {
+    window.webkit.messageHandlers.islandUpdate.postMessage({
+      phase: islandState.phase,
+      progress: islandState.progress,
+      tool: islandState.tool,
+      files: islandState.files,
+      sessions: islandState.sessions,
+      tokens: islandState.tokens,
+      thinking: islandState.thinking,
+    });
+  } catch {}
+}
+
 // DOM
 const paneContainer = document.getElementById("pane-container");
 const scrollFab = document.getElementById("scroll-fab");
@@ -683,6 +769,9 @@ function handleLine(msg) {
   // Feed to universe renderer if initialized
   if (gravityInitialized) Gravity.addEntry(entry);
   if (momentumInitialized) Momentum.addEntry(entry);
+
+  // Update Dynamic Island signals
+  updateIslandFromEntry(entry);
 
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
