@@ -944,6 +944,22 @@ body.minimal .lock-wrapper .lock-body { width: 7px; }
   vertical-align: top;
 }
 
+/* Expand truncated thinking */
+.modal-expand-btn {
+  display: block;
+  margin: 8px 0;
+  padding: 6px 14px;
+  font: 500 11px var(--font-sans);
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.modal-expand-btn:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.modal-expand-btn:disabled { opacity: 0.5; cursor: default; }
+
 /* Metadata collapsible */
 .modal-meta-toggle {
   font: 500 9px var(--font-sans);
@@ -1493,124 +1509,155 @@ body.minimal .minimal-topbar { display: flex; }
   border-color: var(--accent);
 }
 
-/* Filter bars row */
+/* Filter bars row — unified horizontal control strip */
 .gravity-filter-row {
   position: absolute;
-  top: 4px;
+  top: 6px;
   left: 8px;
+  right: 40px;
   transform: scale(var(--map-scale, 1));
   transform-origin: top left;
   display: flex;
   flex-direction: column;
-  opacity: 0.75;
-  transition: opacity 0.25s;
-  gap: 3px;
+  align-items: flex-start;
+  gap: 4px;
   z-index: 10;
 }
-.gravity-filter-row:hover { opacity: 1; }
 
-/* Filter bar */
+/* Main control strip — single row with grouped sections */
+.gravity-filter-main {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: rgba(5, 5, 16, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 2px 3px;
+  backdrop-filter: blur(12px);
+}
+[data-theme="light"] .gravity-filter-main {
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.filter-divider {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 0 3px;
+  flex-shrink: 0;
+}
+[data-theme="light"] .filter-divider {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+/* Individual filter groups — no background, just inline buttons */
 .mode-filter-bar,
 .lane-mode-bar, .universe-filter-bar, .recency-filter-bar {
   display: flex;
-  gap: 2px;
-  background: rgba(5, 5, 16, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
-  padding: 3px;
-  backdrop-filter: blur(8px);
+  gap: 1px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  backdrop-filter: none;
 }
 [data-theme="light"] .mode-filter-bar,
 [data-theme="light"] .lane-mode-bar,
 [data-theme="light"] .universe-filter-bar,
 [data-theme="light"] .recency-filter-bar {
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: none;
+  border: none;
 }
 
 .lane-btn, .recency-filter-btn {
-  font: 400 9px "SF Mono", Menlo, monospace;
-  padding: 2px 8px;
+  font: 500 8px "SF Mono", Menlo, monospace;
+  padding: 2px 6px;
   border: none;
-  border-radius: 12px;
+  border-radius: 6px;
   background: transparent;
   color: rgba(200, 215, 240, 0.4);
   cursor: pointer;
   transition: all 0.2s;
+  white-space: nowrap;
 }
 [data-theme="light"] .lane-btn,
 [data-theme="light"] .recency-filter-btn {
-  color: rgba(50, 70, 90, 0.4);
+  color: rgba(50, 70, 90, 0.45);
 }
 .lane-btn:hover, .recency-filter-btn:hover {
-  color: rgba(200, 215, 240, 0.7);
+  color: rgba(200, 215, 240, 0.8);
+  background: rgba(200, 215, 240, 0.06);
 }
 [data-theme="light"] .lane-btn:hover,
 [data-theme="light"] .recency-filter-btn:hover {
-  color: rgba(50, 70, 90, 0.7);
+  color: rgba(50, 70, 90, 0.75);
+  background: rgba(50, 70, 90, 0.05);
 }
 .lane-btn.active, .recency-filter-btn.active {
-  background: rgba(160, 180, 208, 0.3);
-  color: rgba(160, 180, 208, 0.95);
+  background: rgba(160, 180, 208, 0.2);
+  color: rgba(200, 215, 240, 0.95);
 }
 [data-theme="light"] .lane-btn.active,
 [data-theme="light"] .recency-filter-btn.active {
-  background: rgba(58, 90, 122, 0.2);
-  color: rgba(58, 90, 122, 0.9);
+  background: rgba(58, 90, 122, 0.12);
+  color: rgba(30, 50, 80, 0.9);
 }
 
 .filter-btn {
-  font: 400 9px "SF Mono", Menlo, monospace;
-  padding: 2px 8px;
+  font: 500 8px "SF Mono", Menlo, monospace;
+  padding: 2px 6px;
   border: none;
-  border-radius: 12px;
+  border-radius: 6px;
   background: transparent;
   color: rgba(200, 215, 240, 0.4);
   cursor: pointer;
   transition: all 0.2s;
 }
 [data-theme="light"] .filter-btn {
-  color: rgba(50, 70, 90, 0.4);
+  color: rgba(50, 70, 90, 0.45);
 }
 
 .filter-btn:hover {
-  color: rgba(200, 215, 240, 0.7);
+  color: rgba(200, 215, 240, 0.8);
+  background: rgba(200, 215, 240, 0.06);
 }
 [data-theme="light"] .filter-btn:hover {
-  color: rgba(50, 70, 90, 0.7);
+  color: rgba(50, 70, 90, 0.75);
+  background: rgba(50, 70, 90, 0.05);
 }
 
 .filter-btn.active {
-  background: rgba(160, 180, 208, 0.3);
-  color: rgba(160, 180, 208, 0.95);
+  background: rgba(160, 180, 208, 0.2);
+  color: rgba(200, 215, 240, 0.95);
 }
 [data-theme="light"] .filter-btn.active {
-  background: rgba(58, 90, 122, 0.2);
-  color: rgba(58, 90, 122, 0.9);
+  background: rgba(58, 90, 122, 0.12);
+  color: rgba(30, 50, 80, 0.9);
 }
 
 /* Session filter bar (gravity map) */
 .session-filter-bar {
   display: flex;
-  gap: 2px;
+  gap: 1px;
   width: fit-content;
   z-index: 10;
-  background: rgba(5, 5, 16, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 16px;
-  padding: 3px;
-  backdrop-filter: blur(8px);
+  background: rgba(5, 5, 16, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 3px 4px;
+  backdrop-filter: blur(12px);
 }
 [data-theme="light"] .session-filter-bar {
-  background: rgba(255, 255, 255, 0.8);
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 .session-filter-btn {
-  font: 400 9px "SF Mono", Menlo, monospace;
-  padding: 3px 8px;
+  font: 500 8px "SF Mono", Menlo, monospace;
+  padding: 2px 6px;
   border: none;
-  border-radius: 10px;
+  border-radius: 6px;
   background: transparent;
   color: rgba(200, 215, 240, 0.4);
   cursor: pointer;
@@ -1618,29 +1665,28 @@ body.minimal .minimal-topbar { display: flex; }
   white-space: nowrap;
   display: flex;
   align-items: center;
-  gap: 4px;
-  display: flex;
-  align-items: center;
   gap: 5px;
 }
 [data-theme="light"] .session-filter-btn {
-  color: rgba(50, 70, 90, 0.4);
+  color: rgba(50, 70, 90, 0.45);
 }
 
 .session-filter-btn:hover {
-  color: rgba(200, 215, 240, 0.7);
+  color: rgba(200, 215, 240, 0.8);
+  background: rgba(200, 215, 240, 0.06);
 }
 [data-theme="light"] .session-filter-btn:hover {
-  color: rgba(50, 70, 90, 0.7);
+  color: rgba(50, 70, 90, 0.75);
+  background: rgba(50, 70, 90, 0.05);
 }
 
 .session-filter-btn.active {
-  background: rgba(160, 180, 208, 0.3);
-  color: rgba(160, 180, 208, 0.95);
+  background: rgba(160, 180, 208, 0.2);
+  color: rgba(200, 215, 240, 0.95);
 }
 [data-theme="light"] .session-filter-btn.active {
-  background: rgba(58, 90, 122, 0.2);
-  color: rgba(58, 90, 122, 0.9);
+  background: rgba(58, 90, 122, 0.12);
+  color: rgba(30, 50, 80, 0.9);
 }
 
 .sf-dot {
@@ -1873,27 +1919,25 @@ body.minimal .minimal-topbar { display: flex; }
 /* Gravity sliders */
 .gravity-sliders {
   position: absolute;
-  bottom: 4px;
+  bottom: 20px;
   right: 8px;
   z-index: 10;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  transform: scale(var(--map-scale, 1));
-  transform-origin: bottom right;
+  align-items: center;
+  gap: 4px;
 }
 .gravity-sliders label {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font: 400 9px "SF Mono", Menlo, monospace;
+  gap: 4px;
+  font: 400 8px "SF Mono", Menlo, monospace;
   color: rgba(200, 215, 240, 0.35);
+  white-space: nowrap;
 }
 [data-theme="light"] .gravity-sliders label {
   color: rgba(50, 70, 90, 0.35);
 }
 .gravity-sliders span {
-  width: 36px;
   text-align: right;
 }
 .gravity-sliders input[type="range"] {
@@ -1937,31 +1981,34 @@ body.minimal .minimal-topbar { display: flex; }
   align-self: flex-start;
 }
 .mode-btn {
-  font: 400 9px "SF Mono", Menlo, monospace;
-  padding: 2px 8px;
+  font: 500 8px "SF Mono", Menlo, monospace;
+  padding: 2px 6px;
   border: none;
-  border-radius: 12px;
+  border-radius: 6px;
   background: transparent;
   color: rgba(200, 215, 240, 0.4);
   cursor: pointer;
   transition: all 0.15s;
+  white-space: nowrap;
 }
 [data-theme="light"] .mode-btn {
-  color: rgba(50, 70, 90, 0.4);
+  color: rgba(50, 70, 90, 0.45);
 }
 .mode-btn:hover {
-  color: rgba(200, 215, 240, 0.7);
+  color: rgba(200, 215, 240, 0.8);
+  background: rgba(200, 215, 240, 0.06);
 }
 [data-theme="light"] .mode-btn:hover {
-  color: rgba(50, 70, 90, 0.7);
+  color: rgba(50, 70, 90, 0.75);
+  background: rgba(50, 70, 90, 0.05);
 }
 .mode-btn.active {
-  background: rgba(160, 180, 208, 0.3);
-  color: rgba(160, 180, 208, 0.95);
+  background: rgba(160, 180, 208, 0.2);
+  color: rgba(200, 215, 240, 0.95);
 }
 [data-theme="light"] .mode-btn.active {
-  background: rgba(58, 90, 122, 0.2);
-  color: rgba(58, 90, 122, 0.9);
+  background: rgba(58, 90, 122, 0.12);
+  color: rgba(30, 50, 80, 0.9);
 }
 
 /* ===== Momentum Map ===== */
@@ -2231,7 +2278,7 @@ body.minimal .minimal-topbar { display: flex; }
   color: rgba(255, 248, 240, 0.55);
   pointer-events: none;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 [data-theme="light"] .query-copied {
   color: rgba(0, 0, 0, 0.45);

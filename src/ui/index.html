@@ -102,24 +102,23 @@
     <div class="momentum-tooltip" id="momentum-tooltip"></div>
     <div class="gravity-card" id="gravity-card" style="display:none"></div>
     <div class="gravity-filter-row">
-      <div class="mode-filter-bar" id="mode-filter-bar">
-        <button class="mode-btn active" data-mode="files" onclick="setMapMode('files')">Files</button>
-        <button class="mode-btn" data-mode="flow" onclick="setMapMode('flow')">Flow</button>
-      </div>
-      <div class="lane-mode-bar" id="lane-mode-bar">
-        <button class="lane-btn active" data-lane="action" onclick="Gravity.setLaneMode && Gravity.setLaneMode('action')">Action</button>
-        <button class="lane-btn" data-lane="phase" onclick="Gravity.setLaneMode && Gravity.setLaneMode('phase')">Phase</button>
-      </div>
-      <div class="recency-filter-bar">
-        <button class="recency-filter-btn active" data-recency="all" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('all')">All</button>
-        <button class="recency-filter-btn" data-recency="active" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('active')">Live</button>
-        <button class="recency-filter-btn" data-recency="warm" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('warm')">Warm</button>
-        <button class="recency-filter-btn" data-recency="stale" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('stale')">Stale</button>
+      <div class="gravity-filter-main">
+        <div class="mode-filter-bar" id="mode-filter-bar">
+          <button class="mode-btn active" data-mode="files" onclick="setMapMode('files')">Files</button>
+          <button class="mode-btn" data-mode="flow" onclick="setMapMode('flow')">Flow</button>
+        </div>
+        <span class="filter-divider"></span>
+        <div class="recency-filter-bar">
+          <button class="recency-filter-btn" data-recency="all" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('all')">All</button>
+          <button class="recency-filter-btn active" data-recency="active" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('active')">Live</button>
+          <button class="recency-filter-btn active" data-recency="warm" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('warm')">Warm</button>
+          <button class="recency-filter-btn" data-recency="stale" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('stale')">Stale</button>
+        </div>
       </div>
       <div class="session-filter-bar" id="session-filter-bar" style="display:none"></div>
     </div>
     <div class="gravity-sliders" id="gravity-sliders">
-      <label><span>Spread</span><input type="range" min="10" max="300" value="155" oninput="Gravity.setEdgeLengthScale(0.1+(this.value-10)/290*1.4)"></label>
+      <label><span>Y spread</span><input type="range" min="10" max="300" value="155" oninput="Gravity.setYSpread && Gravity.setYSpread(0.3+(this.value-10)/290*2.7)"></label>
     </div>
     <div class="gravity-sliders" id="momentum-sliders" style="display:none">
       <label><span>Spread</span><input type="range" min="10" max="300" value="155" oninput="Momentum.setEdgeLengthScale(0.2+(this.value-10)/290*2.8)"></label>

@@ -40,9 +40,8 @@ const sessions = new Map();
 const childSessionMap = new Map();   // childSessionId -> parentSessionId
 const pendingAgentSpawns = new Map(); // parentSessionId -> { ts, count }
 
-// ===== Task/Query Grouping State =====
-const TASK_GAP_MS = 5 * 60 * 1000; // 5 minutes between queries = new task
-let taskIdCounter = 0;
+// ===== Topic/Query Grouping State =====
+const TASK_GAP_MS = 5 * 60 * 1000; // 5 minutes between queries = new topic
 let queryIdCounter = 0;
 
 // Per-session grouping state: sessionId -> GroupState
@@ -55,6 +54,7 @@ function getGroupState(sessionId) {
       currentTask: null,
       currentQuery: null,
       agentStack: [],   // stack of { agentEntry, children: [], el: null, childrenEl: null }
+      topicCounter: 0,  // per-session topic numbering
     });
   }
   return sessionGroups.get(sessionId);
@@ -104,10 +104,11 @@ function assignToGroup(entry) {
     const prevEndTs = gs.currentQuery ? gs.currentQuery.endTs : 0;
     const gap = entry.ts - prevEndTs;
 
-    // New task if first query or gap > 5 min
+    // New topic if first query or gap > 5 min
     if (!gs.currentTask || (gs.currentTask.queries.length === 0 && gs.tasks.length === 0) || gap > TASK_GAP_MS) {
       if (!gs.currentTask || gs.currentTask.queries.length > 0) {
-        gs.currentTask = { id: ++taskIdCounter, seqNum: taskIdCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
+        gs.topicCounter++;
+        gs.currentTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
         gs.tasks.push(gs.currentTask);
       }
     }
@@ -128,7 +129,8 @@ function assignToGroup(entry) {
   // Ensure we have a current query (preamble)
   if (!gs.currentQuery) {
     if (!gs.currentTask) {
-      gs.currentTask = { id: ++taskIdCounter, seqNum: taskIdCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
+      gs.topicCounter++;
+      gs.currentTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
       gs.tasks.push(gs.currentTask);
     }
     gs.currentQuery = { id: ++queryIdCounter, userQuery: null, thinkingEntry: null, startTs: entry.ts, endTs: entry.ts, items: [], el: null, actionsEl: null, headerEl: null, collapsed: true };
@@ -433,7 +435,6 @@ function resetAll() {
   firstEventTs = null;
   sessions.clear();
   sessionGroups.clear();
-  taskIdCounter = 0;
   queryIdCounter = 0;
   colorIdx = 0;
   if (momentumInitialized) Momentum.reset();
@@ -623,10 +624,26 @@ function handleLine(msg) {
 
   // If this is a new session_id and there's a pending agent spawn, map it to the parent
   if (sessionId && !sessions.has(sessionId) && !childSessionMap.has(sessionId)) {
+    // Heuristic 1: match against pending agent spawns (within 60s)
     for (const [parentSid, info] of pendingAgentSpawns) {
       if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
         childSessionMap.set(sessionId, parentSid);
         break;
+      }
+    }
+    // Heuristic 2: if session ID or label looks like a sub-agent (e.g., "agent-a1"),
+    // map to the most recently active parent session
+    if (!childSessionMap.has(sessionId)) {
+      const lbl = (sessionLabel || "").toLowerCase();
+      const sid = (sessionId || "").toLowerCase();
+      const looksLikeAgent = lbl.startsWith("agent-") || lbl.startsWith("agent_") ||
+                             sid.startsWith("agent-") || sid.startsWith("agent_");
+      if (looksLikeAgent) {
+        let bestParent = null, bestTs = 0;
+        for (const [parentId, info] of sessions) {
+          if (info.lastEventTs > bestTs) { bestTs = info.lastEventTs; bestParent = parentId; }
+        }
+        if (bestParent) childSessionMap.set(sessionId, bestParent);
       }
     }
   }
@@ -751,12 +768,13 @@ function countItemActions(items) {
   return count;
 }
 
-function renderTaskHeader(task) {
+function renderTaskHeader(task, displayNum) {
   const div = document.createElement("div");
   div.className = "task-header";
   const qCount = task.queries.length;
   const chevron = task.collapsed ? "\u25B6" : "\u25BC";
-  div.innerHTML = `<span class="task-chevron">${chevron}</span><span class="task-label">Task ${task.seqNum}</span><span class="task-time">${formatTimeRange(task.startTs, task.endTs)}</span><span class="task-qcount">${qCount} ${qCount === 1 ? "query" : "queries"}</span>`;
+  const num = displayNum || task.seqNum;
+  div.innerHTML = `<span class="task-chevron">${chevron}</span><span class="task-label">Topic ${num}</span><span class="task-time">${formatTimeRange(task.startTs, task.endTs)}</span><span class="task-qcount">${qCount} ${qCount === 1 ? "query" : "queries"}</span>`;
   return div;
 }
 
@@ -904,7 +922,7 @@ function renderTaskGroup(task, matchFn) {
   const wrap = document.createElement("div");
   wrap.className = "task-group";
 
-  const header = renderTaskHeader(task);
+  const header = renderTaskHeader(task, task._displayNum);
   wrap.appendChild(header);
 
   const bodyEl = document.createElement("div");
@@ -925,28 +943,34 @@ function renderTaskGroup(task, matchFn) {
 }
 
 // Render all grouped entries for a given session into a container
-function renderGroupedEntries(container, sessionId) {
+// topicOffset: starting topic number (for multi-session rendering in same container)
+function renderGroupedEntries(container, sessionId, topicOffset) {
   const gs = sessionGroups.get(sessionId);
-  if (!gs) return 0;
+  if (!gs) return { matchCount: 0, topicCount: 0 };
 
   const matchFn = (entry) => matchesFilter(entry) && matchesSearch(entry);
   let matchCount = 0;
+  const base = topicOffset || 0;
 
   for (let i = 0; i < gs.tasks.length; i++) {
     const task = gs.tasks[i];
+    task._displayNum = base + i + 1; // sequential display number
     const taskEl = renderTaskGroup(task, matchFn);
     container.appendChild(taskEl);
-    // Count visible entries
     taskEl.querySelectorAll(".log-entry").forEach(() => matchCount++);
   }
 
-  return matchCount;
+  return { matchCount, topicCount: gs.tasks.length };
 }
 
 // Real-time append: insert entry into its correct grouped DOM position
 function appendEntryGrouped(entry) {
   const container = getContainerFor(entry);
-  if (!container) return;
+  if (!container || !container.isConnected) {
+    // Container missing or detached — schedule a full pane rebuild to recover
+    scheduleIntegrityRebuild();
+    return;
+  }
 
   const empty = container.querySelector(".empty-state");
   if (empty) empty.remove();
@@ -959,11 +983,27 @@ function appendEntryGrouped(entry) {
   const query = gs.currentQuery;
   if (!task || !query) return;
 
+  // Detect stale DOM: task.el or query.actionsEl detached from the live document
+  if ((task.el && !task.el.isConnected) || (query.actionsEl && !query.actionsEl.isConnected)) {
+    scheduleIntegrityRebuild();
+    return;
+  }
+
+  // Compute display number: count tasks in all prior sessions + index in current session
+  if (!task._displayNum) {
+    let offset = 0;
+    for (const [otherSid, otherGs] of sessionGroups) {
+      if (otherSid === sid) break;
+      offset += otherGs.tasks.length;
+    }
+    task._displayNum = offset + gs.tasks.indexOf(task) + 1;
+  }
+
   // Ensure task DOM exists
   if (!task.el) {
     const taskEl = document.createElement("div");
     taskEl.className = "task-group";
-    const header = renderTaskHeader(task);
+    const header = renderTaskHeader(task, task._displayNum);
     taskEl.appendChild(header);
     const bodyEl = document.createElement("div");
     bodyEl.className = "task-body";
@@ -975,7 +1015,7 @@ function appendEntryGrouped(entry) {
     container.appendChild(taskEl);
   } else {
     // Update task header (time range, query count may have changed)
-    const newHeader = renderTaskHeader(task);
+    const newHeader = renderTaskHeader(task, task._displayNum);
     if (task.headerEl && task.el.contains(task.headerEl)) {
       task.el.replaceChild(newHeader, task.headerEl);
     } else {
@@ -1161,8 +1201,43 @@ function openModal(id) {
     }
     const thinkCode = document.createElement("div");
     thinkCode.className = "modal-code modal-thinking-body";
-    thinkCode.textContent = String(entry.body || "");
+    const bodyText = String(entry.body || "");
+    thinkCode.textContent = bodyText;
     modalBody.appendChild(thinkCode);
+
+    // If thinking text was truncated by backlog, add expand button to fetch full content
+    if (bodyText.match(/\.\.\.\(\d+ more chars\)$/)) {
+      const expandBtn = document.createElement("button");
+      expandBtn.className = "modal-expand-btn";
+      expandBtn.textContent = "Load full thinking";
+      expandBtn.addEventListener("click", async () => {
+        expandBtn.textContent = "Loading...";
+        expandBtn.disabled = true;
+        try {
+          const resp = await fetch("/api/full-entry", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ts: entry.ts, category: "thinking" }),
+          });
+          if (resp.ok) {
+            const fullObj = await resp.json();
+            const inner = fullObj.data || fullObj;
+            const fullText = inner.thinking || inner.content || inner.text || "";
+            if (fullText) {
+              thinkCode.textContent = fullText;
+              expandBtn.remove();
+            } else {
+              expandBtn.textContent = "Full text not found";
+            }
+          } else {
+            expandBtn.textContent = "Failed to load";
+          }
+        } catch {
+          expandBtn.textContent = "Failed to load";
+        }
+      });
+      modalBody.insertBefore(expandBtn, thinkCode.nextSibling);
+    }
 
     // Collapsible metadata
     if (entry.meta) {
@@ -1493,6 +1568,16 @@ function rebuildView() {
   updateGridControlsVisibility();
 }
 
+// Debounced integrity rebuild — recovers from stale DOM references
+let integrityRebuildTimer = null;
+function scheduleIntegrityRebuild() {
+  if (integrityRebuildTimer) return;
+  integrityRebuildTimer = setTimeout(() => {
+    integrityRebuildTimer = null;
+    rebuildAllPaneContents();
+  }, 200);
+}
+
 function rebuildAllPaneContents() {
   for (const p of panes.values()) p.scrollEl.innerHTML = "";
 
@@ -1518,21 +1603,26 @@ function rebuildAllPaneContents() {
     // Single session: render grouped
     const container = panes.get("main")?.scrollEl;
     if (container) {
-      matchCount = renderGroupedEntries(container, activeSession);
+      const r = renderGroupedEntries(container, activeSession, 0);
+      matchCount = r.matchCount;
     }
   } else if (sessions.size <= 1) {
     // Single session in "all" mode
     const sid = sessions.keys().next().value || "default";
     const container = panes.get("main")?.scrollEl;
     if (container) {
-      matchCount = renderGroupedEntries(container, sid);
+      const r = renderGroupedEntries(container, sid, 0);
+      matchCount = r.matchCount;
     }
   } else {
-    // Multi-session: render grouped per pane
+    // Multi-session: render grouped per pane, sequential topic numbers
+    let topicOffset = 0;
     for (const [sid] of sessions) {
       const pane = panes.get(sid);
       if (pane) {
-        matchCount += renderGroupedEntries(pane.scrollEl, sid);
+        const r = renderGroupedEntries(pane.scrollEl, sid, topicOffset);
+        matchCount += r.matchCount;
+        topicOffset += r.topicCount;
       }
     }
   }
@@ -2037,7 +2127,6 @@ window.clearLogs = () => {
     sessionGroups.clear();
     childSessionMap.clear();
     pendingAgentSpawns.clear();
-    taskIdCounter = 0;
     queryIdCounter = 0;
     colorIdx = 0;
     rebuildTabs();
