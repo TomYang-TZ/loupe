@@ -221,9 +221,12 @@ function updateIslandFromEntry(entry) {
   const sInfo = sessions.get(sid);
   if (sInfo) s.label = sInfo.label;
 
-  // Track user query
+  // Track user query — also breaks idle
   if (cat === "user_query" && entry.userQuery) {
     s.userQuery = entry.userQuery.slice(0, 120);
+    s.phase = "starting";
+    s.idleSince = null;
+    if (s._idleTimer) { clearTimeout(s._idleTimer); s._idleTimer = null; }
   }
 
   // Track thinking

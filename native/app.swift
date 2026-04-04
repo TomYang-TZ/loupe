@@ -17,10 +17,12 @@ struct NotchGeometry {
         let frame = screen.frame
         let topInset = screen.safeAreaInsets.top
         let hasNotch = topInset > 0
+        // Menu bar height = difference between frame top and visible frame top
+        let menuBarH = frame.maxY - screen.visibleFrame.maxY
         return NotchGeometry(
             screenFrame: frame,
             notchWidth: hasNotch ? 180 : 200,
-            notchHeight: hasNotch ? topInset : 32,
+            notchHeight: hasNotch ? topInset : max(menuBarH, 25),
             centerX: frame.midX,
             topY: frame.maxY,
             hasPhysicalNotch: hasNotch
@@ -37,9 +39,11 @@ class IslandPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     init(geo: NotchGeometry) {
-        let panelW: CGFloat = 700
+        let panelW: CGFloat = 500
         let panelH: CGFloat = 420
-        let x = geo.centerX - panelW / 2
+        // Position to the left of the notch/camera area
+        let notchLeftEdge = geo.centerX - geo.notchWidth / 2
+        let x = notchLeftEdge - panelW - 8
         let y = geo.topY - panelH
 
         super.init(
@@ -109,7 +113,7 @@ class IslandView: NSView {
 
     // Pill geometry
     let pillWidth: CGFloat = 220
-    let pillHeight: CGFloat = 32
+    let pillHeight: CGFloat = 28
     let expandedWidth: CGFloat = 380
     let expandedHeight: CGFloat = 220
 
@@ -121,6 +125,7 @@ class IslandView: NSView {
         "testing":       NSColor(red: 34/255, green: 197/255, blue: 94/255, alpha: 1),     // green
         "planning":      NSColor(red: 234/255, green: 179/255, blue: 8/255, alpha: 1),     // yellow
         "idle":          NSColor(white: 0.35, alpha: 1),
+        "starting":      NSColor(red: 59/255, green: 130/255, blue: 246/255, alpha: 1),    // blue
     ]
     static let signalColors: [String: NSColor] = [
         "approaching":  NSColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1),
@@ -280,8 +285,9 @@ class IslandView: NSView {
         let hGrow = warmT * 4
         let w = pillWidth + wGrow + (expandedWidth - pillWidth - wGrow) * t
         let h = pillHeight + hGrow + (expandedHeight - pillHeight - hGrow) * t
-        let x = bounds.midX - w / 2
-        let y = bounds.maxY - geo.notchHeight - 4 - h
+        // Right-aligned within panel (close to notch), top of screen
+        let x = bounds.maxX - w - 8
+        let y = bounds.maxY - h - 2
         return NSRect(x: x, y: y, width: w, height: h)
     }
 
@@ -355,8 +361,8 @@ class IslandView: NSView {
 
     private func drawCollapsed(in rect: NSRect, ctx: CGContext, alpha: CGFloat) {
         let midY = rect.midY
-        let dotR: CGFloat = 5
-        var cursorX = rect.minX + 16
+        let dotR: CGFloat = 4
+        var cursorX = rect.minX + 12
 
         // Draw session dots (one per session)
         let dots = sessionDots.isEmpty
@@ -390,10 +396,8 @@ class IslandView: NSView {
         if waitingForConfirmation {
             label = waitingTool != nil ? "approve \(waitingTool!)" : "awaiting approval"
             labelColor = waitingColor
-        } else if currentPhase == "idle" && idleSeconds > 0 {
-            let mins = idleSeconds / 60
-            let secs = idleSeconds % 60
-            label = mins > 0 ? "idle \(mins)m \(secs)s" : "idle \(secs)s"
+        } else if currentPhase == "idle" {
+            label = "idle"
             labelColor = NSColor(white: 0.5, alpha: 1)
         } else {
             label = thinkingActive ? "thinking" : currentPhase
@@ -401,11 +405,11 @@ class IslandView: NSView {
         }
 
         let labelAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
             .foregroundColor: labelColor.withAlphaComponent(Double(alpha))
         ]
         let labelStr = NSAttributedString(string: label, attributes: labelAttrs)
-        labelStr.draw(at: NSPoint(x: cursorX, y: midY - 7))
+        labelStr.draw(at: NSPoint(x: cursorX, y: midY - 6))
 
         // Right side: tool name + brief detail (must not overlap phase label)
         if let tool = activeToolName, !waitingForConfirmation, currentPhase != "idle" {

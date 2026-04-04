@@ -4,7 +4,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { WebSocketServer } = require("ws");
-const { fork, execSync } = require("child_process");
+const { fork, execFile } = require("child_process");
 
 const args = process.argv.slice(2);
 let port = 8390;
@@ -448,6 +448,47 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // API: Fetch full (untruncated) entry by timestamp
+  if (url === "/api/full-entry" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const { ts, category } = JSON.parse(body);
+        const content = fs.readFileSync(filePath, "utf-8");
+        const lines = content.split("\n");
+        let best = null;
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const obj = JSON.parse(line);
+            const lineTs = obj._ts ? new Date(obj._ts).getTime() : 0;
+            // Match by timestamp (within 1s) and category
+            if (Math.abs(lineTs - ts) < 1000) {
+              const t = obj._logstream_type || "";
+              const inner = obj.data || obj;
+              const cat = t === "thinking" || obj.thinking ? "thinking" : t.toLowerCase();
+              if (!category || cat === category || t === category) {
+                best = obj;
+              }
+            }
+          } catch {}
+        }
+        if (best) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(best));
+        } else {
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: "Entry not found" }));
+        }
+      } catch (err) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
   // API: Get condensed session timeline for replay popover
   if (url === "/api/session-timeline" && req.method === "POST") {
     let body = "";
@@ -655,20 +696,22 @@ Rate each dimension 1-5 and briefly justify. These help the user calibrate expec
 SESSION LOG (${condensed.length} entries from raw transcript):
 ${condensedLog}`;
 
-        try {
-          const analysis = execSync("claude --print --model sonnet", {
-            input: prompt,
+        const child = execFile("claude", ["--print", "--model", "sonnet"], {
             timeout: 120000,
             encoding: "utf-8",
             maxBuffer: 2 * 1024 * 1024,
+          }, (err, stdout, stderr) => {
+            if (err) {
+              const msg = stderr ? stderr.slice(0, 200) : err.message;
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: `Claude CLI failed: ${msg}` }));
+            } else {
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ analysis: stdout }));
+            }
           });
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ analysis }));
-        } catch (err) {
-          const msg = err.stderr ? err.stderr.toString().slice(0, 200) : err.message;
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: `Claude CLI failed: ${msg}` }));
-        }
+          child.stdin.write(prompt);
+          child.stdin.end();
       } catch (err) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));
