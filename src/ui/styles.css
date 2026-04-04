@@ -1511,7 +1511,7 @@ body.minimal .minimal-topbar { display: flex; }
 
 /* Filter bar */
 .mode-filter-bar,
-.universe-filter-bar, .recency-filter-bar {
+.lane-mode-bar, .universe-filter-bar, .recency-filter-bar {
   display: flex;
   gap: 2px;
   background: rgba(5, 5, 16, 0.6);
@@ -1521,13 +1521,14 @@ body.minimal .minimal-topbar { display: flex; }
   backdrop-filter: blur(8px);
 }
 [data-theme="light"] .mode-filter-bar,
+[data-theme="light"] .lane-mode-bar,
 [data-theme="light"] .universe-filter-bar,
 [data-theme="light"] .recency-filter-bar {
   background: rgba(255, 255, 255, 0.8);
   border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.recency-filter-btn {
+.lane-btn, .recency-filter-btn {
   font: 400 9px "SF Mono", Menlo, monospace;
   padding: 2px 8px;
   border: none;
@@ -1537,19 +1538,22 @@ body.minimal .minimal-topbar { display: flex; }
   cursor: pointer;
   transition: all 0.2s;
 }
+[data-theme="light"] .lane-btn,
 [data-theme="light"] .recency-filter-btn {
   color: rgba(50, 70, 90, 0.4);
 }
-.recency-filter-btn:hover {
+.lane-btn:hover, .recency-filter-btn:hover {
   color: rgba(200, 215, 240, 0.7);
 }
+[data-theme="light"] .lane-btn:hover,
 [data-theme="light"] .recency-filter-btn:hover {
   color: rgba(50, 70, 90, 0.7);
 }
-.recency-filter-btn.active {
+.lane-btn.active, .recency-filter-btn.active {
   background: rgba(160, 180, 208, 0.3);
   color: rgba(160, 180, 208, 0.95);
 }
+[data-theme="light"] .lane-btn.active,
 [data-theme="light"] .recency-filter-btn.active {
   background: rgba(58, 90, 122, 0.2);
   color: rgba(58, 90, 122, 0.9);

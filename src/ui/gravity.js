@@ -41,6 +41,9 @@ const Gravity = (() => {
   const NODE_MIN_R = 3;
   const NODE_MAX_R = 20;
 
+  // Lane mode: "action" (read/edit/exec), "phase" (exploring/implementing/testing/debugging), "dir" (directory)
+  let laneMode = "action";
+
   // Slider scales (0.1 → 3.0, default 1.0)
   let edgeLengthScale = 0.8; // 50% of slider (155) maps to 0.8 via: 0.1 + (v-10)/290*1.4
   let nodeSizeScale = 1.0;
@@ -291,6 +294,76 @@ const Gravity = (() => {
     return true;
   }
 
+  // --- Lane computation ---
+  // Fixed lane definitions for action and phase modes
+  const ACTION_LANES = ["read", "edit", "exec"];
+  const PHASE_LANES = ["exploring", "planning", "implementing", "testing", "debugging"];
+
+  // Current lane labels (updated by computeLanes, read by drawDirLanes)
+  let currentLanes = []; // [{ key, label, y, h }]
+
+  function computeLanes(nodeArray, dirGroups, usableH, pad) {
+    currentLanes = [];
+
+    if (laneMode === "action") {
+      // Y-axis = last action type: read / edit / exec
+      const lanes = ACTION_LANES;
+      const laneH = usableH / lanes.length;
+      for (let i = 0; i < lanes.length; i++) {
+        currentLanes.push({ key: lanes[i], label: lanes[i].charAt(0).toUpperCase() + lanes[i].slice(1), y: pad + i * laneH, h: laneH });
+      }
+      for (const n of nodeArray) {
+        const action = n.lastAction || "read";
+        const idx = lanes.indexOf(action);
+        const lane = idx >= 0 ? idx : 0;
+        n._laneKey = lanes[lane] || "read";
+        n._targetY = pad + lane * laneH + laneH / 2;
+      }
+
+    } else if (laneMode === "phase") {
+      // Y-axis = workflow phase from momentum map
+      const lanes = PHASE_LANES;
+      const laneH = usableH / lanes.length;
+      for (let i = 0; i < lanes.length; i++) {
+        currentLanes.push({ key: lanes[i], label: lanes[i].charAt(0).toUpperCase() + lanes[i].slice(1), y: pad + i * laneH, h: laneH });
+      }
+      for (const n of nodeArray) {
+        // Get phase from momentum's file-phase map
+        const fileState = (typeof Momentum !== "undefined" && Momentum.getFileState) ? Momentum.getFileState(n.id) : null;
+        let phase = fileState ? fileState.phase : null;
+        // Fallback: infer phase from action type
+        if (!phase) {
+          if (n.editCount > n.readCount && n.editCount > n.execCount) phase = "implementing";
+          else if (n.execCount > 0) phase = "testing";
+          else phase = "exploring";
+        }
+        const idx = lanes.indexOf(phase);
+        const lane = idx >= 0 ? idx : 0;
+        n._laneKey = lanes[lane] || "exploring";
+        n._targetY = pad + lane * laneH + laneH / 2;
+      }
+
+    } else {
+      // "dir" mode: Y-axis = directory grouping
+      const dirList = [...dirGroups.keys()].sort((a, b) => {
+        const aMin = Math.min(...dirGroups.get(a).map(n => n.accessOrder));
+        const bMin = Math.min(...dirGroups.get(b).map(n => n.accessOrder));
+        return aMin - bMin;
+      });
+      const laneH = usableH / Math.max(1, dirList.length);
+      dirList.forEach((d, i) => {
+        currentLanes.push({ key: d, label: d || "(root)", y: pad + i * laneH, h: laneH });
+      });
+      const dirLane = new Map();
+      dirList.forEach((d, i) => dirLane.set(d, i));
+      for (const n of nodeArray) {
+        const lane = dirLane.get(n.dir || "__root__") || 0;
+        n._laneKey = n.dir || "__root__";
+        n._targetY = pad + lane * laneH + laneH / 2;
+      }
+    }
+  }
+
   // --- Force simulation ---
   let isFirstBuild = true;
 
@@ -329,7 +402,7 @@ const Gravity = (() => {
 
     // --- Time-series layout ---
     // X-axis: access order (first accessed → left, later → right)
-    // Y-axis: directory lanes (files in same dir cluster vertically)
+    // Y-axis: lane mode (action / phase / dir)
     const pad = 80;
     const usableW = Math.max(300, (width || 600) - pad * 2);
     const usableH = Math.max(200, (height || 400) - pad * 2);
@@ -341,45 +414,31 @@ const Gravity = (() => {
       maxOrder = Math.max(maxOrder, n.accessOrder);
     }
     const orderRange = Math.max(1, maxOrder - minOrder);
-
-    // Assign directory lanes for Y targets
-    const dirList = [...dirGroups.keys()].sort((a, b) => {
-      // Sort by earliest access in the group
-      const aMin = Math.min(...dirGroups.get(a).map(n => n.accessOrder));
-      const bMin = Math.min(...dirGroups.get(b).map(n => n.accessOrder));
-      return aMin - bMin;
-    });
-    const dirLane = new Map();
-    dirList.forEach((d, i) => dirLane.set(d, i));
-    const laneCount = Math.max(1, dirList.length);
-    const laneH = usableH / laneCount;
-
-    // Compute target positions
     for (const n of nodeArray) {
       n._targetX = pad + ((n.accessOrder - minOrder) / orderRange) * usableW;
-      const lane = dirLane.get(n.dir || "__root__") || 0;
-      n._targetY = pad + lane * laneH + laneH / 2;
     }
+
+    // Compute Y targets based on lane mode
+    const laneInfo = computeLanes(nodeArray, dirGroups, usableH, pad);
 
     simulation = d3.forceSimulation(nodeArray)
       .force("charge", d3.forceManyBody().strength(-80).distanceMax(300))
       .force("link", d3.forceLink(edgeArray).id(d => d.id).distance(d => {
-        const sameDir = d.source.dir && d.source.dir === d.target.dir;
-        return sameDir ? 40 : 80;
-      }).strength(e => 0.03 + e.weight * 0.005))
-      // Time-series X positioning: strong pull toward access-order X
+        const sameLane = d.source._laneKey && d.source._laneKey === d.target._laneKey;
+        return sameLane ? 35 : 80;
+      }).strength(e => {
+        const sameLane = e.source._laneKey && e.source._laneKey === e.target._laneKey;
+        return (sameLane ? 0.12 : 0.04) + e.weight * 0.005;
+      }))
       .force("x", d3.forceX(d => d._targetX).strength(0.3))
-      // Directory lane Y positioning
       .force("y", d3.forceY(d => d._targetY).strength(0.25))
       .force("collision", d3.forceCollide().radius(d => nodeRadius(d) * 1.8 + 8).strength(0.7))
-      .force("cluster", clusterForce(dirGroups, 0.06))
       .force("sessionCluster", multiSession && sessionGroups.size > 1 ? clusterForce(sessionGroups, 0.03) : null)
       .velocityDecay(0.45)
       .alphaDecay(0.04)
       .on("tick", () => {});
 
     if (isFirstBuild) {
-      // Seed initial positions near targets for faster convergence
       for (const n of nodeArray) {
         n.x = n._targetX + (Math.random() - 0.5) * 20;
         n.y = n._targetY + (Math.random() - 0.5) * 20;
@@ -388,7 +447,7 @@ const Gravity = (() => {
       isFirstBuild = false;
     } else {
       for (const n of nodeArray) { n.vx = 0; n.vy = 0; }
-      simulation.alpha(0.2).restart();
+      simulation.alpha(0.3).restart();
     }
   }
 
@@ -549,42 +608,49 @@ const Gravity = (() => {
     // Light mode: clean flat background, no decoration
   }
 
-  // --- Directory lane labels (drawn in world space) ---
+  // --- Lane labels and dividers (drawn in world space) ---
   function drawDirLanes(dark) {
-    // Collect directory groups from visible nodes
-    const laneNodes = new Map();
+    if (currentLanes.length < 2) return;
+
+    // Find the X extent of all visible nodes
+    let minX = Infinity, maxX = -Infinity;
     for (const n of nodes.values()) {
       if (!nodeVisible(n)) continue;
-      const d = n.dir || "__root__";
-      if (!laneNodes.has(d)) laneNodes.set(d, { minY: Infinity, maxY: -Infinity, minX: Infinity, count: 0 });
-      const lane = laneNodes.get(d);
-      const ny = spY(n), nx = spX(n);
-      lane.minY = Math.min(lane.minY, ny);
-      lane.maxY = Math.max(lane.maxY, ny);
-      lane.minX = Math.min(lane.minX, nx);
-      lane.count++;
+      const nx = spX(n);
+      if (nx < minX) minX = nx;
+      if (nx > maxX) maxX = nx;
     }
-    if (laneNodes.size < 2) return;
+    if (minX === Infinity) return;
 
-    for (const [dir, lane] of laneNodes) {
-      if (dir === "__root__" || lane.count < 1) continue;
-      const midY = (lane.minY + lane.maxY) / 2;
+    const leftGutter = minX - 20;
+    const rightEdge = maxX + 40;
 
-      // Subtle horizontal divider line
+    for (let i = 0; i < currentLanes.length; i++) {
+      const lane = currentLanes[i];
+      const laneY = lane.y + lane.h / 2;
+      const bottomY = lane.y + lane.h;
+
+      // Subtle horizontal divider between lanes
+      if (i < currentLanes.length - 1) {
+        ctx.save();
+        ctx.strokeStyle = dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)";
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(leftGutter, bottomY);
+        ctx.lineTo(rightEdge, bottomY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+
+      // Lane label on the left
       ctx.save();
-      ctx.strokeStyle = dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)";
-      ctx.lineWidth = 0.5;
-      ctx.beginPath();
-      ctx.moveTo(lane.minX - 40, lane.maxY + 15);
-      ctx.lineTo(lane.minX + 600, lane.maxY + 15);
-      ctx.stroke();
-
-      // Directory label on the left
-      ctx.fillStyle = dark ? "rgba(255,248,240,0.15)" : "rgba(0,0,0,0.1)";
-      ctx.font = `400 ${Math.round(9 * mapScale)}px "SF Mono", monospace`;
+      ctx.fillStyle = dark ? "rgba(255,248,240,0.2)" : "rgba(0,0,0,0.15)";
+      ctx.font = `500 ${Math.round(9 * mapScale)}px "SF Mono", monospace`;
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      ctx.fillText(dir, lane.minX - 16, midY);
+      ctx.fillText(lane.label, leftGutter - 8, laneY);
       ctx.restore();
     }
   }
@@ -1828,5 +1894,17 @@ const Gravity = (() => {
 
   function setOnSessionFilterChange(cb) { onSessionFilterChange = cb; }
 
-  return { init, addEntry, addEntries, destroy, reset, getTooltip, getStats, zoom, deselect, getNodes, getEdges, setFilter, setRecencyFilter, setSessionFilter, registerSession, unregisterSession, setEdgeLengthScale, setNodeSizeScale, setOnSessionFilterChange };
+  function setLaneMode(mode) {
+    if (mode === laneMode) return;
+    laneMode = mode;
+    // Update button active states
+    document.querySelectorAll(".lane-btn").forEach(b =>
+      b.classList.toggle("active", b.getAttribute("data-lane") === mode)
+    );
+    // Force full rebuild with new lane positions
+    isFirstBuild = true;
+    rebuildSimulation();
+  }
+
+  return { init, addEntry, addEntries, destroy, reset, getTooltip, getStats, zoom, deselect, getNodes, getEdges, setFilter, setRecencyFilter, setSessionFilter, registerSession, unregisterSession, setEdgeLengthScale, setNodeSizeScale, setOnSessionFilterChange, setLaneMode };
 })();

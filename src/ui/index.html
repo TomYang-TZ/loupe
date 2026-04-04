@@ -106,11 +106,10 @@
         <button class="mode-btn active" data-mode="files" onclick="setMapMode('files')">Files</button>
         <button class="mode-btn" data-mode="flow" onclick="setMapMode('flow')">Flow</button>
       </div>
-      <div class="universe-filter-bar" id="universe-filter-bar">
-        <button class="filter-btn active" data-filter="all" onclick="Gravity.setFilter && Gravity.setFilter('all')">All</button>
-        <button class="filter-btn" data-filter="read" onclick="Gravity.setFilter && Gravity.setFilter('read')">Read</button>
-        <button class="filter-btn" data-filter="edit" onclick="Gravity.setFilter && Gravity.setFilter('edit')">Edit</button>
-        <button class="filter-btn" data-filter="exec" onclick="Gravity.setFilter && Gravity.setFilter('exec')">Exec</button>
+      <div class="lane-mode-bar" id="lane-mode-bar">
+        <button class="lane-btn active" data-lane="action" onclick="Gravity.setLaneMode && Gravity.setLaneMode('action')">Action</button>
+        <button class="lane-btn" data-lane="phase" onclick="Gravity.setLaneMode && Gravity.setLaneMode('phase')">Phase</button>
+        <button class="lane-btn" data-lane="dir" onclick="Gravity.setLaneMode && Gravity.setLaneMode('dir')">Dir</button>
       </div>
       <div class="recency-filter-bar">
         <button class="recency-filter-btn active" data-recency="all" onclick="Gravity.setRecencyFilter && Gravity.setRecencyFilter('all')">All</button>
