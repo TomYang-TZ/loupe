@@ -1,37 +1,35 @@
 # Loupe
 
-Real-time log viewer and behavioral map for Claude Code sessions. Streams tool calls, thinking blocks, and errors into a floating macOS window with two map modes and multi-session support.
+Real-time log viewer and behavioral map for Claude Code sessions. Streams tool calls, thinking blocks, and errors into a floating macOS window with three display modes and multi-session support.
 
-## Branch: feature/dynamic-island
+## Display Modes
 
-This branch adds three new display modes alongside the existing native window:
+Switch modes with `scripts/mode.sh [window|ghostty|island]`, then restart with `scripts/restart.sh`.
 
-### Dynamic Island (done)
-A notch-anchored floating pill at the top of the screen. Shows live session status at a glance.
+### Window (default)
 
-- **Collapsed pill**: phase dot, phase label, active tool + file detail
-- **Expanded card** (hover to expand): user query, stats (files/tokens/errors/sessions), elapsed time, recent tool history
-- **Warm animation**: subtle glow + size growth before expanding
+Native macOS app with compact and full layouts. Shows live event stream, task grouping, replay analysis, and behavioral maps.
+
+### Dynamic Island
+
+Notch-anchored floating pill at the top of the screen. Always-visible glanceable status.
+
+- **Collapsed pill**: phase dot, label, active tool + file detail
+- **Expanded card** (hover): user query, recent tool history, file/token/error counts, elapsed time
+- **Waiting notification**: pulsing amber when agent needs approval
 - Toggle: `Cmd+Shift+I`
 
-### TUI Companion (done)
-Terminal-based dashboard (`src/tui/index.js`) for use in Ghostty splits. Connects to the WebSocket server and renders a live ANSI-colored event stream with phase, tool, and stats.
+### Ghostty TUI
 
-### Ghostty Integration (done)
-AppleScript-based auto-split (`scripts/ghostty-split.sh`) that opens the TUI in a left split of the focused Ghostty terminal.
+Terminal-based dashboard for Ghostty splits. Connects to the WebSocket server and renders a live ANSI-colored event stream.
 
-### Mode Toggle (done)
-Switch display modes via `scripts/mode.sh [window|ghostty|island]`. Writes to `~/.claude/logs/loupe-mode`, read by `hook.sh` and `restart.sh`.
+```bash
+# Open as a left split in Ghostty
+bash scripts/ghostty-split.sh
 
-### Not yet done
-- Test TUI companion in a live Ghostty split
-- Test full mode switching cycle (window → ghostty → island → window)
-- Ghostty split: handle case where split already exists (avoid duplicates)
-- Island: no data shows when no active session (could show "waiting for session")
-- Island: collapsed pill could animate the tool name when it changes
-- Merge prep: restore main repo files after testing (app.js, Loupe.app binary)
-
----
+# Or run standalone in any terminal
+LOUPE_PORT=8390 node src/tui/index.js
+```
 
 ## Maps
 
@@ -65,6 +63,7 @@ Press `?` in the app for all shortcuts.
 | Key | Action |
 |-----|--------|
 | `Cmd+Shift+L` | Show/hide window |
+| `Cmd+Shift+I` | Toggle Dynamic Island |
 | `Cmd+Shift+M` | Toggle compact/full mode |
 | `Cmd+Shift+N` | Toggle Files/Flow mode |
 | `Cmd+T` | Toggle theme |
