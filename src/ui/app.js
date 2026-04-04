@@ -231,7 +231,7 @@ function updateIslandFromEntry(entry) {
     if (s._idleTimer) { clearTimeout(s._idleTimer); s._idleTimer = null; }
   }
 
-  // Track thinking
+  // Track thinking — also clears "starting"
   if (cat === "thinking") {
     s.thinking = true;
     s.phase = "exploring";
@@ -269,7 +269,7 @@ function updateIslandFromEntry(entry) {
     else if (toolName.includes("Bash")) {
       const cmd = input.command || "";
       if (/test|jest|pytest|cargo test|npm test/.test(cmd)) s.phase = "testing";
-      else if (s.phase === "idle") s.phase = "implementing";
+      else if (s.phase === "idle" || s.phase === "starting") s.phase = "implementing";
     } else if (toolName.includes("Agent")) s.phase = "planning";
   }
 
