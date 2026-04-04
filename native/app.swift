@@ -318,6 +318,11 @@ class IslandView: NSView {
             ctx.restoreGState()
         }
 
+        // Clip all content to pill bounds
+        ctx.saveGState()
+        ctx.addPath(path)
+        ctx.clip()
+
         // Content
         if t < 0.5 {
             drawCollapsed(in: rect, ctx: ctx, alpha: 1 - t * 2)
@@ -325,6 +330,8 @@ class IslandView: NSView {
         if t > 0.3 {
             drawExpanded(in: rect, ctx: ctx, alpha: (t - 0.3) / 0.7)
         }
+
+        ctx.restoreGState()
     }
 
     private func phaseColor() -> NSColor {
