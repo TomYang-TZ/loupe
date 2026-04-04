@@ -181,28 +181,65 @@ const islandState = {
   phase: "idle",
   progress: null,
   tool: null,
+  toolDetail: null,
   files: 0,
   sessions: 0,
   tokens: 0,
+  errors: 0,
   thinking: false,
+  userQuery: null,
+  recentTools: [],      // last 5: { name, detail, ts }
+  activeFile: null,
+  startTs: null,
   _fileSet: new Set(),
   _totalTokens: 0,
 };
 
 function updateIslandFromEntry(entry) {
   const cat = entry.category;
+  if (!islandState.startTs) islandState.startTs = entry.ts;
+
+  // Track user query
+  if (cat === "user_query" && entry.userQuery) {
+    islandState.userQuery = entry.userQuery.slice(0, 120);
+  }
 
   // Track thinking state
   if (cat === "thinking") {
     islandState.thinking = true;
     islandState.phase = "exploring";
+    if (entry.userQuery && !islandState.userQuery) {
+      islandState.userQuery = entry.userQuery.slice(0, 120);
+    }
   }
 
   // Track tool usage for phase inference
   if (cat === "tool_use" || cat === "pre_tool") {
     islandState.thinking = false;
     const toolName = entry.json?.data?.tool_name || entry.json?.tool_name || entry.title || "";
+    const input = entry.json?.data?.tool_input || {};
     islandState.tool = toolName;
+
+    // Extract detail for the tool
+    let detail = "";
+    if (input.file_path) {
+      const parts = input.file_path.split("/");
+      detail = parts.slice(-2).join("/");
+      islandState.activeFile = input.file_path;
+      islandState._fileSet.add(input.file_path);
+    } else if (input.command) {
+      detail = input.command.split("\n")[0].slice(0, 80);
+    } else if (input.pattern) {
+      detail = input.pattern;
+    } else if (input.description) {
+      detail = input.description.slice(0, 60);
+    }
+    islandState.toolDetail = detail;
+    islandState.files = islandState._fileSet.size;
+
+    // Recent tool history
+    islandState.recentTools.push({ name: toolName, detail, ts: entry.ts });
+    if (islandState.recentTools.length > 5) islandState.recentTools.shift();
 
     // Infer phase from tool patterns
     if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) {
@@ -210,8 +247,7 @@ function updateIslandFromEntry(entry) {
     } else if (["Edit", "Write", "NotebookEdit"].some(t => toolName.includes(t))) {
       islandState.phase = "implementing";
     } else if (toolName.includes("Bash")) {
-      // Could be testing or debugging — keep current phase or default to implementing
-      const cmd = entry.json?.data?.tool_input?.command || "";
+      const cmd = input.command || "";
       if (/test|jest|pytest|cargo test|npm test/.test(cmd)) {
         islandState.phase = "testing";
       } else if (islandState.phase === "idle") {
@@ -220,15 +256,11 @@ function updateIslandFromEntry(entry) {
     } else if (toolName.includes("Agent")) {
       islandState.phase = "planning";
     }
-
-    // Track unique files
-    const fp = entry.json?.data?.tool_input?.file_path;
-    if (fp) islandState._fileSet.add(fp);
-    islandState.files = islandState._fileSet.size;
   }
 
-  // Track errors for "stuck" signal
+  // Track errors
   if (cat === "error") {
+    islandState.errors++;
     islandState.progress = "stuck";
   } else if (cat === "tool_result" || cat === "post_tool") {
     if (islandState.progress === "stuck") islandState.progress = null;
@@ -241,22 +273,27 @@ function updateIslandFromEntry(entry) {
     islandState.tokens = islandState._totalTokens;
   }
 
-  // Session count
   islandState.sessions = sessions.size;
-
   sendIslandUpdate();
 }
 
 function sendIslandUpdate() {
   try {
+    const elapsed = islandState.startTs ? Math.floor((Date.now() - islandState.startTs) / 1000) : 0;
     window.webkit.messageHandlers.islandUpdate.postMessage({
       phase: islandState.phase,
       progress: islandState.progress,
       tool: islandState.tool,
+      toolDetail: islandState.toolDetail,
       files: islandState.files,
       sessions: islandState.sessions,
       tokens: islandState.tokens,
+      errors: islandState.errors,
       thinking: islandState.thinking,
+      userQuery: islandState.userQuery,
+      recentTools: islandState.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
+      activeFile: islandState.activeFile,
+      elapsed: elapsed,
     });
   } catch {}
 }

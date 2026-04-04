@@ -2,6 +2,37 @@
 
 Real-time log viewer and behavioral map for Claude Code sessions. Streams tool calls, thinking blocks, and errors into a floating macOS window with two map modes and multi-session support.
 
+## Branch: feature/dynamic-island
+
+This branch adds three new display modes alongside the existing native window:
+
+### Dynamic Island (done)
+A notch-anchored floating pill at the top of the screen. Shows live session status at a glance.
+
+- **Collapsed pill**: phase dot, phase label, active tool + file detail
+- **Expanded card** (hover to expand): user query, stats (files/tokens/errors/sessions), elapsed time, recent tool history
+- **Warm animation**: subtle glow + size growth before expanding
+- Toggle: `Cmd+Shift+I`
+
+### TUI Companion (done)
+Terminal-based dashboard (`src/tui/index.js`) for use in Ghostty splits. Connects to the WebSocket server and renders a live ANSI-colored event stream with phase, tool, and stats.
+
+### Ghostty Integration (done)
+AppleScript-based auto-split (`scripts/ghostty-split.sh`) that opens the TUI in a left split of the focused Ghostty terminal.
+
+### Mode Toggle (done)
+Switch display modes via `scripts/mode.sh [window|ghostty|island]`. Writes to `~/.claude/logs/loupe-mode`, read by `hook.sh` and `restart.sh`.
+
+### Not yet done
+- Test TUI companion in a live Ghostty split
+- Test full mode switching cycle (window → ghostty → island → window)
+- Ghostty split: handle case where split already exists (avoid duplicates)
+- Island: no data shows when no active session (could show "waiting for session")
+- Island: collapsed pill could animate the tool name when it changes
+- Merge prep: restore main repo files after testing (app.js, Loupe.app binary)
+
+---
+
 ## Maps
 
 Toggle the telescope button (or `m`) to open the map section. Switch between modes with the **Files / Flow** pill.

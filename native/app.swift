@@ -75,10 +75,16 @@ class IslandView: NSView {
     var currentPhase: String = "idle"
     var progressSignal: String? = nil
     var activeToolName: String? = nil
+    var activeToolDetail: String? = nil
     var activeFileCount: Int = 0
     var sessionCount: Int = 0
     var tokenCount: Int = 0
+    var errorCount: Int = 0
     var thinkingActive: Bool = false
+    var userQuery: String? = nil
+    var recentTools: [String] = []
+    var activeFile: String? = nil
+    var elapsedSeconds: Int = 0
 
     let geo: NotchGeometry
 
@@ -351,107 +357,143 @@ class IslandView: NSView {
         NSAttributedString(string: label, attributes: attrs)
             .draw(at: NSPoint(x: dotX + dotR + 10, y: midY - 7))
 
-        // Active tool (right-aligned)
+        // Right side: tool name + brief detail (clipped to pill)
         if let tool = activeToolName {
+            var rightText = tool
+            if let detail = activeToolDetail, !detail.isEmpty {
+                let shortDetail = detail.count > 15 ? String(detail.suffix(13)) : detail
+                rightText = "\(tool) \(shortDetail)"
+            }
+            // Truncate to fit available space
+            let availW = rect.width * 0.45
             let toolAttrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
                 .foregroundColor: NSColor(white: 0.5, alpha: Double(alpha))
             ]
-            let toolStr = NSAttributedString(string: tool, attributes: toolAttrs)
-            toolStr.draw(at: NSPoint(x: rect.maxX - 16 - toolStr.size().width, y: midY - 6))
-        }
-
-        // Session count badge
-        if sessionCount > 1 {
-            let badgeAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .bold),
-                .foregroundColor: NSColor(white: 0.6, alpha: Double(alpha))
-            ]
-            let badgeStr = NSAttributedString(string: "×\(sessionCount)", attributes: badgeAttrs)
-            badgeStr.draw(at: NSPoint(x: rect.maxX - 50 - badgeStr.size().width, y: midY - 5))
+            var display = rightText
+            while NSAttributedString(string: display, attributes: toolAttrs).size().width > availW && display.count > 5 {
+                display = String(display.dropLast(2)) + "…"
+            }
+            let toolStr = NSAttributedString(string: display, attributes: toolAttrs)
+            let drawX = rect.maxX - 14 - toolStr.size().width
+            toolStr.draw(at: NSPoint(x: drawX, y: midY - 6))
         }
     }
 
     private func drawExpanded(in rect: NSRect, ctx: CGContext, alpha: CGFloat) {
         let textColor = NSColor(white: 0.85, alpha: Double(alpha))
-        let dimColor = NSColor(white: 0.5, alpha: Double(alpha))
+        let dimColor = NSColor(white: 0.45, alpha: Double(alpha))
+        let faintColor = NSColor(white: 0.3, alpha: Double(alpha))
+        let pad: CGFloat = 20
+        var y = rect.maxY - 28
 
-        // Header
-        let headerY = rect.maxY - 30
+        // --- Header row: phase + elapsed time ---
         let phaseLabel = thinkingActive ? "thinking" : currentPhase
         let headerAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: textColor
+            .foregroundColor: phaseColor().withAlphaComponent(Double(alpha))
         ]
-        NSAttributedString(string: "Loupe  ·  \(phaseLabel)", attributes: headerAttrs)
-            .draw(at: NSPoint(x: rect.minX + 20, y: headerY))
+        NSAttributedString(string: phaseLabel, attributes: headerAttrs)
+            .draw(at: NSPoint(x: rect.minX + pad, y: y))
 
-        // Signal badge
+        // Elapsed time (right-aligned)
+        if elapsedSeconds > 0 {
+            let mins = elapsedSeconds / 60
+            let secs = elapsedSeconds % 60
+            let timeStr = mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
+            let timeAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+                .foregroundColor: dimColor
+            ]
+            let ts = NSAttributedString(string: timeStr, attributes: timeAttrs)
+            ts.draw(at: NSPoint(x: rect.maxX - pad - ts.size().width, y: y + 2))
+        }
+
+        // Signal badge (if stuck/drifting)
         if let signal = progressSignal {
             let sigColor = IslandView.signalColors[signal] ?? textColor
             let sigAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .bold),
                 .foregroundColor: sigColor.withAlphaComponent(Double(alpha))
             ]
-            NSAttributedString(string: signal, attributes: sigAttrs)
-                .draw(at: NSPoint(x: rect.minX + 20, y: headerY - 22))
+            let sigStr = NSAttributedString(string: " · \(signal.uppercased())", attributes: sigAttrs)
+            let phaseStr = NSAttributedString(string: phaseLabel, attributes: headerAttrs)
+            sigStr.draw(at: NSPoint(x: rect.minX + pad + phaseStr.size().width, y: y + 1))
         }
 
-        // Stats row
-        let statsY = headerY - 50
+        y -= 22
+
+        // --- User query (what the agent is working on) ---
+        if let query = userQuery, !query.isEmpty {
+            let qAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+                .foregroundColor: NSColor(white: 0.65, alpha: Double(alpha))
+            ]
+            let truncated = query.count > 60 ? String(query.prefix(57)) + "..." : query
+            NSAttributedString(string: "❯ \(truncated)", attributes: qAttrs)
+                .draw(at: NSPoint(x: rect.minX + pad, y: y))
+            y -= 18
+        }
+
+        y -= 4
+
+        // --- Stats row ---
         let statsAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
             .foregroundColor: dimColor
         ]
-        let fileStr = activeFileCount > 0 ? "\(activeFileCount) files" : "no files"
-        let tokenStr = tokenCount > 0 ? "  ·  \(formatTokens(tokenCount)) tokens" : ""
-        let sessStr = sessionCount > 1 ? "  ·  \(sessionCount) sessions" : ""
-        NSAttributedString(string: "\(fileStr)\(tokenStr)\(sessStr)", attributes: statsAttrs)
-            .draw(at: NSPoint(x: rect.minX + 20, y: statsY))
+        var stats: [String] = []
+        if activeFileCount > 0 { stats.append("\(activeFileCount) files") }
+        if tokenCount > 0 { stats.append("\(formatTokens(tokenCount)) tokens") }
+        if sessionCount > 1 { stats.append("\(sessionCount) sessions") }
+        if errorCount > 0 { stats.append("\(errorCount) errors") }
+        if !stats.isEmpty {
+            NSAttributedString(string: stats.joined(separator: "  ·  "), attributes: statsAttrs)
+                .draw(at: NSPoint(x: rect.minX + pad, y: y))
+        }
+        y -= 20
 
-        // Active tool detail
-        if let tool = activeToolName {
-            let toolY = statsY - 24
-            let toolAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: textColor
+        // --- Separator ---
+        ctx.setStrokeColor(NSColor(white: 0.2, alpha: Double(alpha)).cgColor)
+        ctx.setLineWidth(0.5)
+        ctx.move(to: CGPoint(x: rect.minX + pad, y: y))
+        ctx.addLine(to: CGPoint(x: rect.maxX - pad, y: y))
+        ctx.strokePath()
+        y -= 14
+
+        // --- Recent tool activity ---
+        let toolHeaderAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold),
+            .foregroundColor: faintColor
+        ]
+        NSAttributedString(string: "RECENT", attributes: toolHeaderAttrs)
+            .draw(at: NSPoint(x: rect.minX + pad, y: y))
+        y -= 16
+
+        let toolsToShow = recentTools.suffix(4)
+        for (i, toolStr) in toolsToShow.enumerated().reversed() {
+            let isCurrent = i == toolsToShow.count - 1
+            let prefix = isCurrent ? "▸ " : "  "
+            let lineAlpha = isCurrent ? alpha : alpha * 0.7
+            let lineAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: isCurrent ? .medium : .regular),
+                .foregroundColor: (isCurrent ? textColor : dimColor).withAlphaComponent(Double(lineAlpha))
             ]
-            NSAttributedString(string: "▸ \(tool)", attributes: toolAttrs)
-                .draw(at: NSPoint(x: rect.minX + 20, y: toolY))
+            let truncTool = toolStr.count > 50 ? String(toolStr.prefix(47)) + "..." : toolStr
+            NSAttributedString(string: "\(prefix)\(truncTool)", attributes: lineAttrs)
+                .draw(at: NSPoint(x: rect.minX + pad, y: y))
+            y -= 15
+            if y < rect.minY + 35 { break }
         }
 
-        // Phase progress bar
-        let barY = rect.minY + 40
-        let barX = rect.minX + 20
-        let barW = rect.width - 40
-        let barH: CGFloat = 4
-
-        // Track
-        ctx.setFillColor(NSColor(white: 0.15, alpha: Double(alpha)).cgColor)
-        let trackPath = CGPath(roundedRect: CGRect(x: barX, y: barY, width: barW, height: barH),
-                               cornerWidth: 2, cornerHeight: 2, transform: nil)
-        ctx.addPath(trackPath)
-        ctx.fillPath()
-
-        // Fill
-        let fill = phaseFill()
-        if fill > 0 {
-            let fillW = barW * fill
-            ctx.setFillColor(phaseColor().withAlphaComponent(Double(alpha) * 0.7).cgColor)
-            let fillPath = CGPath(roundedRect: CGRect(x: barX, y: barY, width: fillW, height: barH),
-                                  cornerWidth: 2, cornerHeight: 2, transform: nil)
-            ctx.addPath(fillPath)
-            ctx.fillPath()
-        }
-
-        // Bottom hint
-        let hintY = rect.minY + 14
+        // --- Bottom hint ---
+        let hintY = rect.minY + 12
         let hintAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular),
-            .foregroundColor: NSColor(white: 0.3, alpha: Double(alpha))
+            .foregroundColor: NSColor(white: 0.25, alpha: Double(alpha))
         ]
         NSAttributedString(string: "⌘⇧I toggle  ·  ⌘⇧L window", attributes: hintAttrs)
-            .draw(at: NSPoint(x: rect.minX + 20, y: hintY))
+            .draw(at: NSPoint(x: rect.minX + pad, y: hintY))
     }
 
     private func phaseFill() -> CGFloat {
@@ -473,14 +515,20 @@ class IslandView: NSView {
 
     // --- Public signal update ---
 
-    func updateSignals(phase: String, progress: String?, tool: String?, files: Int, sessions: Int, tokens: Int, thinking: Bool) {
+    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int) {
         currentPhase = phase
         progressSignal = progress
         activeToolName = tool
+        activeToolDetail = toolDetail
         activeFileCount = files
         sessionCount = sessions
         tokenCount = tokens
+        errorCount = errors
         thinkingActive = thinking
+        self.userQuery = userQuery
+        self.recentTools = recentTools
+        self.activeFile = activeFile
+        self.elapsedSeconds = elapsed
     }
 }
 
@@ -516,8 +564,8 @@ class IslandController {
         islandView = nil
     }
 
-    func updateSignals(phase: String, progress: String?, tool: String?, files: Int, sessions: Int, tokens: Int, thinking: Bool) {
-        islandView?.updateSignals(phase: phase, progress: progress, tool: tool, files: files, sessions: sessions, tokens: tokens, thinking: thinking)
+    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int) {
+        islandView?.updateSignals(phase: phase, progress: progress, tool: tool, toolDetail: toolDetail, files: files, sessions: sessions, tokens: tokens, errors: errors, thinking: thinking, userQuery: userQuery, recentTools: recentTools, activeFile: activeFile, elapsed: elapsed)
     }
 }
 
@@ -586,14 +634,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
 
         // Island signal updates from web UI
         if message.name == "islandUpdate", let data = message.body as? [String: Any] {
-            let phase = data["phase"] as? String ?? "idle"
-            let progress = data["progress"] as? String
-            let tool = data["tool"] as? String
-            let files = data["files"] as? Int ?? 0
-            let sessions = data["sessions"] as? Int ?? 0
-            let tokens = data["tokens"] as? Int ?? 0
-            let thinking = data["thinking"] as? Bool ?? false
-            island.updateSignals(phase: phase, progress: progress, tool: tool, files: files, sessions: sessions, tokens: tokens, thinking: thinking)
+            island.updateSignals(
+                phase: data["phase"] as? String ?? "idle",
+                progress: data["progress"] as? String,
+                tool: data["tool"] as? String,
+                toolDetail: data["toolDetail"] as? String,
+                files: data["files"] as? Int ?? 0,
+                sessions: data["sessions"] as? Int ?? 0,
+                tokens: data["tokens"] as? Int ?? 0,
+                errors: data["errors"] as? Int ?? 0,
+                thinking: data["thinking"] as? Bool ?? false,
+                userQuery: data["userQuery"] as? String,
+                recentTools: data["recentTools"] as? [String] ?? [],
+                activeFile: data["activeFile"] as? String,
+                elapsed: data["elapsed"] as? Int ?? 0
+            )
         }
     }
 
