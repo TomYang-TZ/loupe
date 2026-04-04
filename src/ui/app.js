@@ -187,12 +187,15 @@ const islandState = {
   tokens: 0,
   errors: 0,
   thinking: false,
+  waiting: false,       // waiting for user confirmation
+  waitingTool: null,    // which tool is pending
   userQuery: null,
   recentTools: [],      // last 5: { name, detail, ts }
   activeFile: null,
   startTs: null,
   _fileSet: new Set(),
   _totalTokens: 0,
+  _pendingToolTimer: null,
 };
 
 function updateIslandFromEntry(entry) {
@@ -258,6 +261,26 @@ function updateIslandFromEntry(entry) {
     }
   }
 
+  // Track waiting for confirmation
+  // PreToolUse fires → if no PostToolUse within 3s, agent is waiting for approval
+  if (cat === "tool_use" || cat === "pre_tool") {
+    if (islandState._pendingToolTimer) clearTimeout(islandState._pendingToolTimer);
+    const pendingTool = islandState.tool;
+    islandState._pendingToolTimer = setTimeout(() => {
+      islandState.waiting = true;
+      islandState.waitingTool = pendingTool;
+      sendIslandUpdate();
+    }, 3000);
+  }
+  if (cat === "post_tool" || cat === "tool_result" || cat === "sub_agent_result") {
+    if (islandState._pendingToolTimer) {
+      clearTimeout(islandState._pendingToolTimer);
+      islandState._pendingToolTimer = null;
+    }
+    islandState.waiting = false;
+    islandState.waitingTool = null;
+  }
+
   // Track errors
   if (cat === "error") {
     islandState.errors++;
@@ -290,6 +313,8 @@ function sendIslandUpdate() {
       tokens: islandState.tokens,
       errors: islandState.errors,
       thinking: islandState.thinking,
+      waiting: islandState.waiting,
+      waitingTool: islandState.waitingTool,
       userQuery: islandState.userQuery,
       recentTools: islandState.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
       activeFile: islandState.activeFile,

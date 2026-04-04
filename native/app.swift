@@ -81,6 +81,8 @@ class IslandView: NSView {
     var tokenCount: Int = 0
     var errorCount: Int = 0
     var thinkingActive: Bool = false
+    var waitingForConfirmation: Bool = false
+    var waitingTool: String? = nil
     var userQuery: String? = nil
     var recentTools: [String] = []
     var activeFile: String? = nil
@@ -172,8 +174,8 @@ class IslandView: NSView {
             warmT = warmTarget
         }
 
-        // Pulse for stuck/thinking states
-        if progressSignal == "stuck" || thinkingActive {
+        // Pulse for stuck/thinking/waiting states
+        if progressSignal == "stuck" || thinkingActive || waitingForConfirmation {
             pulsePhase += 0.05
             needsRedraw = true
         }
@@ -339,10 +341,40 @@ class IslandView: NSView {
         return IslandView.phaseColors[currentPhase] ?? IslandView.phaseColors["idle"]!
     }
 
+    private let waitingColor = NSColor(red: 251/255, green: 191/255, blue: 36/255, alpha: 1)  // amber
+
     private func drawCollapsed(in rect: NSRect, ctx: CGContext, alpha: CGFloat) {
         let midY = rect.midY
 
-        // Status dot with pulse
+        // Waiting state overrides normal display
+        if waitingForConfirmation {
+            let dotR: CGFloat = 5
+            let dotX = rect.minX + 16
+            let pulse = 0.6 + 0.4 * CGFloat(sin(Double(pulsePhase) * 2))
+            let dotColor = waitingColor.withAlphaComponent(Double(alpha * pulse))
+
+            // Pulsing amber dot
+            ctx.setFillColor(dotColor.cgColor)
+            ctx.fillEllipse(in: CGRect(x: dotX - dotR, y: midY - dotR, width: dotR * 2, height: dotR * 2))
+
+            // Outer glow ring
+            let ringR = dotR + 3 * pulse
+            ctx.setStrokeColor(waitingColor.withAlphaComponent(Double(alpha * pulse * 0.4)).cgColor)
+            ctx.setLineWidth(1.5)
+            ctx.strokeEllipse(in: CGRect(x: dotX - ringR, y: midY - ringR, width: ringR * 2, height: ringR * 2))
+
+            // Label
+            let waitLabel = waitingTool != nil ? "approve \(waitingTool!)" : "awaiting approval"
+            let waitAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: waitingColor.withAlphaComponent(Double(alpha))
+            ]
+            NSAttributedString(string: waitLabel, attributes: waitAttrs)
+                .draw(at: NSPoint(x: dotX + dotR + 10, y: midY - 7))
+            return
+        }
+
+        // Normal collapsed state
         let dotR: CGFloat = 5
         let dotX = rect.minX + 16
         let color = phaseColor().withAlphaComponent(Double(alpha))
@@ -429,6 +461,26 @@ class IslandView: NSView {
         }
 
         y -= 22
+
+        // --- Waiting banner ---
+        if waitingForConfirmation {
+            let bannerH: CGFloat = 22
+            let bannerRect = CGRect(x: rect.minX + pad - 4, y: y - 4, width: rect.width - 2 * pad + 8, height: bannerH)
+            let bannerPath = CGPath(roundedRect: bannerRect, cornerWidth: 6, cornerHeight: 6, transform: nil)
+            let pulse = 0.7 + 0.3 * CGFloat(sin(Double(pulsePhase) * 2))
+            ctx.setFillColor(waitingColor.withAlphaComponent(Double(alpha) * 0.15 * Double(pulse)).cgColor)
+            ctx.addPath(bannerPath)
+            ctx.fillPath()
+
+            let waitText = waitingTool != nil ? "⚠ Approve \(waitingTool!) to continue" : "⚠ Awaiting approval"
+            let waitAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: waitingColor.withAlphaComponent(Double(alpha))
+            ]
+            NSAttributedString(string: waitText, attributes: waitAttrs)
+                .draw(at: NSPoint(x: rect.minX + pad + 4, y: y))
+            y -= 28
+        }
 
         // --- User query (what the agent is working on) ---
         if let query = userQuery, !query.isEmpty {
@@ -522,7 +574,7 @@ class IslandView: NSView {
 
     // --- Public signal update ---
 
-    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int) {
+    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int) {
         currentPhase = phase
         progressSignal = progress
         activeToolName = tool
@@ -532,6 +584,8 @@ class IslandView: NSView {
         tokenCount = tokens
         errorCount = errors
         thinkingActive = thinking
+        waitingForConfirmation = waiting
+        self.waitingTool = waitingTool
         self.userQuery = userQuery
         self.recentTools = recentTools
         self.activeFile = activeFile
@@ -571,8 +625,8 @@ class IslandController {
         islandView = nil
     }
 
-    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int) {
-        islandView?.updateSignals(phase: phase, progress: progress, tool: tool, toolDetail: toolDetail, files: files, sessions: sessions, tokens: tokens, errors: errors, thinking: thinking, userQuery: userQuery, recentTools: recentTools, activeFile: activeFile, elapsed: elapsed)
+    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int) {
+        islandView?.updateSignals(phase: phase, progress: progress, tool: tool, toolDetail: toolDetail, files: files, sessions: sessions, tokens: tokens, errors: errors, thinking: thinking, waiting: waiting, waitingTool: waitingTool, userQuery: userQuery, recentTools: recentTools, activeFile: activeFile, elapsed: elapsed)
     }
 }
 
@@ -651,6 +705,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
                 tokens: data["tokens"] as? Int ?? 0,
                 errors: data["errors"] as? Int ?? 0,
                 thinking: data["thinking"] as? Bool ?? false,
+                waiting: data["waiting"] as? Bool ?? false,
+                waitingTool: data["waitingTool"] as? String,
                 userQuery: data["userQuery"] as? String,
                 recentTools: data["recentTools"] as? [String] ?? [],
                 activeFile: data["activeFile"] as? String,
