@@ -177,59 +177,75 @@ function assignToGroup(entry) {
 
 // ===== Dynamic Island Bridge =====
 // Sends condensed state signals to the native app's Dynamic Island
-const islandState = {
-  phase: "idle",
-  progress: null,
-  tool: null,
-  toolDetail: null,
-  files: 0,
-  sessions: 0,
-  tokens: 0,
-  errors: 0,
-  thinking: false,
-  waiting: false,       // waiting for user confirmation
-  waitingTool: null,    // which tool is pending
-  userQuery: null,
-  recentTools: [],      // last 5: { name, detail, ts }
-  activeFile: null,
-  startTs: null,
-  _fileSet: new Set(),
-  _totalTokens: 0,
-  _pendingToolTimer: null,
-};
+// Per-session tracking for multi-dot display
+
+const islandSessions = new Map(); // sessionId -> per-session state
+
+function getIslandSession(sid) {
+  if (!islandSessions.has(sid)) {
+    islandSessions.set(sid, {
+      id: sid,
+      label: "",
+      phase: "idle",
+      progress: null,
+      tool: null,
+      toolDetail: null,
+      thinking: false,
+      waiting: false,
+      waitingTool: null,
+      yourTurn: false,
+      userQuery: null,
+      recentTools: [],
+      errors: 0,
+      tokens: 0,
+      files: 0,
+      activeFile: null,
+      startTs: null,
+      _fileSet: new Set(),
+      _totalTokens: 0,
+      _pendingToolTimer: null,
+      _idleTimer: null,
+    });
+  }
+  return islandSessions.get(sid);
+}
 
 function updateIslandFromEntry(entry) {
   const cat = entry.category;
-  if (!islandState.startTs) islandState.startTs = entry.ts;
+  const sid = entry.sessionId;
+  if (!sid) { sendIslandUpdate(); return; } // skip entries without session
+  const s = getIslandSession(sid);
+  if (!s.startTs) s.startTs = entry.ts;
+
+  // Session label
+  const sInfo = sessions.get(sid);
+  if (sInfo) s.label = sInfo.label;
 
   // Track user query
   if (cat === "user_query" && entry.userQuery) {
-    islandState.userQuery = entry.userQuery.slice(0, 120);
+    s.userQuery = entry.userQuery.slice(0, 120);
   }
 
-  // Track thinking state
+  // Track thinking
   if (cat === "thinking") {
-    islandState.thinking = true;
-    islandState.phase = "exploring";
-    if (entry.userQuery && !islandState.userQuery) {
-      islandState.userQuery = entry.userQuery.slice(0, 120);
-    }
+    s.thinking = true;
+    s.phase = "exploring";
+    if (entry.userQuery && !s.userQuery) s.userQuery = entry.userQuery.slice(0, 120);
   }
 
-  // Track tool usage for phase inference
+  // Track tool usage
   if (cat === "tool_use" || cat === "pre_tool") {
-    islandState.thinking = false;
+    s.thinking = false;
     const toolName = entry.json?.data?.tool_name || entry.json?.tool_name || entry.title || "";
     const input = entry.json?.data?.tool_input || {};
-    islandState.tool = toolName;
+    s.tool = toolName;
 
-    // Extract detail for the tool
     let detail = "";
     if (input.file_path) {
       const parts = input.file_path.split("/");
       detail = parts.slice(-2).join("/");
-      islandState.activeFile = input.file_path;
-      islandState._fileSet.add(input.file_path);
+      s.activeFile = input.file_path;
+      s._fileSet.add(input.file_path);
     } else if (input.command) {
       detail = input.command.split("\n")[0].slice(0, 80);
     } else if (input.pattern) {
@@ -237,91 +253,122 @@ function updateIslandFromEntry(entry) {
     } else if (input.description) {
       detail = input.description.slice(0, 60);
     }
-    islandState.toolDetail = detail;
-    islandState.files = islandState._fileSet.size;
+    s.toolDetail = detail;
+    s.files = s._fileSet.size;
 
-    // Recent tool history
-    islandState.recentTools.push({ name: toolName, detail, ts: entry.ts });
-    if (islandState.recentTools.length > 5) islandState.recentTools.shift();
+    s.recentTools.push({ name: toolName, detail, ts: entry.ts });
+    if (s.recentTools.length > 5) s.recentTools.shift();
 
-    // Infer phase from tool patterns
-    if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) {
-      islandState.phase = "exploring";
-    } else if (["Edit", "Write", "NotebookEdit"].some(t => toolName.includes(t))) {
-      islandState.phase = "implementing";
-    } else if (toolName.includes("Bash")) {
+    if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) s.phase = "exploring";
+    else if (["Edit", "Write", "NotebookEdit"].some(t => toolName.includes(t))) s.phase = "implementing";
+    else if (toolName.includes("Bash")) {
       const cmd = input.command || "";
-      if (/test|jest|pytest|cargo test|npm test/.test(cmd)) {
-        islandState.phase = "testing";
-      } else if (islandState.phase === "idle") {
-        islandState.phase = "implementing";
-      }
-    } else if (toolName.includes("Agent")) {
-      islandState.phase = "planning";
-    }
+      if (/test|jest|pytest|cargo test|npm test/.test(cmd)) s.phase = "testing";
+      else if (s.phase === "idle") s.phase = "implementing";
+    } else if (toolName.includes("Agent")) s.phase = "planning";
   }
 
-  // Track waiting for confirmation
-  // PreToolUse fires → if no PostToolUse within 3s, agent is waiting for approval
+  // Waiting for confirmation
   if (cat === "tool_use" || cat === "pre_tool") {
-    if (islandState._pendingToolTimer) clearTimeout(islandState._pendingToolTimer);
-    const pendingTool = islandState.tool;
-    islandState._pendingToolTimer = setTimeout(() => {
-      islandState.waiting = true;
-      islandState.waitingTool = pendingTool;
+    if (s._pendingToolTimer) clearTimeout(s._pendingToolTimer);
+    const pendingTool = s.tool;
+    s._pendingToolTimer = setTimeout(() => {
+      s.waiting = true;
+      s.waitingTool = pendingTool;
       sendIslandUpdate();
-    }, 3000);
+    }, 8000);
   }
-  // Clear waiting on: PostToolUse, tool_result, or any new activity (thinking, user_query, new PreToolUse)
-  // This handles rejections where no PostToolUse fires
   if (cat === "post_tool" || cat === "tool_result" || cat === "sub_agent_result" ||
       cat === "thinking" || cat === "user_query") {
-    if (islandState._pendingToolTimer) {
-      clearTimeout(islandState._pendingToolTimer);
-      islandState._pendingToolTimer = null;
-    }
-    islandState.waiting = false;
-    islandState.waitingTool = null;
+    if (s._pendingToolTimer) { clearTimeout(s._pendingToolTimer); s._pendingToolTimer = null; }
+    s.waiting = false;
+    s.waitingTool = null;
   }
 
-  // Track errors
-  if (cat === "error") {
-    islandState.errors++;
-    islandState.progress = "stuck";
-  } else if (cat === "tool_result" || cat === "post_tool") {
-    if (islandState.progress === "stuck") islandState.progress = null;
+  // Errors
+  if (cat === "error") { s.errors++; s.progress = "stuck"; }
+  else if (cat === "tool_result" || cat === "post_tool") {
+    if (s.progress === "stuck") s.progress = null;
   }
 
-  // Track tokens
+  // Tokens
   const usage = entry.json?.data?.message?.usage || entry.json?.message?.usage;
   if (usage) {
-    islandState._totalTokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
-    islandState.tokens = islandState._totalTokens;
+    s._totalTokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
+    s.tokens = s._totalTokens;
   }
 
-  islandState.sessions = sessions.size;
+  // Idle → your turn (per session)
+  // Only count down after non-thinking events. Thinking = agent still working.
+  s.yourTurn = false;
+  if (cat === "thinking") {
+    // Agent is thinking — cancel any pending "your turn"
+    if (s._idleTimer) { clearTimeout(s._idleTimer); s._idleTimer = null; }
+  } else {
+    // Non-thinking event (tool, text, etc.) — start 10s countdown
+    if (s._idleTimer) clearTimeout(s._idleTimer);
+    s._idleTimer = setTimeout(() => {
+      s.yourTurn = true;
+      s.thinking = false;
+      sendIslandUpdate();
+    }, 10000);
+  }
+
+  // Prune stale sessions (no events for 5 min)
+  const now = Date.now();
+  for (const [id, ss] of islandSessions) {
+    const lastEvent = ss.recentTools.length > 0 ? ss.recentTools[ss.recentTools.length - 1].ts : (ss.startTs || 0);
+    if (now - lastEvent > 5 * 60 * 1000) {
+      if (ss._idleTimer) clearTimeout(ss._idleTimer);
+      if (ss._pendingToolTimer) clearTimeout(ss._pendingToolTimer);
+      islandSessions.delete(id);
+    }
+  }
+
   sendIslandUpdate();
 }
 
 function sendIslandUpdate() {
   try {
-    const elapsed = islandState.startTs ? Math.floor((Date.now() - islandState.startTs) / 1000) : 0;
+    // Most recently active session drives the main display
+    let active = null;
+    let latestTs = 0;
+    for (const [, s] of islandSessions) {
+      const t = s.recentTools.length > 0 ? s.recentTools[s.recentTools.length - 1].ts : (s.startTs || 0);
+      if (t > latestTs) { latestTs = t; active = s; }
+    }
+    if (!active) active = { phase: "idle", progress: null, tool: null, toolDetail: null, files: 0, tokens: 0, errors: 0, thinking: false, waiting: false, waitingTool: null, yourTurn: false, userQuery: null, recentTools: [], activeFile: null, startTs: null };
+
+    // Build session dots: { status: "working"|"waiting"|"yourTurn"|"stuck", label }
+    const sessionDots = [];
+    for (const [, s] of islandSessions) {
+      let status = "working";
+      if (s.yourTurn) status = "yourTurn";
+      else if (s.waiting) status = "waiting";
+      else if (s.progress === "stuck") status = "stuck";
+      else if (s.thinking) status = "thinking";
+      sessionDots.push({ status, label: s.label || s.id.slice(0, 6) });
+    }
+
+    const elapsed = active.startTs ? Math.floor((Date.now() - active.startTs) / 1000) : 0;
     window.webkit.messageHandlers.islandUpdate.postMessage({
-      phase: islandState.phase,
-      progress: islandState.progress,
-      tool: islandState.tool,
-      toolDetail: islandState.toolDetail,
-      files: islandState.files,
-      sessions: islandState.sessions,
-      tokens: islandState.tokens,
-      errors: islandState.errors,
-      thinking: islandState.thinking,
-      waiting: islandState.waiting,
-      waitingTool: islandState.waitingTool,
-      userQuery: islandState.userQuery,
-      recentTools: islandState.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
-      activeFile: islandState.activeFile,
+      phase: active.phase,
+      progress: active.progress,
+      tool: active.tool,
+      toolDetail: active.toolDetail,
+      files: active.files,
+      sessions: islandSessions.size,
+      tokens: active.tokens,
+      errors: active.errors,
+      thinking: active.thinking,
+      waiting: active.waiting,
+      waitingTool: active.waitingTool,
+      yourTurn: active.yourTurn,
+      userQuery: active.userQuery,
+      recentTools: active.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
+      activeFile: active.activeFile,
       elapsed: elapsed,
+      sessionDots: sessionDots,
     });
   } catch {}
 }

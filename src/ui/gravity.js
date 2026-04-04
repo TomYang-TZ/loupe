@@ -510,6 +510,25 @@ const Gravity = (() => {
     // Compute Y targets based on lane mode (visible nodes only)
     computeLanes(visibleForLayout, dirGroups, usableH, padTop);
 
+    // Stagger Y within lanes so edges aren't collinear.
+    // Deterministic jitter based on node key hash — consistent across rebuilds.
+    for (const n of visibleForLayout) {
+      const laneH = (n._laneYMax || 0) - (n._laneYMin || 0);
+      if (laneH > 30) {
+        // Hash the node key to get a stable pseudo-random value
+        let h = 0;
+        const nk = n.id || "";
+        for (let i = 0; i < nk.length; i++) h = ((h << 5) - h + nk.charCodeAt(i)) | 0;
+        const jitter = ((h & 0xffff) / 0xffff - 0.5) * laneH * 0.6;
+        n._targetY += jitter;
+        // Clamp within lane bounds
+        const r = nodeRadius(n);
+        const lo = (n._laneYMin || 0) + r + 4;
+        const hi = (n._laneYMax || 0) - r - 4;
+        if (lo < hi) n._targetY = Math.max(lo, Math.min(hi, n._targetY));
+      }
+    }
+
     // Pin visible nodes' X; unpin invisible ones
     for (const n of nodeArray) {
       n.fx = nodeVisibleForLayout(n) ? n._targetX : undefined;
