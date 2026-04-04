@@ -519,7 +519,7 @@ const Gravity = (() => {
         let h = 0;
         const nk = n.id || "";
         for (let i = 0; i < nk.length; i++) h = ((h << 5) - h + nk.charCodeAt(i)) | 0;
-        const jitter = ((h & 0xffff) / 0xffff - 0.5) * laneH * 0.6;
+        const jitter = ((h & 0xffff) / 0xffff - 0.5) * laneH * 0.25;
         n._targetY += jitter;
         // Clamp within lane bounds
         const r = nodeRadius(n);
@@ -572,7 +572,7 @@ const Gravity = (() => {
     } else {
       for (const n of nodeArray) {
         n.x = n._targetX;
-        n.y = n._targetY;
+        n.y = n._targetY;  // already includes jitter
         n.vx = 0;
         n.vy = 0;
       }
