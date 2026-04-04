@@ -401,8 +401,7 @@ class IslandView: NSView {
         if let tool = activeToolName {
             var rightText = tool
             if let detail = activeToolDetail, !detail.isEmpty {
-                let shortDetail = detail.count > 15 ? String(detail.suffix(13)) : detail
-                rightText = "\(tool) \(shortDetail)"
+                rightText = "\(tool) \(detail)"
             }
             let labelEndX = labelX + labelStr.size().width + 12  // gap after phase label
             let availW = rect.maxX - 14 - labelEndX
@@ -605,6 +604,9 @@ class IslandController {
     var panel: IslandPanel?
     var islandView: IslandView?
 
+    // Cached signals so we can restore state after toggle
+    private var lastSignals: (phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int)?
+
     func setup(screen: NSScreen) {
         teardown()
         let geo = NotchGeometry.detect(screen: screen)
@@ -618,6 +620,11 @@ class IslandController {
 
         self.panel = panel
         self.islandView = view
+
+        // Restore last known state
+        if let s = lastSignals {
+            view.updateSignals(phase: s.phase, progress: s.progress, tool: s.tool, toolDetail: s.toolDetail, files: s.files, sessions: s.sessions, tokens: s.tokens, errors: s.errors, thinking: s.thinking, waiting: s.waiting, waitingTool: s.waitingTool, userQuery: s.userQuery, recentTools: s.recentTools, activeFile: s.activeFile, elapsed: s.elapsed)
+        }
     }
 
     func show() { panel?.orderFrontRegardless() }
@@ -630,6 +637,7 @@ class IslandController {
     }
 
     func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int) {
+        lastSignals = (phase, progress, tool, toolDetail, files, sessions, tokens, errors, thinking, waiting, waitingTool, userQuery, recentTools, activeFile, elapsed)
         islandView?.updateSignals(phase: phase, progress: progress, tool: tool, toolDetail: toolDetail, files: files, sessions: sessions, tokens: tokens, errors: errors, thinking: thinking, waiting: waiting, waitingTool: waitingTool, userQuery: userQuery, recentTools: recentTools, activeFile: activeFile, elapsed: elapsed)
     }
 }

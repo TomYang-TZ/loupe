@@ -272,7 +272,10 @@ function updateIslandFromEntry(entry) {
       sendIslandUpdate();
     }, 3000);
   }
-  if (cat === "post_tool" || cat === "tool_result" || cat === "sub_agent_result") {
+  // Clear waiting on: PostToolUse, tool_result, or any new activity (thinking, user_query, new PreToolUse)
+  // This handles rejections where no PostToolUse fires
+  if (cat === "post_tool" || cat === "tool_result" || cat === "sub_agent_result" ||
+      cat === "thinking" || cat === "user_query") {
     if (islandState._pendingToolTimer) {
       clearTimeout(islandState._pendingToolTimer);
       islandState._pendingToolTimer = null;
