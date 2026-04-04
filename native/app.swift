@@ -83,7 +83,7 @@ class IslandView: NSView {
     var thinkingActive: Bool = false
     var waitingForConfirmation: Bool = false
     var waitingTool: String? = nil
-    var yourTurnActive: Bool = false
+    var idleSeconds: Int = 0
     var sessionDots: [(status: String, label: String)] = []
     var userQuery: String? = nil
     var recentTools: [String] = []
@@ -177,7 +177,7 @@ class IslandView: NSView {
         }
 
         // Pulse for stuck/thinking/waiting states
-        if progressSignal == "stuck" || thinkingActive || waitingForConfirmation || yourTurnActive {
+        if progressSignal == "stuck" || thinkingActive || waitingForConfirmation {
             pulsePhase += 0.05
             needsRedraw = true
         }
@@ -349,7 +349,7 @@ class IslandView: NSView {
         "working":  NSColor(red: 59/255, green: 130/255, blue: 246/255, alpha: 1),   // blue
         "thinking": NSColor(red: 147/255, green: 51/255, blue: 234/255, alpha: 1),   // purple
         "waiting":  NSColor(red: 251/255, green: 191/255, blue: 36/255, alpha: 1),   // amber
-        "yourTurn": NSColor(red: 34/255, green: 197/255, blue: 94/255, alpha: 1),    // green
+        "idle":     NSColor(white: 0.35, alpha: 1),                                  // gray
         "stuck":    NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1),    // red
     ]
 
@@ -360,7 +360,7 @@ class IslandView: NSView {
 
         // Draw session dots (one per session)
         let dots = sessionDots.isEmpty
-            ? [(status: yourTurnActive ? "yourTurn" : (waitingForConfirmation ? "waiting" : (thinkingActive ? "thinking" : "working")), label: "")]
+            ? [(status: waitingForConfirmation ? "waiting" : (thinkingActive ? "thinking" : (currentPhase == "idle" ? "idle" : "working")), label: "")]
             : sessionDots
 
         for (i, dot) in dots.enumerated() {
@@ -371,7 +371,7 @@ class IslandView: NSView {
             ctx.setFillColor(dotColor.withAlphaComponent(Double(alpha * pulse)).cgColor)
             ctx.fillEllipse(in: CGRect(x: cursorX - dotR, y: midY - dotR, width: dotR * 2, height: dotR * 2))
 
-            // Glow ring for waiting only (not yourTurn)
+            // Glow ring for waiting only
             if dot.status == "waiting" {
                 let ringR = dotR + 2.5 * pulse
                 ctx.setStrokeColor(dotColor.withAlphaComponent(Double(alpha * pulse * 0.3)).cgColor)
@@ -384,15 +384,17 @@ class IslandView: NSView {
 
         cursorX += 4
 
-        // Status label — derived from most active session's state
+        // Status label
         let label: String
         let labelColor: NSColor
-        if yourTurnActive && !waitingForConfirmation {
-            label = "your turn"
-            labelColor = IslandView.dotStatusColors["yourTurn"]!
-        } else if waitingForConfirmation {
+        if waitingForConfirmation {
             label = waitingTool != nil ? "approve \(waitingTool!)" : "awaiting approval"
             labelColor = waitingColor
+        } else if currentPhase == "idle" && idleSeconds > 0 {
+            let mins = idleSeconds / 60
+            let secs = idleSeconds % 60
+            label = mins > 0 ? "idle \(mins)m \(secs)s" : "idle \(secs)s"
+            labelColor = NSColor(white: 0.5, alpha: 1)
         } else {
             label = thinkingActive ? "thinking" : currentPhase
             labelColor = NSColor(white: 0.85, alpha: 1)
@@ -406,7 +408,7 @@ class IslandView: NSView {
         labelStr.draw(at: NSPoint(x: cursorX, y: midY - 7))
 
         // Right side: tool name + brief detail (must not overlap phase label)
-        if let tool = activeToolName, !yourTurnActive, !waitingForConfirmation {
+        if let tool = activeToolName, !waitingForConfirmation, currentPhase != "idle" {
             var rightText = tool
             if let detail = activeToolDetail, !detail.isEmpty {
                 rightText = "\(tool) \(detail)"
@@ -584,7 +586,7 @@ class IslandView: NSView {
 
     // --- Public signal update ---
 
-    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, yourTurn: Bool, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String)]) {
+    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String)]) {
         currentPhase = phase
         progressSignal = progress
         activeToolName = tool
@@ -596,7 +598,7 @@ class IslandView: NSView {
         thinkingActive = thinking
         waitingForConfirmation = waiting
         self.waitingTool = waitingTool
-        self.yourTurnActive = yourTurn
+        self.idleSeconds = idleSeconds
         self.sessionDots = sessionDots
         self.userQuery = userQuery
         self.recentTools = recentTools
@@ -615,7 +617,7 @@ class IslandController {
     var islandView: IslandView?
 
     // Cached signals so we can restore state after toggle
-    private var lastSignals: (phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, yourTurn: Bool, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String)])?
+    private var lastSignals: (phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String)])?
 
     func setup(screen: NSScreen) {
         teardown()
@@ -633,7 +635,7 @@ class IslandController {
 
         // Restore last known state
         if let s = lastSignals {
-            view.updateSignals(phase: s.phase, progress: s.progress, tool: s.tool, toolDetail: s.toolDetail, files: s.files, sessions: s.sessions, tokens: s.tokens, errors: s.errors, thinking: s.thinking, waiting: s.waiting, waitingTool: s.waitingTool, yourTurn: s.yourTurn, userQuery: s.userQuery, recentTools: s.recentTools, activeFile: s.activeFile, elapsed: s.elapsed, sessionDots: s.sessionDots)
+            view.updateSignals(phase: s.phase, progress: s.progress, tool: s.tool, toolDetail: s.toolDetail, files: s.files, sessions: s.sessions, tokens: s.tokens, errors: s.errors, thinking: s.thinking, waiting: s.waiting, waitingTool: s.waitingTool, idleSeconds: s.idleSeconds, userQuery: s.userQuery, recentTools: s.recentTools, activeFile: s.activeFile, elapsed: s.elapsed, sessionDots: s.sessionDots)
         }
     }
 
@@ -646,9 +648,9 @@ class IslandController {
         islandView = nil
     }
 
-    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, yourTurn: Bool, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String)]) {
-        lastSignals = (phase, progress, tool, toolDetail, files, sessions, tokens, errors, thinking, waiting, waitingTool, yourTurn, userQuery, recentTools, activeFile, elapsed, sessionDots)
-        islandView?.updateSignals(phase: phase, progress: progress, tool: tool, toolDetail: toolDetail, files: files, sessions: sessions, tokens: tokens, errors: errors, thinking: thinking, waiting: waiting, waitingTool: waitingTool, yourTurn: yourTurn, userQuery: userQuery, recentTools: recentTools, activeFile: activeFile, elapsed: elapsed, sessionDots: sessionDots)
+    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String)]) {
+        lastSignals = (phase, progress, tool, toolDetail, files, sessions, tokens, errors, thinking, waiting, waitingTool, idleSeconds, userQuery, recentTools, activeFile, elapsed, sessionDots)
+        islandView?.updateSignals(phase: phase, progress: progress, tool: tool, toolDetail: toolDetail, files: files, sessions: sessions, tokens: tokens, errors: errors, thinking: thinking, waiting: waiting, waitingTool: waitingTool, idleSeconds: idleSeconds, userQuery: userQuery, recentTools: recentTools, activeFile: activeFile, elapsed: elapsed, sessionDots: sessionDots)
     }
 }
 
@@ -729,7 +731,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
                 thinking: data["thinking"] as? Bool ?? false,
                 waiting: data["waiting"] as? Bool ?? false,
                 waitingTool: data["waitingTool"] as? String,
-                yourTurn: data["yourTurn"] as? Bool ?? false,
+                idleSeconds: data["idleSeconds"] as? Int ?? 0,
                 userQuery: data["userQuery"] as? String,
                 recentTools: data["recentTools"] as? [String] ?? [],
                 activeFile: data["activeFile"] as? String,

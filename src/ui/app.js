@@ -193,7 +193,7 @@ function getIslandSession(sid) {
       thinking: false,
       waiting: false,
       waitingTool: null,
-      yourTurn: false,
+      idleSince: null,
       userQuery: null,
       recentTools: [],
       errors: 0,
@@ -298,20 +298,18 @@ function updateIslandFromEntry(entry) {
     s.tokens = s._totalTokens;
   }
 
-  // Idle → your turn (per session)
-  // Only count down after non-thinking events. Thinking = agent still working.
-  s.yourTurn = false;
-  if (cat === "thinking") {
-    // Agent is thinking — cancel any pending "your turn"
-    if (s._idleTimer) { clearTimeout(s._idleTimer); s._idleTimer = null; }
-  } else {
-    // Non-thinking event (tool, text, etc.) — start 10s countdown
+  // Idle detection: reset to idle after 10s of no non-thinking events
+  s.idleSince = null;
+  if (cat !== "thinking") {
     if (s._idleTimer) clearTimeout(s._idleTimer);
     s._idleTimer = setTimeout(() => {
-      s.yourTurn = true;
+      s.phase = "idle";
+      s.tool = null;
+      s.toolDetail = null;
       s.thinking = false;
+      s.idleSince = Date.now();
       sendIslandUpdate();
-    }, 10000);
+    }, 20000);
   }
 
   // Prune stale sessions (no events for 5 min)
@@ -343,7 +341,7 @@ function sendIslandUpdate() {
     const sessionDots = [];
     for (const [, s] of islandSessions) {
       let status = "working";
-      if (s.yourTurn) status = "yourTurn";
+      if (s.phase === "idle") status = "idle";
       else if (s.waiting) status = "waiting";
       else if (s.progress === "stuck") status = "stuck";
       else if (s.thinking) status = "thinking";
@@ -363,7 +361,7 @@ function sendIslandUpdate() {
       thinking: active.thinking,
       waiting: active.waiting,
       waitingTool: active.waitingTool,
-      yourTurn: active.yourTurn,
+      idleSeconds: active.idleSince ? Math.floor((Date.now() - active.idleSince) / 1000) : 0,
       userQuery: active.userQuery,
       recentTools: active.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
       activeFile: active.activeFile,
@@ -372,6 +370,12 @@ function sendIslandUpdate() {
     });
   } catch {}
 }
+
+// Periodic update so idle seconds tick up in the pill
+setInterval(() => {
+  const hasIdle = [...islandSessions.values()].some(s => s.idleSince);
+  if (hasIdle) sendIslandUpdate();
+}, 1000);
 
 // DOM
 const paneContainer = document.getElementById("pane-container");
