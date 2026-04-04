@@ -419,6 +419,92 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // API: Get condensed session timeline for replay popover
+  if (url === "/api/session-timeline" && req.method === "POST") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const { sessionId } = JSON.parse(body);
+        if (!sessionId) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "sessionId required" }));
+          return;
+        }
+
+        const claudeProjectsDir = path.join(process.env.HOME, ".claude", "projects");
+        let rawSessionFile = null;
+        try {
+          for (const projDir of fs.readdirSync(claudeProjectsDir)) {
+            const candidate = path.join(claudeProjectsDir, projDir, `${sessionId}.jsonl`);
+            if (fs.existsSync(candidate)) { rawSessionFile = candidate; break; }
+          }
+        } catch {}
+
+        if (!rawSessionFile) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Session file not found", timeline: [] }));
+          return;
+        }
+
+        const content = fs.readFileSync(rawSessionFile, "utf-8");
+        const lines = content.split("\n").filter(l => l.trim());
+        const timeline = [];
+        let entryNum = 0;
+
+        for (const line of lines) {
+          try {
+            const obj = JSON.parse(line);
+            entryNum++;
+            const type = obj.type;
+
+            if (type === "user") {
+              const c = obj.message?.content;
+              let text = typeof c === "string" ? c :
+                Array.isArray(c) ? c.filter(b => typeof b === "string" || b.type === "text").map(b => typeof b === "string" ? b : b.text).join(" ") : "";
+              text = text.replace(/\s*\[Image #\d+\]\s*/g, " ").trim();
+              if (text) timeline.push({ n: entryNum, type: "user", text: text.slice(0, 200) });
+            }
+
+            if (type === "assistant" && obj.message?.content) {
+              for (const block of obj.message.content) {
+                if (block.type === "thinking" && block.thinking) {
+                  timeline.push({ n: entryNum, type: "think", text: block.thinking.slice(0, 120).replace(/\n/g, " ") });
+                } else if (block.type === "tool_use") {
+                  const input = block.input || {};
+                  let detail = input.file_path || input.command?.split("\n")[0]?.slice(0, 80) || input.pattern || input.description || "";
+                  timeline.push({ n: entryNum, type: "tool", tool: block.name || "?", detail: detail.slice(0, 100) });
+                } else if (block.type === "text" && block.text) {
+                  timeline.push({ n: entryNum, type: "text", text: block.text.slice(0, 120).replace(/\n/g, " ") });
+                }
+              }
+              const usage = obj.message?.usage;
+              if (usage) {
+                timeline[timeline.length - 1].tokens = { in: usage.input_tokens, out: usage.output_tokens };
+              }
+            }
+
+            if (type === "tool_result" || type === "tool_response") {
+              const isError = obj.is_error;
+              if (isError) {
+                const c = obj.content || obj.output || "";
+                const text = typeof c === "string" ? c : Array.isArray(c) ? c.map(b => typeof b === "string" ? b : b.text || "").join(" ") : String(c);
+                timeline.push({ n: entryNum, type: "error", text: text.split("\n")[0].slice(0, 150) });
+              }
+            }
+          } catch {}
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ timeline, totalEntries: entryNum }));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
   // API: Replay analysis via Claude CLI
   if (url === "/api/replay-analysis" && req.method === "POST") {
     let body = "";
@@ -481,34 +567,48 @@ const server = http.createServer((req, res) => {
           condensedLog = condensed.join("\n");
         }
 
-        const prompt = `You are analyzing a Claude Code agent session. Below is the full condensed transcript from the raw session log — it includes user messages, assistant thinking, tool calls, tool results, and errors.
+        const prompt = `You are analyzing a Claude Code agent session transcript. Produce a structured analysis in the EXACT format below. Be specific — cite tool names, file names, and entry numbers. Be concise but insightful.
 
-Analyze the session and provide a structured analysis:
+## Session Profile
+- **Task**: [1-sentence: what was the agent trying to do?]
+- **Outcome**: [succeeded / partially succeeded / failed / abandoned]
+- **Duration**: [estimate from timestamps, e.g. "~8 minutes active across 47 entries"]
+- **Behavioral Archetype**: [Pick ONE: focused-executor | explorer-debugger | loop-fighter | methodical-planner | rapid-iterater | deep-diver] — [1-sentence justification]
 
-## Summary
-What was the agent trying to accomplish? What was the outcome?
+## Time Breakdown
+Show approximate % of session time in each phase. Use a simple bar:
+- Exploring: [██░░░░░░░░] ~20%
+- Implementing: [████░░░░░░] ~40%
+- Debugging: [██░░░░░░░░] ~20%
+- Testing: [█░░░░░░░░░] ~10%
+- Planning: [█░░░░░░░░░] ~10%
 
-## Approach Timeline
-Key phases: what did the agent do first, what pivots occurred, what was the final approach?
+## Key Phases
+Number the major phases chronologically. For each:
+1. **[Phase name]** (entries ~N-M) — What happened, key decisions, outcome
 
-## Loops & Inefficiencies
-Where did the agent repeat itself or get stuck? Which files/tools were revisited unnecessarily? What eventually broke each loop?
+## Anomalies & Warnings
+Flag unusual behaviors the human operator should know about:
+- Loops: Where did the agent get stuck? How long? What broke the loop?
+- Wasted effort: Actions that contributed nothing to the outcome
+- Missed shortcuts: Files or approaches that should have been tried earlier
+- Error spirals: Cascading errors from a single root cause
 
-## Root Cause
-If there was a bug or issue, what was the actual root cause vs what the agent initially investigated?
+## Recommendations for Next Time
+Actionable advice for a human using this agent on similar tasks:
+- [Specific recommendation 1]
+- [Specific recommendation 2]
+- [Specific recommendation 3]
 
-## Key Insights
-What new information or change in approach led to progress? Were there any files or configs that should have been checked earlier?
-
-## Efficiency Rating
-Rate 1-10 with brief justification. Consider: time in loops, directness of approach, unnecessary tool calls.
+## Efficiency Score
+**[N]/10** — [1-sentence justification]
 
 ---
 SESSION LOG (${condensed.length} entries from raw transcript):
 ${condensedLog}`;
 
         try {
-          const analysis = execSync("claude --print -m sonnet", {
+          const analysis = execSync("claude --print --model sonnet", {
             input: prompt,
             timeout: 120000,
             encoding: "utf-8",

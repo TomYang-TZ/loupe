@@ -34,6 +34,12 @@ let firstEventTs = null;
 let lastEventTime = 0;
 const sessions = new Map();
 
+// ===== Sub-agent Session Mapping =====
+// When Agent tool fires, parent session spawns a sub-agent with its own session_id.
+// Map child session_ids back to parent so they nest correctly.
+const childSessionMap = new Map();   // childSessionId -> parentSessionId
+const pendingAgentSpawns = new Map(); // parentSessionId -> { ts, count }
+
 // ===== Task/Query Grouping State =====
 const TASK_GAP_MS = 5 * 60 * 1000; // 5 minutes between queries = new task
 let taskIdCounter = 0;
@@ -60,9 +66,12 @@ function assignToGroup(entry) {
 
   // user_query or thinking with userQuery = new query boundary
   // But skip if the current query already has the same userQuery (dedup)
+  // Also skip if we're inside an agent stack — sub-agent thinking/queries
+  // should nest as agent children, not create new top-level queries
+  const insideAgent = gs.agentStack.length > 0;
   const isDuplicate = gs.currentQuery && entry.userQuery &&
     gs.currentQuery.userQuery === entry.userQuery;
-  const isQueryBoundary = !isDuplicate && (
+  const isQueryBoundary = !insideAgent && !isDuplicate && (
     (entry.category === "user_query" && entry.userQuery) ||
     (entry.category === "thinking" && entry.userQuery)
   );
@@ -579,12 +588,43 @@ function handleLine(msg) {
   const title = extractTitle(msg, category);
   const summary = extractSummary(msg, category);
   const body = extractBody(msg, category);
-  const sessionId = extractSessionId(msg);
+  let sessionId = extractSessionId(msg);
   const sessionLabel = extractSessionLabel(msg);
   const userQuery = extractUserQuery(msg);
   const meta = extractMeta(msg);
   const userImages = extractUserImages(msg);
   if (!firstEventTs) firstEventTs = msg.ts;
+
+  // --- Sub-agent session mapping ---
+  // Track agent spawns so we can remap child sessions
+  if (category === "sub_agent" && sessionId) {
+    const pending = pendingAgentSpawns.get(sessionId) || { ts: msg.ts, count: 0 };
+    pending.count++;
+    pending.ts = msg.ts;
+    pendingAgentSpawns.set(sessionId, pending);
+  }
+  if (category === "sub_agent_result" && sessionId) {
+    const pending = pendingAgentSpawns.get(sessionId);
+    if (pending) {
+      pending.count = Math.max(0, pending.count - 1);
+      if (pending.count === 0) pendingAgentSpawns.delete(sessionId);
+    }
+  }
+
+  // If this is a new session_id and there's a pending agent spawn, map it to the parent
+  if (sessionId && !sessions.has(sessionId) && !childSessionMap.has(sessionId)) {
+    for (const [parentSid, info] of pendingAgentSpawns) {
+      if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
+        childSessionMap.set(sessionId, parentSid);
+        break;
+      }
+    }
+  }
+
+  // Remap child session to parent
+  if (sessionId && childSessionMap.has(sessionId)) {
+    sessionId = childSessionMap.get(sessionId);
+  }
 
   let newSession = false;
   if (sessionId && !sessions.has(sessionId)) {
@@ -636,6 +676,30 @@ function badgeLabel(cat) {
 }
 
 function esc(str) { const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  }
+  return fallbackCopy(text);
+}
+
+function fallbackCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0;pointer-events:none";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand("copy");
+  } catch (err) {
+    console.warn("Fallback copy failed:", err);
+  }
+  document.body.removeChild(ta);
+  return Promise.resolve();
+}
 
 function renderEntry(entry) {
   const div = document.createElement("div");
@@ -706,7 +770,7 @@ function renderQueryHeader(query) {
     const wrapEl = div.querySelector(".query-text-wrap");
     wrapEl.addEventListener("click", (e) => {
       e.stopPropagation();
-      navigator.clipboard.writeText(query.userQuery).then(() => {
+      copyToClipboard(query.userQuery).then(() => {
         const copiedEl = wrapEl.querySelector(".query-copied");
         copiedEl.classList.add("visible");
         wrapEl.classList.add("just-copied");
@@ -760,15 +824,19 @@ function renderAgentGroup(ag, matchFn) {
 
   wrap.appendChild(childrenEl);
 
-  header.addEventListener("click", (e) => {
+  // Chevron click: toggle collapse
+  const chevronEl = header.querySelector(".agent-chevron");
+  chevronEl.addEventListener("click", (e) => {
     e.stopPropagation();
     const isCollapsed = childrenEl.classList.toggle("collapsed");
-    header.querySelector(".agent-chevron").textContent = isCollapsed ? "\u25B6" : "\u25BC";
+    chevronEl.textContent = isCollapsed ? "\u25B6" : "\u25BC";
   });
 
-  // Click agent header row itself opens modal for the agent entry
-  header.addEventListener("dblclick", (e) => {
+  // Click on badge/desc: open modal to see the agent prompt
+  header.addEventListener("click", (e) => {
     e.stopPropagation();
+    // If clicking the chevron, let its own handler deal with it
+    if (e.target === chevronEl || e.target.closest(".agent-chevron")) return;
     openModal(ag.agentEntry.id);
   });
 
@@ -898,7 +966,11 @@ function appendEntryGrouped(entry) {
   } else {
     // Update task header (time range, query count may have changed)
     const newHeader = renderTaskHeader(task);
-    task.el.replaceChild(newHeader, task.headerEl);
+    if (task.headerEl && task.el.contains(task.headerEl)) {
+      task.el.replaceChild(newHeader, task.headerEl);
+    } else {
+      task.el.insertBefore(newHeader, task.el.firstChild);
+    }
     task.headerEl = newHeader;
     bindTaskHeaderClick(task);
   }
@@ -928,7 +1000,11 @@ function appendEntryGrouped(entry) {
         openModal(query.thinkingEntry.id);
       });
     }
-    query.el.replaceChild(newQHeader, query.headerEl);
+    if (query.headerEl && query.el.contains(query.headerEl)) {
+      query.el.replaceChild(newQHeader, query.headerEl);
+    } else {
+      query.el.insertBefore(newQHeader, query.el.firstChild);
+    }
     query.headerEl = newQHeader;
   }
 
@@ -1207,6 +1283,14 @@ function closeModal() {
 
 modalClose.addEventListener("click", closeModal);
 modalOverlay.addEventListener("click", (e) => { if (e.target === modalOverlay) closeModal(); });
+
+document.getElementById("modal-copy").addEventListener("click", () => {
+  const text = modalBody.innerText || modalBody.textContent || "";
+  copyToClipboard(text);
+  const btn = document.getElementById("modal-copy");
+  btn.textContent = "\u2713";
+  setTimeout(() => { btn.innerHTML = "&#x2398;"; }, 1000);
+});
 
 // ===== JSON Tree =====
 function renderJsonTree(obj, depth = 0) {
@@ -1650,6 +1734,11 @@ window.toggleExpandAll = () => {
 };
 
 // ===== Replay Analysis =====
+let replayAbort = null;      // current AbortController
+let replaySessionId = null;  // session being analyzed
+let replayAnalyzing = false;
+let replayRawMarkdown = null; // raw analysis text for export
+
 window.requestReplayAnalysis = async () => {
   const btn = document.getElementById("replay-btn");
   const sid = activeSession === "all" ? (sessions.keys().next().value || null) : activeSession;
@@ -1657,30 +1746,218 @@ window.requestReplayAnalysis = async () => {
 
   btn.classList.add("loading");
   btn.disabled = true;
-  const origText = btn.textContent;
   btn.textContent = "Analyzing...";
 
-  try {
-    const resp = await fetch("/api/replay-analysis", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: sid }),
-    });
-    const data = await resp.json();
+  openReplayPopover(sid);
+  await runReplayAnalysis(sid);
 
-    if (data.error) {
-      showReplayModal(`<div class="replay-error">${esc(data.error)}</div>`);
-    } else {
-      showReplayModal(`<div class="replay-content">${renderMarkdown(data.analysis)}</div>`);
-    }
-  } catch (err) {
-    showReplayModal(`<div class="replay-error">Request failed: ${esc(err.message)}</div>`);
-  } finally {
-    btn.classList.remove("loading");
-    btn.disabled = false;
-    btn.textContent = origText;
-  }
+  btn.classList.remove("loading");
+  btn.disabled = false;
+  btn.textContent = "Replay";
 };
+
+async function runReplayAnalysis(sid) {
+  // Cancel any in-flight analysis
+  if (replayAbort) replayAbort.abort();
+  replayAbort = new AbortController();
+  replaySessionId = sid;
+  replayAnalyzing = true;
+  updateReplayActionBtn();
+
+  const scroll = document.getElementById("replay-analysis-scroll");
+  scroll.innerHTML = '<div class="replay-loading">Analyzing session...</div>';
+
+  // Fetch timeline (not cancellable — fast)
+  const timelinePromise = fetch("/api/session-timeline", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: sid }),
+  }).then(r => r.json()).catch(() => ({ timeline: [] }));
+
+  // Fetch analysis (cancellable)
+  const analysisPromise = fetch("/api/replay-analysis", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: sid }),
+    signal: replayAbort.signal,
+  }).then(r => r.json()).catch(err => {
+    if (err.name === "AbortError") return { cancelled: true };
+    return { error: `Request failed: ${err.message}` };
+  });
+
+  try {
+    const tlData = await timelinePromise;
+    renderReplayTimeline(tlData.timeline || [], tlData.totalEntries || 0);
+  } catch {}
+
+  const data = await analysisPromise;
+  replayAnalyzing = false;
+  updateReplayActionBtn();
+
+  if (data.cancelled) {
+    replayRawMarkdown = null;
+    scroll.innerHTML = '<div class="replay-error" style="color:var(--text-muted)">Analysis cancelled.</div>';
+  } else if (data.error) {
+    replayRawMarkdown = null;
+    scroll.innerHTML = `<div class="replay-error">${esc(data.error)}</div>`;
+  } else {
+    replayRawMarkdown = data.analysis;
+    scroll.innerHTML = `<div class="replay-content">${renderMarkdown(data.analysis)}</div>`;
+  }
+  updateExportBtn();
+}
+
+window.cancelReplayAnalysis = function() {
+  if (replayAbort) { replayAbort.abort(); replayAbort = null; }
+};
+
+window.restartReplayAnalysis = function() {
+  if (!replaySessionId) return;
+  runReplayAnalysis(replaySessionId);
+};
+
+function updateReplayActionBtn() {
+  const btn = document.getElementById("replay-action-btn");
+  if (!btn) return;
+  if (replayAnalyzing) {
+    btn.textContent = "Cancel";
+    btn.title = "Cancel analysis";
+    btn.onclick = cancelReplayAnalysis;
+    btn.className = "replay-action-btn replay-action-cancel";
+  } else {
+    btn.textContent = "Restart";
+    btn.title = "Re-run analysis";
+    btn.onclick = restartReplayAnalysis;
+    btn.className = "replay-action-btn replay-action-restart";
+  }
+}
+
+function updateExportBtn() {
+  const btn = document.getElementById("replay-export-btn");
+  if (!btn) return;
+  btn.disabled = !replayRawMarkdown;
+  btn.style.opacity = replayRawMarkdown ? "1" : "0.4";
+}
+
+window.exportReplayMd = function() {
+  if (!replayRawMarkdown) return;
+  const sInfo = replaySessionId ? sessions.get(replaySessionId) : null;
+  const label = sInfo ? sInfo.label : "session";
+  const date = new Date().toISOString().slice(0, 10);
+  const filename = `replay-${label}-${date}.md`;
+
+  const blob = new Blob([replayRawMarkdown], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+function openReplayPopover(sessionId) {
+  const overlay = document.getElementById("replay-popover-overlay");
+  const sessionLabel = document.getElementById("replay-session-label");
+  const archetypeBadge = document.getElementById("replay-archetype-badge");
+  const timelineScroll = document.getElementById("replay-timeline-scroll");
+  const analysisScroll = document.getElementById("replay-analysis-scroll");
+  const riskMeter = document.getElementById("replay-risk-meter");
+
+  // Reset content
+  replayRawMarkdown = null;
+  timelineScroll.innerHTML = '<div class="replay-loading">Loading timeline...</div>';
+  analysisScroll.innerHTML = '<div class="replay-loading">Analyzing session...</div>';
+  updateExportBtn();
+
+  // Session label
+  const sInfo = sessions.get(sessionId);
+  sessionLabel.textContent = sInfo ? sInfo.label : sessionId.slice(0, 12);
+
+  // Behavioral signature data from Momentum
+  const sig = Momentum.getSignature ? Momentum.getSignature(sessionId) : null;
+  if (sig && sig.archetype) {
+    archetypeBadge.textContent = sig.archetype.replace(/-/g, " ");
+    archetypeBadge.style.display = "";
+  } else {
+    archetypeBadge.style.display = "none";
+  }
+
+  // Risk meter
+  if (sig) {
+    const risk = Math.round(sig.riskScore * 100);
+    let barColor;
+    if (sig.riskScore < 0.3) barColor = "#06b6d4";
+    else if (sig.riskScore < 0.6) barColor = "#eab308";
+    else barColor = "#ef4444";
+    riskMeter.innerHTML = `
+      <span class="risk-label">risk ${risk}%</span>
+      <div class="risk-bar"><div class="risk-fill" style="width:${risk}%;background:${barColor}"></div></div>
+    `;
+  } else {
+    riskMeter.innerHTML = "";
+  }
+
+  overlay.style.display = "";
+}
+
+window.closeReplayPopover = function() {
+  document.getElementById("replay-popover-overlay").style.display = "none";
+};
+
+function renderReplayTimeline(timeline, totalEntries) {
+  const scroll = document.getElementById("replay-timeline-scroll");
+  if (!timeline || timeline.length === 0) {
+    scroll.innerHTML = '<div class="replay-loading" style="animation:none">No timeline data available</div>';
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+
+  for (const item of timeline) {
+    const div = document.createElement("div");
+    div.className = `tl-entry tl-${item.type}`;
+
+    const num = document.createElement("span");
+    num.className = "tl-num";
+    num.textContent = item.n;
+    div.appendChild(num);
+
+    const badge = document.createElement("span");
+    badge.className = `tl-badge tl-badge-${item.type}`;
+    if (item.type === "user") badge.textContent = "Q";
+    else if (item.type === "think") badge.textContent = "T";
+    else if (item.type === "tool") badge.textContent = item.tool || "USE";
+    else if (item.type === "error") badge.textContent = "ERR";
+    else badge.textContent = "TXT";
+    div.appendChild(badge);
+
+    const text = document.createElement("span");
+    text.className = "tl-text";
+    let displayText = item.text || item.detail || "";
+    // Shorten file paths to basename for readability
+    displayText = displayText.replace(/\/[\w./-]+\/([\w.-]+)/g, "$1");
+    text.textContent = displayText;
+    text.title = item.text || item.detail || ""; // full path in tooltip
+    div.appendChild(text);
+
+    frag.appendChild(div);
+  }
+
+  // Summary at top
+  const summary = document.createElement("div");
+  summary.className = "tl-entry";
+  summary.style.cssText = "padding:8px 10px;color:var(--text-muted);border-bottom:1px solid var(--border,rgba(255,255,255,0.06));margin-bottom:4px";
+  const userCount = timeline.filter(t => t.type === "user").length;
+  const toolCount = timeline.filter(t => t.type === "tool").length;
+  const errCount = timeline.filter(t => t.type === "error").length;
+  summary.innerHTML = `<span style="font-size:10px">${totalEntries} entries &middot; ${userCount} queries &middot; ${toolCount} tools${errCount ? ` &middot; <span style="color:#ef4444">${errCount} errors</span>` : ""}</span>`;
+
+  scroll.innerHTML = "";
+  scroll.appendChild(summary);
+  scroll.appendChild(frag);
+}
 
 function renderMarkdown(text) {
   if (!text) return "";
@@ -1689,12 +1966,15 @@ function renderMarkdown(text) {
     .replace(/^## (.+)$/gm, "<h3>$1</h3>")
     .replace(/^### (.+)$/gm, "<h3>$1</h3>")
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/^(\s*)(█+░*)\s*(.*)$/gm, '<div style="font-family:monospace;font-size:10px;color:var(--text-muted)">$1<span style="color:#06b6d4">$2</span> $3</div>')
     .replace(/\n\n/g, "<br><br>")
     .replace(/\n- /g, "<br>• ")
     .replace(/\n(\d+)\. /g, "<br>$1. ");
 }
 
+// Legacy modal fallback (kept for non-popover contexts)
 function showReplayModal(html) {
   modalOverlay.classList.add("modal-replay");
   modalBadge.className = "modal-badge cat-thinking";
@@ -1714,6 +1994,8 @@ window.clearLogs = () => {
     firstEventTs = null;
     sessions.clear();
     sessionGroups.clear();
+    childSessionMap.clear();
+    pendingAgentSpawns.clear();
     taskIdCounter = 0;
     queryIdCounter = 0;
     colorIdx = 0;
@@ -1794,6 +2076,18 @@ function toggleHelp() {
 
 // ===== Keyboard =====
 document.addEventListener("keydown", (e) => {
+  // Actively handle Cmd+C for webview contexts where native copy is blocked
+  if ((e.metaKey || e.ctrlKey) && e.key === "c") {
+    const sel = window.getSelection();
+    if (sel && sel.toString()) {
+      e.preventDefault();
+      copyToClipboard(sel.toString());
+    }
+    return;
+  }
+  // Let other standard editing shortcuts through
+  if ((e.metaKey || e.ctrlKey) && ["v","x","a","z"].includes(e.key)) return;
+
   if ((e.metaKey && e.altKey) || (e.ctrlKey && e.altKey)) {
     if (e.key === "ArrowLeft") { e.preventDefault(); cycleSession(-1); return; }
     if (e.key === "ArrowRight") { e.preventDefault(); cycleSession(1); return; }
@@ -1819,6 +2113,8 @@ document.addEventListener("keydown", (e) => {
   if ((e.key === "=" || e.key === "+") && e.metaKey) { e.preventDefault(); adjustFontSize(1); return; }
   if (e.key === "-" && e.metaKey) { e.preventDefault(); adjustFontSize(-1); return; }
   if (e.key === "Escape") {
+    const replayOverlay = document.getElementById("replay-popover-overlay");
+    if (replayOverlay && replayOverlay.style.display !== "none") { closeReplayPopover(); return; }
     if (helpVisible) { toggleHelp(); return; }
     if (gravityView) { Gravity.deselect(); return; }
     searchInput.blur(); searchInput.value = ""; searchQuery = ""; rebuildView(); return;
@@ -1830,9 +2126,9 @@ document.addEventListener("keydown", (e) => {
   if (!firstPane) return;
   const visible = [...firstPane.scrollEl.querySelectorAll(".log-entry")];
 
-  if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); if (!visible.length) return; selectedIdx = Math.min(selectedIdx + 1, visible.length - 1); focusEntry(visible, selectedIdx); }
-  if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); if (!visible.length) return; selectedIdx = Math.max(selectedIdx - 1, 0); focusEntry(visible, selectedIdx); }
-  if (e.key === "Enter") { e.preventDefault(); if (selectedIdx >= 0 && visible[selectedIdx]) openModal(parseInt(visible[selectedIdx].dataset.id)); }
+  if (e.key === "j" || e.key === "ArrowDown") { if (!visible.length) return; e.preventDefault(); selectedIdx = Math.min(selectedIdx + 1, visible.length - 1); focusEntry(visible, selectedIdx); }
+  if (e.key === "k" || e.key === "ArrowUp") { if (!visible.length) return; e.preventDefault(); selectedIdx = Math.max(selectedIdx - 1, 0); focusEntry(visible, selectedIdx); }
+  if (e.key === "Enter") { if (selectedIdx < 0 || !visible[selectedIdx]) return; e.preventDefault(); openModal(parseInt(visible[selectedIdx].dataset.id)); }
   if (e.key === "e") {
     // Toggle: show only errors vs show all
     if (hiddenTypes.size === 0) {

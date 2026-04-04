@@ -293,6 +293,10 @@ const Momentum = (() => {
 
     state.spans.push(span);
     state.current = null;
+
+    // Update behavioral signature and risk prediction
+    updateSignature(span.sessionId, span);
+
     scheduleRebuild();
   }
 
@@ -508,6 +512,294 @@ const Momentum = (() => {
       for (const kw of extractKeywords(span.thinkingText.slice(0, 200))) entities.add(kw);
     }
     return entities;
+  }
+
+  // =====================
+  // BEHAVIORAL SIGNATURES & RISK PREDICTION
+  // =====================
+
+  // Per-session behavioral signature: computed incrementally as spans arrive
+  const sessionSignatures = new Map(); // sessionId -> BehavioralSignature
+
+  const PHASES = ["exploring", "implementing", "testing", "debugging", "planning"];
+  const ARCHETYPES = {
+    "focused-executor":  { desc: "Direct path, minimal loops, high edit ratio", color: "#06b6d4" },
+    "explorer-debugger": { desc: "Wide search, frequent debugging, many reads", color: "#eab308" },
+    "loop-fighter":      { desc: "High looping, repeated patterns, slow progress", color: "#ef4444" },
+    "methodical-planner":{ desc: "Heavy planning, structured phases, low backtracking", color: "#8b5cf6" },
+    "rapid-iterater":    { desc: "Fast cycles, test-heavy, quick pivots", color: "#22c55e" },
+    "deep-diver":        { desc: "Long exploring spans, narrow file focus, thorough", color: "#3b82f6" },
+  };
+
+  function getSignature(sessionId) {
+    if (!sessionSignatures.has(sessionId)) {
+      sessionSignatures.set(sessionId, {
+        // Phase distribution (normalized)
+        phaseDist: { exploring: 0, implementing: 0, testing: 0, debugging: 0, planning: 0 },
+        // Transition matrix: phase[i] -> phase[j] counts
+        transitions: {},
+        // Peak pattern scores across session
+        patternPeaks: { looping: 0, narrowing: 0, backtracking: 0, explosion: 0, breakthrough: 0, goalDrift: 0 },
+        // Aggregate stats
+        totalSpans: 0,
+        totalDuration: 0,
+        errorCount: 0,
+        uniqueFiles: new Set(),
+        actionEntropy: 0,
+        // Risk prediction state
+        riskHistory: [],       // last N risk scores
+        riskScore: 0,          // current P(trouble) 0-1
+        riskTrend: "neutral",  // "rising", "falling", "neutral"
+        // Archetype
+        archetype: null,
+        archetypeConfidence: 0,
+      });
+    }
+    return sessionSignatures.get(sessionId);
+  }
+
+  function updateSignature(sessionId, span) {
+    const sig = getSignature(sessionId);
+    const state = getSessionState(sessionId);
+    const spans = state.spans;
+
+    sig.totalSpans = spans.length;
+    sig.totalDuration += Math.max(0, span.endTs - span.startTs);
+
+    // Phase distribution
+    sig.phaseDist[span.phase] = (sig.phaseDist[span.phase] || 0) + 1;
+
+    // Transition matrix
+    if (spans.length >= 2) {
+      const prev = spans[spans.length - 2];
+      const key = `${prev.phase}->${span.phase}`;
+      sig.transitions[key] = (sig.transitions[key] || 0) + 1;
+    }
+
+    // Pattern peaks
+    for (const [k, v] of Object.entries(span.patterns)) {
+      if (v > (sig.patternPeaks[k] || 0)) sig.patternPeaks[k] = v;
+    }
+
+    // Error tracking
+    if (span.hasError) sig.errorCount++;
+
+    // File diversity
+    for (const f of span.files) sig.uniqueFiles.add(f);
+
+    // Action entropy (diversity of action types)
+    const actionCounts = { read: 0, edit: 0, exec: 0 };
+    for (const a of span.actions) actionCounts[a.action] = (actionCounts[a.action] || 0) + 1;
+    const total = span.actions.length || 1;
+    let entropy = 0;
+    for (const c of Object.values(actionCounts)) {
+      if (c > 0) { const p = c / total; entropy -= p * Math.log2(p); }
+    }
+    // Rolling average entropy
+    sig.actionEntropy = sig.actionEntropy * 0.8 + entropy * 0.2;
+
+    // Risk prediction
+    updateRiskScore(sig, span, spans);
+
+    // Archetype classification (every 5 spans)
+    if (sig.totalSpans % 5 === 0 || sig.totalSpans <= 3) {
+      classifyArchetype(sig);
+    }
+  }
+
+  function updateRiskScore(sig, span, spans) {
+    // Feature vector for current state
+    const features = computeRiskFeatures(span, spans);
+
+    // Lightweight logistic-style risk scoring (no training needed — heuristic weights)
+    let score = 0;
+
+    // Looping acceleration: are loops getting worse?
+    score += features.loopingTrend * 0.35;
+    // Backtracking in debug is a strong stuck predictor
+    score += features.debugBacktrack * 0.25;
+    // File churn without progress
+    score += features.fileChurn * 0.15;
+    // Action repetition (same tool+file pairs)
+    score += features.actionRepetition * 0.2;
+    // Error rate acceleration
+    score += features.errorAccel * 0.2;
+    // Goal drift compound
+    score += features.driftCompound * 0.15;
+    // Long span without resolution (thinking too long)
+    score += features.stallSignal * 0.1;
+    // Subtract positive signals
+    score -= features.narrowingSignal * 0.2;
+    score -= features.freshFiles * 0.1;
+
+    score = Math.max(0, Math.min(1, score));
+
+    // Smooth with exponential moving average
+    sig.riskScore = sig.riskScore * 0.6 + score * 0.4;
+
+    // Track trend
+    sig.riskHistory.push(sig.riskScore);
+    if (sig.riskHistory.length > 20) sig.riskHistory.shift();
+
+    if (sig.riskHistory.length >= 3) {
+      const recent = sig.riskHistory.slice(-3);
+      const older = sig.riskHistory.slice(-6, -3);
+      if (older.length > 0) {
+        const recentAvg = recent.reduce((a, b) => a + b) / recent.length;
+        const olderAvg = older.reduce((a, b) => a + b) / older.length;
+        const delta = recentAvg - olderAvg;
+        sig.riskTrend = delta > 0.05 ? "rising" : delta < -0.05 ? "falling" : "neutral";
+      }
+    }
+  }
+
+  function computeRiskFeatures(span, spans) {
+    const window = spans.slice(-WINDOW_SIZE);
+    const features = {
+      loopingTrend: 0,
+      debugBacktrack: 0,
+      fileChurn: 0,
+      actionRepetition: 0,
+      errorAccel: 0,
+      driftCompound: 0,
+      stallSignal: 0,
+      narrowingSignal: 0,
+      freshFiles: 0,
+    };
+
+    // Looping trend: is looping score increasing over recent spans?
+    if (window.length >= 3) {
+      const loopScores = window.map(s => s.patterns.looping);
+      const firstHalf = loopScores.slice(0, Math.floor(loopScores.length / 2));
+      const secondHalf = loopScores.slice(Math.floor(loopScores.length / 2));
+      const avg1 = firstHalf.reduce((a, b) => a + b, 0) / (firstHalf.length || 1);
+      const avg2 = secondHalf.reduce((a, b) => a + b, 0) / (secondHalf.length || 1);
+      features.loopingTrend = Math.max(0, (avg2 - avg1) + avg2 * 0.5);
+    }
+
+    // Debug + backtracking compound
+    if (span.phase === "debugging" && span.patterns.backtracking > 0.3) {
+      features.debugBacktrack = span.patterns.backtracking * 0.8;
+      const recentDebug = window.filter(s => s.phase === "debugging").length;
+      features.debugBacktrack *= Math.min(1, recentDebug / 3);
+    }
+
+    // File churn: lots of files touched but no narrowing
+    if (window.length >= 3) {
+      const allFiles = new Set();
+      for (const s of window) for (const f of s.files) allFiles.add(f);
+      features.fileChurn = Math.min(1, allFiles.size / 20) * (1 - (span.patterns.narrowing || 0));
+    }
+
+    // Action repetition
+    features.actionRepetition = span.patterns.looping;
+
+    // Error acceleration
+    const recentErrors = window.filter(s => s.hasError).length;
+    features.errorAccel = Math.min(1, recentErrors / (window.length || 1));
+
+    // Goal drift compounding over time
+    if (window.length >= 3) {
+      const drifts = window.map(s => s.patterns.goalDrift || 0);
+      features.driftCompound = Math.min(1, drifts.reduce((a, b) => a + b, 0) / drifts.length * 2);
+    }
+
+    // Stall signal: very long span with few actions
+    const spanDur = (span.endTs - span.startTs) / 1000;
+    if (spanDur > 30 && span.actions.length <= 1) {
+      features.stallSignal = Math.min(1, spanDur / 120);
+    }
+
+    // Positive signals
+    features.narrowingSignal = span.patterns.narrowing || 0;
+    features.freshFiles = span.patterns.explosion > 0.3 && span.patterns.narrowing < 0.2 ? 0 : (span.patterns.explosion || 0) * 0.5;
+
+    return features;
+  }
+
+  function classifyArchetype(sig) {
+    if (sig.totalSpans < 3) { sig.archetype = null; return; }
+
+    const total = sig.totalSpans;
+    const norm = {};
+    for (const p of PHASES) norm[p] = (sig.phaseDist[p] || 0) / total;
+
+    // Score each archetype based on features
+    const scores = {};
+
+    // focused-executor: high implementing, low looping, low debugging
+    scores["focused-executor"] = norm.implementing * 2 + (1 - sig.patternPeaks.looping) * 1.5
+      + (1 - norm.debugging) * 0.8 - sig.patternPeaks.backtracking;
+
+    // explorer-debugger: high exploring + debugging, many unique files
+    scores["explorer-debugger"] = norm.exploring * 1.5 + norm.debugging * 1.5
+      + Math.min(1, sig.uniqueFiles.size / 15) * 0.8;
+
+    // loop-fighter: high looping peaks, high stuck count
+    scores["loop-fighter"] = sig.patternPeaks.looping * 2.5 + sig.patternPeaks.backtracking * 1.5
+      + norm.debugging * 0.8;
+
+    // methodical-planner: high planning, low backtracking
+    scores["methodical-planner"] = norm.planning * 3 + (1 - sig.patternPeaks.backtracking) * 1
+      + (1 - sig.patternPeaks.looping) * 0.5;
+
+    // rapid-iterater: high testing, quick phase transitions
+    const transCount = Object.values(sig.transitions).reduce((a, b) => a + b, 0);
+    scores["rapid-iterater"] = norm.testing * 2.5 + Math.min(1, transCount / total) * 1.5
+      + sig.actionEntropy * 0.8;
+
+    // deep-diver: long exploring, narrow focus, few unique files relative to spans
+    const fileDensity = sig.uniqueFiles.size / Math.max(1, total);
+    scores["deep-diver"] = norm.exploring * 2 + (1 - Math.min(1, fileDensity)) * 1.5
+      + sig.patternPeaks.narrowing * 1;
+
+    // Pick the highest scoring archetype
+    let best = null, bestScore = -Infinity;
+    for (const [name, score] of Object.entries(scores)) {
+      if (score > bestScore) { bestScore = score; best = name; }
+    }
+
+    // Confidence: gap between top and second
+    const sorted = Object.values(scores).sort((a, b) => b - a);
+    const gap = sorted.length >= 2 ? (sorted[0] - sorted[1]) / (Math.abs(sorted[0]) + 0.01) : 0;
+    sig.archetype = best;
+    sig.archetypeConfidence = Math.min(1, gap);
+  }
+
+  // Compute the fixed-length session vector for clustering/archetype library
+  function computeSessionVector(sessionId) {
+    const sig = getSignature(sessionId);
+    const state = getSessionState(sessionId);
+    if (!state || state.spans.length < 2) return null;
+
+    const total = sig.totalSpans;
+    const phaseDist = PHASES.map(p => (sig.phaseDist[p] || 0) / total);
+
+    // Flatten transition matrix into 5x5 = 25 values (normalized)
+    const transTotal = Object.values(sig.transitions).reduce((a, b) => a + b, 0) || 1;
+    const transMatrix = [];
+    for (const from of PHASES) {
+      for (const to of PHASES) {
+        transMatrix.push((sig.transitions[`${from}->${to}`] || 0) / transTotal);
+      }
+    }
+
+    const patternPeaks = ["looping", "narrowing", "backtracking", "explosion", "breakthrough", "goalDrift"]
+      .map(k => sig.patternPeaks[k] || 0);
+
+    return {
+      phaseDist,       // [5]
+      transMatrix,     // [25]
+      patternPeaks,    // [6]
+      totalSpans: total,
+      totalDuration: sig.totalDuration,
+      errorRate: sig.errorCount / total,
+      fileDiversity: sig.uniqueFiles.size,
+      actionEntropy: sig.actionEntropy,
+      archetype: sig.archetype,
+      archetypeConfidence: sig.archetypeConfidence,
+      riskScore: sig.riskScore,
+    };
   }
 
   // =====================
@@ -741,6 +1033,9 @@ const Momentum = (() => {
 
     // Minimap (screen space)
     drawMinimap(dark);
+
+    // Risk meter + archetype badge (screen space, top-right)
+    drawRiskMeter(dark, now);
   }
 
   function drawMinimap(dark) {
@@ -802,6 +1097,141 @@ const Momentum = (() => {
     ctx.strokeStyle = dark ? "rgba(160,180,208,0.6)" : "rgba(58,90,122,0.5)";
     ctx.lineWidth = 1;
     ctx.strokeRect(crx, cry, crw, crh);
+  }
+
+  function drawRiskMeter(dark, now) {
+    // Find the active session(s) to show risk for
+    const activeSessions = [];
+    for (const [sid, state] of sessionState) {
+      if (!sessionFilters.has("all") && !sessionFilters.has(sid)) continue;
+      if (state.spans.length >= 3) activeSessions.push(sid);
+    }
+    if (activeSessions.length === 0) return;
+
+    // Aggregate risk from visible sessions (use max)
+    let maxRisk = 0, maxTrend = "neutral", bestArchetype = null, bestConf = 0;
+    for (const sid of activeSessions) {
+      const sig = sessionSignatures.get(sid);
+      if (!sig) continue;
+      if (sig.riskScore > maxRisk) {
+        maxRisk = sig.riskScore;
+        maxTrend = sig.riskTrend;
+      }
+      if (sig.archetype && sig.archetypeConfidence > bestConf) {
+        bestArchetype = sig.archetype;
+        bestConf = sig.archetypeConfidence;
+      }
+    }
+
+    const m = mono();
+    const mx = width - 8;
+    const my = 8;
+
+    // --- Risk arc meter ---
+    const arcR = 22 * mapScale;
+    const arcCx = mx - arcR - 4;
+    const arcCy = my + arcR + 4;
+    const arcStart = Math.PI * 0.75;
+    const arcEnd = Math.PI * 2.25;
+    const arcRange = arcEnd - arcStart;
+
+    // Background arc
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(arcCx, arcCy, arcR, arcStart, arcEnd);
+    ctx.strokeStyle = dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.05)";
+    ctx.lineWidth = 4 * mapScale;
+    ctx.lineCap = "round";
+    ctx.stroke();
+
+    // Risk gradient arc
+    const riskAngle = arcStart + arcRange * maxRisk;
+    if (maxRisk > 0.02) {
+      // Color interpolation: cyan(0) -> amber(0.5) -> red(1)
+      let r, g, b;
+      if (maxRisk < 0.4) {
+        const t = maxRisk / 0.4;
+        r = Math.round(6 + t * (234 - 6));
+        g = Math.round(182 + t * (179 - 182));
+        b = Math.round(212 + t * (8 - 212));
+      } else {
+        const t = (maxRisk - 0.4) / 0.6;
+        r = Math.round(234 + t * (239 - 234));
+        g = Math.round(179 - t * 179);
+        b = Math.round(8 - t * 8);
+      }
+
+      // Pulsing for high risk
+      let alpha = 0.7 + maxRisk * 0.3;
+      if (maxRisk > 0.6) {
+        const pulse = 0.7 + 0.3 * Math.sin(now / (400 - maxRisk * 200));
+        alpha *= pulse;
+      }
+
+      ctx.beginPath();
+      ctx.arc(arcCx, arcCy, arcR, arcStart, riskAngle);
+      ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
+      ctx.lineWidth = 4 * mapScale;
+      ctx.lineCap = "round";
+      ctx.stroke();
+
+      // Glow for high risk
+      if (maxRisk > 0.5) {
+        ctx.beginPath();
+        ctx.arc(arcCx, arcCy, arcR, arcStart, riskAngle);
+        ctx.strokeStyle = `rgba(${r},${g},${b},${alpha * 0.3})`;
+        ctx.lineWidth = 8 * mapScale;
+        ctx.stroke();
+      }
+    }
+
+    // Risk score text in center of arc
+    const riskPct = Math.round(maxRisk * 100);
+    ctx.fillStyle = dark ? `rgba(255,248,240,${0.5 + maxRisk * 0.4})` : `rgba(0,0,0,${0.4 + maxRisk * 0.4})`;
+    ctx.font = `600 ${Math.round(11 * mapScale)}px "SF Mono", monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`${riskPct}`, arcCx, arcCy - 1);
+
+    // "risk" label below score
+    ctx.fillStyle = dark ? "rgba(255,248,240,0.3)" : "rgba(0,0,0,0.2)";
+    ctx.font = `400 ${Math.round(7 * mapScale)}px "SF Mono", monospace`;
+    ctx.fillText("risk", arcCx, arcCy + 10 * mapScale);
+
+    // Trend arrow
+    if (maxTrend !== "neutral") {
+      const arrowX = arcCx + arcR + 6;
+      const arrowY = arcCy - 4;
+      ctx.fillStyle = maxTrend === "rising" ? "rgba(239,68,68,0.6)" : "rgba(6,182,212,0.6)";
+      ctx.font = `${Math.round(10 * mapScale)}px "SF Mono", monospace`;
+      ctx.textAlign = "left";
+      ctx.fillText(maxTrend === "rising" ? "\u2191" : "\u2193", arrowX, arrowY);
+    }
+
+    ctx.restore();
+
+    // --- Archetype badge ---
+    if (bestArchetype) {
+      const badgeY = arcCy + arcR + 10 * mapScale;
+      const label = bestArchetype.replace(/-/g, " ");
+      const info = ARCHETYPES[bestArchetype];
+
+      ctx.save();
+      ctx.fillStyle = dark ? "rgba(255,248,240,0.35)" : "rgba(0,0,0,0.25)";
+      ctx.font = `500 ${Math.round(8 * mapScale)}px "SF Mono", monospace`;
+      ctx.textAlign = "right";
+      ctx.fillText(label, mx - 4, badgeY);
+
+      // Small colored dot for archetype
+      if (info) {
+        const textW = ctx.measureText(label).width;
+        ctx.beginPath();
+        ctx.arc(mx - 4 - textW - 6, badgeY - 3, 2.5 * mapScale, 0, Math.PI * 2);
+        ctx.fillStyle = info.color + "80";
+        ctx.fill();
+      }
+      ctx.restore();
+    }
   }
 
   function drawSessionHulls(dark) {
@@ -1321,6 +1751,7 @@ const Momentum = (() => {
     sessionState.clear();
     filePhaseMap.clear();
     sessionSeqCounters.clear();
+    sessionSignatures.clear();
     simNodes = [];
     simLinks = [];
     spanIdCounter = 0;
@@ -1389,5 +1820,13 @@ const Momentum = (() => {
     setEdgeLengthScale,
     getFileState,
     destroy,
+    // Behavioral signatures & risk prediction
+    getSignature: (sid) => sessionSignatures.get(sid) || null,
+    getSessionVector: computeSessionVector,
+    getAllSignatures: () => new Map(sessionSignatures),
+    getSessionSpans: (sid) => {
+      const state = sessionState.get(sid);
+      return state ? [...state.spans] : [];
+    },
   };
 })();

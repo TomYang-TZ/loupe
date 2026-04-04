@@ -145,6 +145,37 @@
   </div>
 </div>
 
+<!-- Replay Popover -->
+<div class="replay-popover-overlay" id="replay-popover-overlay" style="display:none" onclick="if(event.target===this)closeReplayPopover()">
+  <div class="replay-popover" id="replay-popover">
+    <div class="replay-popover-header">
+      <span class="replay-popover-title">Session Replay</span>
+      <span class="replay-popover-session" id="replay-session-label"></span>
+      <span class="replay-popover-archetype" id="replay-archetype-badge"></span>
+      <button class="replay-popover-close" onclick="closeReplayPopover()">&times;</button>
+    </div>
+    <div class="replay-popover-body">
+      <div class="replay-timeline-panel" id="replay-timeline-panel">
+        <div class="replay-timeline-header">Timeline</div>
+        <div class="replay-timeline-scroll" id="replay-timeline-scroll"></div>
+      </div>
+      <div class="replay-analysis-panel" id="replay-analysis-panel">
+        <div class="replay-analysis-header">
+          <span>Analysis</span>
+          <div class="replay-analysis-header-right">
+            <div class="replay-risk-meter" id="replay-risk-meter"></div>
+            <button class="replay-action-btn replay-action-cancel" id="replay-action-btn" onclick="cancelReplayAnalysis()" title="Cancel analysis">Cancel</button>
+            <button class="replay-action-btn replay-action-export" id="replay-export-btn" onclick="exportReplayMd()" title="Export as Markdown">Export .md</button>
+          </div>
+        </div>
+        <div class="replay-analysis-scroll" id="replay-analysis-scroll">
+          <div class="replay-loading">Analyzing session...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Detail Modal -->
 <div class="modal-overlay" id="modal-overlay">
   <div class="modal-panel" id="modal-panel">
@@ -152,6 +183,7 @@
       <span class="modal-badge" id="modal-badge"></span>
       <span class="modal-tool" id="modal-tool"></span>
       <span class="modal-time" id="modal-time"></span>
+      <button class="modal-copy" id="modal-copy" title="Copy content">&#x2398;</button>
       <button class="modal-close" id="modal-close">&times;</button>
     </div>
     <div class="modal-body" id="modal-body"></div>
