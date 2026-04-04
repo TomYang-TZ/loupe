@@ -2759,6 +2759,15 @@ body.minimal .minimal-topbar { display: flex; }
   border-color: rgba(6,182,212,0.3);
   background: rgba(6,182,212,0.06);
 }
+.replay-action-start {
+  color: #22c55e;
+  border-color: rgba(34,197,94,0.3);
+}
+.replay-action-start:hover {
+  color: #22c55e;
+  border-color: rgba(34,197,94,0.5);
+  background: rgba(34,197,94,0.08);
+}
 .replay-action-export:hover {
   color: #8b5cf6;
   border-color: rgba(139,92,246,0.3);
@@ -2780,11 +2789,14 @@ body.minimal .minimal-topbar { display: flex; }
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
-.replay-loading {
+.replay-loading, .replay-idle {
   color: var(--text-muted, #71717a);
   font: 400 12px "SF Mono", monospace;
   text-align: center;
   padding: 40px 20px;
+}
+.replay-idle strong {
+  color: #22c55e;
 }
 .replay-loading::after {
   content: "";

@@ -80,7 +80,17 @@ function assignToGroup(entry) {
     gs.agentStack = [];
 
     // If current query is a preamble (no userQuery), absorb its items into the new query
-    const preambleItems = (gs.currentQuery && !gs.currentQuery.userQuery) ? gs.currentQuery.items : null;
+    // BUT only if the preamble items are temporally close (< 10s gap).
+    // Otherwise they belong to the previous turn and should stay as a separate group.
+    let preambleItems = null;
+    if (gs.currentQuery && !gs.currentQuery.userQuery && gs.currentQuery.items.length > 0) {
+      const lastPreambleTs = gs.currentQuery.endTs || 0;
+      const gap = entry.ts - lastPreambleTs;
+      if (gap < 10000) {
+        // Close enough — absorb into new query
+        preambleItems = gs.currentQuery.items;
+      }
+    }
     if (preambleItems && gs.currentTask) {
       // Remove the preamble query from the task
       const idx = gs.currentTask.queries.indexOf(gs.currentQuery);
@@ -1740,24 +1750,25 @@ let replayAnalyzing = false;
 let replayRawMarkdown = null; // raw analysis text for export
 
 window.requestReplayAnalysis = async () => {
-  const btn = document.getElementById("replay-btn");
   const sid = activeSession === "all" ? (sessions.keys().next().value || null) : activeSession;
   if (!sid) return;
-
-  btn.classList.add("loading");
-  btn.disabled = true;
-  btn.textContent = "Analyzing...";
-
+  // Open the popover with timeline only — don't auto-run analysis
   openReplayPopover(sid);
-  await runReplayAnalysis(sid);
-
-  btn.classList.remove("loading");
-  btn.disabled = false;
-  btn.textContent = "Replay";
 };
 
+async function fetchReplayTimeline(sid) {
+  try {
+    const resp = await fetch("/api/session-timeline", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId: sid }),
+    });
+    const data = await resp.json();
+    renderReplayTimeline(data.timeline || [], data.totalEntries || 0);
+  } catch {}
+}
+
 async function runReplayAnalysis(sid) {
-  // Cancel any in-flight analysis
   if (replayAbort) replayAbort.abort();
   replayAbort = new AbortController();
   replaySessionId = sid;
@@ -1767,15 +1778,7 @@ async function runReplayAnalysis(sid) {
   const scroll = document.getElementById("replay-analysis-scroll");
   scroll.innerHTML = '<div class="replay-loading">Analyzing session...</div>';
 
-  // Fetch timeline (not cancellable — fast)
-  const timelinePromise = fetch("/api/session-timeline", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId: sid }),
-  }).then(r => r.json()).catch(() => ({ timeline: [] }));
-
-  // Fetch analysis (cancellable)
-  const analysisPromise = fetch("/api/replay-analysis", {
+  const data = await fetch("/api/replay-analysis", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sessionId: sid }),
@@ -1785,12 +1788,6 @@ async function runReplayAnalysis(sid) {
     return { error: `Request failed: ${err.message}` };
   });
 
-  try {
-    const tlData = await timelinePromise;
-    renderReplayTimeline(tlData.timeline || [], tlData.totalEntries || 0);
-  } catch {}
-
-  const data = await analysisPromise;
   replayAnalyzing = false;
   updateReplayActionBtn();
 
@@ -1806,6 +1803,11 @@ async function runReplayAnalysis(sid) {
   }
   updateExportBtn();
 }
+
+window.startReplayAnalysis = function() {
+  if (!replaySessionId) return;
+  runReplayAnalysis(replaySessionId);
+};
 
 window.cancelReplayAnalysis = function() {
   if (replayAbort) { replayAbort.abort(); replayAbort = null; }
@@ -1824,11 +1826,16 @@ function updateReplayActionBtn() {
     btn.title = "Cancel analysis";
     btn.onclick = cancelReplayAnalysis;
     btn.className = "replay-action-btn replay-action-cancel";
-  } else {
+  } else if (replayRawMarkdown) {
     btn.textContent = "Restart";
     btn.title = "Re-run analysis";
     btn.onclick = restartReplayAnalysis;
     btn.className = "replay-action-btn replay-action-restart";
+  } else {
+    btn.textContent = "Start";
+    btn.title = "Run analysis";
+    btn.onclick = startReplayAnalysis;
+    btn.className = "replay-action-btn replay-action-start";
   }
 }
 
@@ -1867,9 +1874,15 @@ function openReplayPopover(sessionId) {
 
   // Reset content
   replayRawMarkdown = null;
+  replaySessionId = sessionId;
+  replayAnalyzing = false;
   timelineScroll.innerHTML = '<div class="replay-loading">Loading timeline...</div>';
-  analysisScroll.innerHTML = '<div class="replay-loading">Analyzing session...</div>';
+  analysisScroll.innerHTML = '<div class="replay-idle">Press <strong>Start</strong> to run analysis</div>';
+  updateReplayActionBtn();
   updateExportBtn();
+
+  // Fetch timeline immediately
+  fetchReplayTimeline(sessionId);
 
   // Session label
   const sInfo = sessions.get(sessionId);

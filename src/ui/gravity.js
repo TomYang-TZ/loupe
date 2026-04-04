@@ -193,7 +193,7 @@ const Gravity = (() => {
       startX = near.x + (Math.random() - 0.5) * 60;
       startY = near.y + (Math.random() - 0.5) * 60;
     }
-    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, sessions: new Set(), createdAt: Date.now(), x: startX, y: startY, vx: 0, vy: 0, fx: null, fy: null };
+    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, firstAccessTs: Date.now(), accessOrder: nodes.size, sessions: new Set(), createdAt: Date.now(), x: startX, y: startY, vx: 0, vy: 0, fx: null, fy: null };
     nodes.set(fp, n);
     return n;
   }
@@ -325,42 +325,70 @@ const Gravity = (() => {
       }
     }
 
-    // Build adjacency for angular separation force
-    const adjacency = new Map();
-    for (const e of edgeArray) {
-      if (!adjacency.has(e.source)) adjacency.set(e.source, []);
-      if (!adjacency.has(e.target)) adjacency.set(e.target, []);
-      adjacency.get(e.source).push(e.target);
-      adjacency.get(e.target).push(e.source);
-    }
-
     if (simulation) simulation.stop();
 
+    // --- Time-series layout ---
+    // X-axis: access order (first accessed → left, later → right)
+    // Y-axis: directory lanes (files in same dir cluster vertically)
+    const pad = 80;
+    const usableW = Math.max(300, (width || 600) - pad * 2);
+    const usableH = Math.max(200, (height || 400) - pad * 2);
+
+    // Compute X targets from access order
+    let minOrder = Infinity, maxOrder = -Infinity;
+    for (const n of nodeArray) {
+      minOrder = Math.min(minOrder, n.accessOrder);
+      maxOrder = Math.max(maxOrder, n.accessOrder);
+    }
+    const orderRange = Math.max(1, maxOrder - minOrder);
+
+    // Assign directory lanes for Y targets
+    const dirList = [...dirGroups.keys()].sort((a, b) => {
+      // Sort by earliest access in the group
+      const aMin = Math.min(...dirGroups.get(a).map(n => n.accessOrder));
+      const bMin = Math.min(...dirGroups.get(b).map(n => n.accessOrder));
+      return aMin - bMin;
+    });
+    const dirLane = new Map();
+    dirList.forEach((d, i) => dirLane.set(d, i));
+    const laneCount = Math.max(1, dirList.length);
+    const laneH = usableH / laneCount;
+
+    // Compute target positions
+    for (const n of nodeArray) {
+      n._targetX = pad + ((n.accessOrder - minOrder) / orderRange) * usableW;
+      const lane = dirLane.get(n.dir || "__root__") || 0;
+      n._targetY = pad + lane * laneH + laneH / 2;
+    }
+
     simulation = d3.forceSimulation(nodeArray)
-      .force("charge", d3.forceManyBody().strength(-220).distanceMax(500))
+      .force("charge", d3.forceManyBody().strength(-80).distanceMax(300))
       .force("link", d3.forceLink(edgeArray).id(d => d.id).distance(d => {
-        // Important nodes pull closer together; less important drift apart
-        const imp = (getImportance(d.source) + getImportance(d.target)) / 2;
-        return Math.max(40, 120 - imp * 2);
-      }).strength(e => 0.08 + e.weight * 0.008))
-      .force("center", d3.forceCenter(width / 2, height / 2).strength(0.012))
-      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) * 2.5 + 20).strength(0.9))
-      .force("cluster", clusterForce(dirGroups, 0.05))
-      .force("sessionCluster", multiSession && sessionGroups.size > 1 ? clusterForce(sessionGroups, 0.04) : null)
-      .force("angular", angularSeparationForce(adjacency, 0.4))
-      .velocityDecay(0.4)
-      .alphaDecay(0.05)
+        const sameDir = d.source.dir && d.source.dir === d.target.dir;
+        return sameDir ? 40 : 80;
+      }).strength(e => 0.03 + e.weight * 0.005))
+      // Time-series X positioning: strong pull toward access-order X
+      .force("x", d3.forceX(d => d._targetX).strength(0.3))
+      // Directory lane Y positioning
+      .force("y", d3.forceY(d => d._targetY).strength(0.25))
+      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) * 1.8 + 8).strength(0.7))
+      .force("cluster", clusterForce(dirGroups, 0.06))
+      .force("sessionCluster", multiSession && sessionGroups.size > 1 ? clusterForce(sessionGroups, 0.03) : null)
+      .velocityDecay(0.45)
+      .alphaDecay(0.04)
       .on("tick", () => {});
 
     if (isFirstBuild) {
-      // Full warm-up only on initial load
-      for (let i = 0; i < 80; i++) simulation.tick();
+      // Seed initial positions near targets for faster convergence
+      for (const n of nodeArray) {
+        n.x = n._targetX + (Math.random() - 0.5) * 20;
+        n.y = n._targetY + (Math.random() - 0.5) * 20;
+      }
+      for (let i = 0; i < 100; i++) simulation.tick();
       isFirstBuild = false;
     } else {
-      // Incremental update: gentle nudge, not a full restart
-      // Kill existing velocities so settled nodes don't fly
       for (const n of nodeArray) { n.vx = 0; n.vy = 0; }
-      simulation.alpha(0.15).restart();
+      simulation.alpha(0.2).restart();
     }
   }
 
@@ -519,6 +547,46 @@ const Gravity = (() => {
       }
     }
     // Light mode: clean flat background, no decoration
+  }
+
+  // --- Directory lane labels (drawn in world space) ---
+  function drawDirLanes(dark) {
+    // Collect directory groups from visible nodes
+    const laneNodes = new Map();
+    for (const n of nodes.values()) {
+      if (!nodeVisible(n)) continue;
+      const d = n.dir || "__root__";
+      if (!laneNodes.has(d)) laneNodes.set(d, { minY: Infinity, maxY: -Infinity, minX: Infinity, count: 0 });
+      const lane = laneNodes.get(d);
+      const ny = spY(n), nx = spX(n);
+      lane.minY = Math.min(lane.minY, ny);
+      lane.maxY = Math.max(lane.maxY, ny);
+      lane.minX = Math.min(lane.minX, nx);
+      lane.count++;
+    }
+    if (laneNodes.size < 2) return;
+
+    for (const [dir, lane] of laneNodes) {
+      if (dir === "__root__" || lane.count < 1) continue;
+      const midY = (lane.minY + lane.maxY) / 2;
+
+      // Subtle horizontal divider line
+      ctx.save();
+      ctx.strokeStyle = dark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)";
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(lane.minX - 40, lane.maxY + 15);
+      ctx.lineTo(lane.minX + 600, lane.maxY + 15);
+      ctx.stroke();
+
+      // Directory label on the left
+      ctx.fillStyle = dark ? "rgba(255,248,240,0.15)" : "rgba(0,0,0,0.1)";
+      ctx.font = `400 ${Math.round(9 * mapScale)}px "SF Mono", monospace`;
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillText(dir, lane.minX - 16, midY);
+      ctx.restore();
+    }
   }
 
   // --- Edge Hover Detection ---
@@ -852,6 +920,9 @@ const Gravity = (() => {
     if (spreadCount > 0) { spreadCX /= spreadCount; spreadCY /= spreadCount; }
 
     function sp(node) { return { x: spX(node), y: spY(node) }; }
+
+    // --- Directory lane labels (left gutter) ---
+    drawDirLanes(dark);
 
     // --- Edges: consolidate per node-pair, use most recent direction ---
     // Group edges by unordered node pair, pick the most recent for arrow direction
