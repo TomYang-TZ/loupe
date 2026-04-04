@@ -1961,17 +1961,45 @@ function renderReplayTimeline(timeline, totalEntries) {
 
 function renderMarkdown(text) {
   if (!text) return "";
-  return text
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/^## (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/^(\s*)(█+░*)\s*(.*)$/gm, '<div style="font-family:monospace;font-size:10px;color:var(--text-muted)">$1<span style="color:#06b6d4">$2</span> $3</div>')
-    .replace(/\n\n/g, "<br><br>")
-    .replace(/\n- /g, "<br>• ")
-    .replace(/\n(\d+)\. /g, "<br>$1. ");
+  // Escape HTML
+  let html = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // Fenced code blocks (```...```)
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre class="md-code-block"><code>${code.trimEnd()}</code></pre>`);
+
+  // Tables: detect rows of |...|...|
+  html = html.replace(/((?:^\|.+\|$\n?)+)/gm, (tableBlock) => {
+    const rows = tableBlock.trim().split("\n").filter(r => r.trim());
+    if (rows.length < 2) return tableBlock;
+    // Check if second row is separator (|---|---|)
+    const isSep = rows[1] && /^\|[\s:-]+\|/.test(rows[1]);
+    const dataRows = isSep ? [rows[0], ...rows.slice(2)] : rows;
+    let t = '<table class="md-table">';
+    dataRows.forEach((row, i) => {
+      const cells = row.split("|").slice(1, -1).map(c => c.trim());
+      const tag = (i === 0 && isSep) ? "th" : "td";
+      t += "<tr>" + cells.map(c => `<${tag}>${c}</${tag}>`).join("") + "</tr>";
+    });
+    t += "</table>";
+    return t;
+  });
+
+  // Headings
+  html = html.replace(/^## (.+)$/gm, "<h3>$1</h3>");
+  html = html.replace(/^### (.+)$/gm, "<h4>$1</h4>");
+  // Inline formatting
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Progress bars
+  html = html.replace(/^(\s*)(█+░*)\s*(.*)$/gm,
+    '<div style="font-family:monospace;font-size:10px;color:var(--text-muted)">$1<span style="color:#06b6d4">$2</span> $3</div>');
+  // Block formatting
+  html = html.replace(/\n\n/g, "<br><br>");
+  html = html.replace(/\n- /g, "<br>• ");
+  html = html.replace(/\n(\d+)\. /g, "<br>$1. ");
+  return html;
 }
 
 // Legacy modal fallback (kept for non-popover contexts)

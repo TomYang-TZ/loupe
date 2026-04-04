@@ -71,6 +71,33 @@ function isDuplicateThinking(json) {
   return false;
 }
 
+// --- Replay analysis session filter ---
+// When `claude --print` runs for replay analysis, it creates a session that
+// shows up in the log. Detect and suppress it.
+const replaySessionIds = new Set();
+const REPLAY_PROMPT_SIG = "You are analyzing a Claude Code agent session";
+
+function isReplayAnalysisLine(json) {
+  if (!json) return false;
+  const inner = (json._logstream_type && json.data) ? json.data : json;
+  const sid = inner.session_id;
+  if (!sid) return false;
+
+  // Already known replay session
+  if (replaySessionIds.has(sid)) return true;
+
+  // Detect by user_query or thinking content matching the analysis prompt signature
+  const uq = inner.user_query || "";
+  const thinking = inner.thinking || "";
+  if (uq.includes(REPLAY_PROMPT_SIG) || thinking.includes(REPLAY_PROMPT_SIG)) {
+    replaySessionIds.add(sid);
+    // Auto-expire after 10 minutes
+    setTimeout(() => replaySessionIds.delete(sid), 10 * 60 * 1000);
+    return true;
+  }
+  return false;
+}
+
 // --- Session tracking ---
 const knownSessions = new Map(); // sessionId -> { label, lastEventTs }
 
@@ -151,6 +178,7 @@ function readNewBytes() {
       if (line.trim() === "") continue;
       const msg = buildMessage(line);
       if (msg.json && isDuplicateThinking(msg.json)) continue;
+      if (msg.json && isReplayAnalysisLine(msg.json)) continue;
       trackSession(line);
       broadcast(JSON.stringify(msg));
     }
@@ -226,6 +254,7 @@ async function sendBacklog(ws) {
     for (const line of backlog) {
       const truncated = truncateForBacklog(line);
       const msg = buildMessage(truncated);
+      if (msg.json && isReplayAnalysisLine(msg.json)) continue;
       ws.send(JSON.stringify(msg));
 
       // Yield to event loop between messages to prevent buffer overflow
@@ -599,6 +628,25 @@ Actionable advice for a human using this agent on similar tasks:
 - [Specific recommendation 1]
 - [Specific recommendation 2]
 - [Specific recommendation 3]
+
+## Prompting Advice
+How should the user have prompted or interacted with the agent differently?
+- **What worked**: Which parts of the user's instructions led to efficient work?
+- **What to improve**: Were instructions too vague, too specific, missing context, or missing constraints?
+- **Suggested prompt template**: Write a concrete prompt template the user could reuse for similar tasks. Use \`[brackets]\` for variable parts:
+\`\`\`
+[Your improved prompt template here — this should be a real, usable template]
+\`\`\`
+
+## Evaluation Criteria
+Rate each dimension 1-5 and briefly justify. These help the user calibrate expectations:
+| Criteria | Score | Notes |
+|----------|-------|-------|
+| Prompt clarity | /5 | Was the user's intent clear to the agent? |
+| Approach directness | /5 | Did the agent take the shortest viable path? |
+| Error recovery | /5 | How well did the agent recover from mistakes? |
+| Tool efficiency | /5 | Were tool calls necessary and well-targeted? |
+| Outcome quality | /5 | Did the final result meet the original goal? |
 
 ## Efficiency Score
 **[N]/10** — [1-sentence justification]
