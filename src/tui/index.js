@@ -399,6 +399,11 @@ function handleMessage(data) {
   const sq = getSessionQueries(sessionId);
 
   if (isQueryBoundary) {
+    // Dedup: skip if same query text within 5s in this session (backlog/live overlap)
+    const lastQ = sq.length > 0 ? sq[sq.length - 1] : null;
+    if (lastQ && lastQ.userQuery === userQuery && (msg.ts - lastQ.startTs < 5000)) {
+      render(); return;
+    }
     // Absorb preamble events into this query
     let preambleEvents = [];
     if (sq.length > 0 && sq[sq.length - 1]._preamble) {
