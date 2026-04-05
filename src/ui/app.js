@@ -74,6 +74,9 @@ function updateStatusBar() {
       label += " \u00b7 " + m + "m" + String(s).padStart(2, "0") + "s";
     }
     sessionText.textContent = label;
+  } else if (statusBar.sessionState === "done") {
+    sessionDot.classList.add("green");
+    sessionText.textContent = "Done";
   } else if (statusBar.sessionState === "waiting") {
     sessionDot.classList.add("amber", "pulse");
     sessionText.textContent = "Waiting: " + (statusBar.waitingTool || "approval");
@@ -146,11 +149,9 @@ function updateStatusBarFromEntry(entry) {
   if (cat === "user_query") {
     statusBar.errors = 0;
     statusBar.apiError = null;
-    if (statusBar.sessionState === "idle") {
-      statusBar.sessionState = "active";
-      statusBar.sessionStartTs = statusBar.sessionStartTs || entry.ts;
-      if (!statusBarTimer) statusBarTimer = setInterval(updateStatusBar, 1000);
-    }
+    statusBar.sessionState = "active";
+    statusBar.sessionStartTs = statusBar.sessionStartTs || entry.ts;
+    if (!statusBarTimer) statusBarTimer = setInterval(updateStatusBar, 1000);
   }
   if (cat === "tool_failure") statusBar.errors++;
   if (cat === "stop_failure") {
@@ -174,6 +175,13 @@ function updateStatusBarFromEntry(entry) {
   }
   if (cat === "task_created") statusBar.tasksCreated++;
   if (cat === "task_completed") statusBar.tasksCompleted++;
+  if (cat === "Notification" && statusBar.sessionState !== "waiting") {
+    statusBar.sessionState = "waiting";
+  }
+  if (cat === "Stop") {
+    statusBar.sessionState = "done"; statusBar.waitingTool = null;
+    setTimeout(() => { if (statusBar.sessionState === "done") { statusBar.sessionState = "idle"; updateStatusBar(); } }, 10000);
+  }
 
   updateStatusBar();
 }
@@ -968,7 +976,8 @@ function connect() {
         if (ss.phase === "done") ss.phase = "idle";
         if (ss.phase === "waiting for input") ss.phase = "idle";
       }
-      statusBar.sessionState = statusBar.sessionState === "waiting" ? "active" : statusBar.sessionState;
+      // Normalize status bar after backlog
+      if (["waiting", "done", "compacting"].includes(statusBar.sessionState)) statusBar.sessionState = "idle";
       statusBar.waitingTool = null;
       sendIslandUpdate();
       updateStatusBar();

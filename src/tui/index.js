@@ -64,6 +64,7 @@ let sessionFilter = "all";
 const statusLine = {
   sessionState: "idle",
   waitingTool: null,
+  approved: null,
   errors: 0,
   apiError: null,
   agentsRunning: 0,
@@ -146,8 +147,8 @@ function categorize(json) {
   if (type === "TaskCompleted") return "task_completed";
   if (type === "tool_rejected") return "tool_rejected";
   if (type === "tool_approved_with_message") return "tool_approved_msg";
-  if (type === "Notification") return null;
-  if (type === "Stop") return null;
+  if (type === "Notification") return "Notification";
+  if (type === "Stop") return "Stop";
   return type || "unknown";
 }
 
@@ -224,6 +225,13 @@ function handleMessage(data) {
   try { msg = JSON.parse(data); } catch { return; }
 
   if (msg.type === "backlog_done" || msg.type === "sessions" || msg.type === "session_remove" || msg.type === "reset") {
+    if (msg.type === "backlog_done") {
+      // Normalize transient states from backlog replay
+      phase = "idle"; currentTool = null; thinkingActive = false;
+      statusLine.sessionState = "idle"; statusLine.waitingTool = null;
+      statusLine.approved = null;
+      render();
+    }
     if (msg.type === "reset") {
       eventCount = 0; errorCount = 0; tokenTotal = 0;
       fileSet.clear();
@@ -291,15 +299,28 @@ function handleMessage(data) {
   if (cat === "session_end") { statusLine.sessionState = "idle"; statusLine.sessionStartTs = null; }
   if (cat === "compact") { statusLine.sessionState = json?._logstream_type === "PreCompact" ? "compacting" : "active"; }
   if (cat === "permission_request") { statusLine.sessionState = "waiting"; statusLine.waitingTool = json?.data?.tool_name || "tool"; }
-  if (statusLine.sessionState === "waiting" && (cat === "pre_tool" || cat === "post_tool" || cat === "thinking" || cat === "user_query" || cat === "tool_rejected")) {
+  if (statusLine.sessionState === "waiting" && (cat === "pre_tool" || cat === "post_tool" || cat === "thinking" || cat === "user_query")) {
+    statusLine.approved = statusLine.waitingTool || "tool";
+    statusLine.sessionState = "active"; statusLine.waitingTool = null;
+    setTimeout(() => { statusLine.approved = null; render(); }, 1500);
+  }
+  if (statusLine.sessionState === "waiting" && cat === "tool_rejected") {
     statusLine.sessionState = "active"; statusLine.waitingTool = null;
   }
   if (cat === "user_query") {
     statusLine.errors = 0; statusLine.apiError = null;
-    if (statusLine.sessionState === "idle") { statusLine.sessionState = "active"; statusLine.sessionStartTs = statusLine.sessionStartTs || Date.now(); }
+    statusLine.sessionState = "active"; statusLine.sessionStartTs = statusLine.sessionStartTs || Date.now();
+    phase = "active";
   }
   if (cat === "tool_failure" || cat === "tool_rejected") statusLine.errors++;
   if (cat === "stop_failure") statusLine.apiError = json?.data?.reason || "API error";
+  if (cat === "Notification" && statusLine.sessionState !== "waiting") { statusLine.sessionState = "waiting"; }
+  if (cat === "Stop") {
+    statusLine.sessionState = "done"; statusLine.waitingTool = null;
+    phase = "idle"; currentTool = null; thinkingActive = false;
+    setTimeout(() => { if (statusLine.sessionState === "done") { statusLine.sessionState = "idle"; render(); } }, 10000);
+  }
+  if (cat === "Notification") { phase = "idle"; currentTool = null; thinkingActive = false; }
   if (cat === "sub_agent") { statusLine.agentsRunning++; statusLine.agentsTotal++; }
   if (cat === "sub_agent_result") { statusLine.agentsRunning = Math.max(0, statusLine.agentsRunning - 1); }
   if (cat === "task_created") statusLine.tasksCreated++;
@@ -408,6 +429,9 @@ function handleMessage(data) {
   }
   if (sessionId && sessions.has(sessionId)) sessions.get(sessionId).eventCount++;
 
+  // Status-only events — don't add to query groups
+  if (cat === "Stop" || cat === "Notification") { render(); return; }
+
   // Per-session query grouping (same architecture as window mode)
   const userQuery = extractUserQuery(json);
   const isSystemPrompt = userQuery && (userQuery.includes("<task-notification>") || userQuery.includes("<system-reminder>"));
@@ -461,13 +485,17 @@ function handleMessage(data) {
 // ===== Rendering =====
 function renderStatusLine(cols) {
   const parts = [];
-  if (statusLine.sessionState === "active") {
+  if (statusLine.approved) {
+    parts.push(`${FG.green}●${RESET} Approved: ${statusLine.approved}`);
+  } else if (statusLine.sessionState === "active") {
     let label = `${FG.green}●${RESET} Active`;
     if (statusLine.sessionStartTs) {
       const secs = Math.floor((Date.now() - statusLine.sessionStartTs) / 1000);
       label += ` ${DIM}${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, "0")}s${RESET}`;
     }
     parts.push(label);
+  } else if (statusLine.sessionState === "done") {
+    parts.push(`${FG.green}●${RESET} Done`);
   } else if (statusLine.sessionState === "waiting") {
     parts.push(`${FG.yellow}●${RESET} Waiting: ${statusLine.waitingTool || "approval"}`);
   } else if (statusLine.sessionState === "compacting") {
@@ -635,7 +663,7 @@ function render() {
 
   // Header
   const connStr = connected ? `${FG.green}●${RESET}` : `${FG.red}●${RESET}`;
-  const phaseColor = { exploring: FG.magenta, implementing: FG.blue, debugging: FG.red, testing: FG.green, planning: FG.yellow, idle: FG.gray }[phase] || FG.gray;
+  const phaseColor = { active: FG.green, exploring: FG.magenta, implementing: FG.blue, debugging: FG.red, testing: FG.green, planning: FG.yellow, idle: FG.gray }[phase] || FG.gray;
   let header = `${BOLD} LOUPE ${RESET} ${connStr} ${phaseColor}${BOLD}${thinkingActive ? "thinking" : phase}${RESET}`;
   if (currentTool) header += `  ${DIM}▸ ${currentTool.name}${RESET}`;
 
