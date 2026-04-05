@@ -705,7 +705,7 @@ function sendIslandUpdate() {
       activeSessionColor: active._color || (active.id && sessions.get(active.id)?.color) || null,
       activeSessionId: active.id || null,
     });
-  } catch {}
+  } catch (e) { console.error("sendIslandUpdate error:", e); }
 }
 
 // Periodic update so idle seconds tick up in the pill
@@ -955,12 +955,18 @@ function connect() {
     if (msg.type === "reset") { resetAll(); return; }
     if (msg.type === "backlog_done") {
       scrollToBottom();
-      // Clear stale waiting states from backlog replay
+      // Clear stale states from backlog replay
       for (const [, ss] of islandSessions) {
         ss.waiting = false;
         ss.pulsing = false;
         ss.waitingTool = null;
         ss.rejected = null;
+        ss.approved = null;
+        ss.denied = null;
+        // Normalize transient phases — "starting" and "done" are momentary
+        if (ss.phase === "starting") ss.phase = "idle";
+        if (ss.phase === "done") ss.phase = "idle";
+        if (ss.phase === "waiting for input") ss.phase = "idle";
       }
       statusBar.sessionState = statusBar.sessionState === "waiting" ? "active" : statusBar.sessionState;
       statusBar.waitingTool = null;

@@ -95,6 +95,8 @@ class IslandView: NSView {
     var thinkingActive: Bool = false
     var waitingForConfirmation: Bool = false
     var pulsing: Bool = false
+    private var pulseCount: Int = 0
+    private var wasPulsing: Bool = false
     var waitingTool: String? = nil
     var approvedTool: String? = nil
     var rejectedTool: String? = nil
@@ -207,9 +209,20 @@ class IslandView: NSView {
             pillCurrentWidth = pillTargetWidth
         }
 
-        // Pulse for stuck/thinking/waiting states
-        // Always animate: pill aura cycles, dot auras pulse
+        // Pulse counting: stop after 10 full cycles
+        if pulsing && !wasPulsing {
+            pulseCount = 0  // reset on new pulse start
+        }
+        wasPulsing = pulsing
         pulsePhase += 0.05
+        if pulsing {
+            // A full cycle is when sin completes a period (~63 frames at 0.05 increment)
+            // Count zero-crossings going positive
+            let prev = sin(Double(pulsePhase - 0.05) * 2)
+            let curr = sin(Double(pulsePhase) * 2)
+            if prev <= 0 && curr > 0 { pulseCount += 1 }
+            if pulseCount >= 10 { pulsing = false }
+        }
         needsRedraw = true
 
         // Warming timer: after hovering 0.6s, expand
