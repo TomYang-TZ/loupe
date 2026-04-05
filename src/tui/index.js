@@ -307,7 +307,7 @@ function handleMessage(data) {
 
   // Collapse post_tool into the matching USE line — append ✓ instead of a separate OK line
   if (cat === "post_tool") {
-    const postSq = getSessionQueries(sessionId);
+    const postSq = getSessionQueries(extractSessionId(json));
     for (let qi = postSq.length - 1; qi >= 0; qi--) {
       const q = postSq[qi];
       for (let ei = q.events.length - 1; ei >= 0; ei--) {
