@@ -45,6 +45,11 @@ let autoFollow = true;
 let hasNewQueries = false;
 let scrollOffset = 0;
 
+// Two-level navigation
+let navLevel = "query";   // "query" | "event" | "detail"
+let eventFocusIdx = -1;   // which event within the focused query
+let detailScroll = 0;     // scroll offset within detail view
+
 // Session tracking
 const sessions = new Map();
 let sessionFilter = "all";
@@ -325,7 +330,7 @@ function handleMessage(data) {
   // Query grouping
   const userQuery = extractUserQuery(json);
   const isQueryBoundary = cat === "user_query" && userQuery;
-  const eventObj = { line, cat, sessionId, ts: msg.ts };
+  const eventObj = { line, cat, sessionId, ts: msg.ts, json };
 
   if (isQueryBoundary) {
     // Auto-collapse previous, expand new when following
@@ -415,6 +420,103 @@ function renderAgentTree(rows) {
   return lines.map(l => padLine(l, TREE_WIDTH));
 }
 
+function buildDetailLines(ev, cols) {
+  const lines = [];
+  const w = cols - 2;
+  const d = ev.json?.data || {};
+  const cat = ev.cat;
+
+  // Header: category + tool name + timestamp
+  const ts = new Date(ev.ts).toLocaleTimeString("en-US", { hour12: false });
+  lines.push(`${BOLD}${catColors[cat] || FG.white}${cat.toUpperCase()}${RESET}  ${DIM}${ts}${RESET}`);
+  if (d.tool_name) lines.push(`${FG.white}Tool: ${d.tool_name}${RESET}`);
+  lines.push("");
+
+  // Full content based on category
+  if (cat === "thinking") {
+    lines.push(`${BOLD}Thinking:${RESET}`);
+    const text = d.thinking || "";
+    wrapText(text, w).forEach(l => lines.push(` ${FG.magenta}${l}${RESET}`));
+  } else if (cat === "pre_tool") {
+    const input = d.tool_input || {};
+    if (input.prompt) {
+      lines.push(`${BOLD}Prompt:${RESET}`);
+      wrapText(input.prompt, w).forEach(l => lines.push(` ${l}`));
+    } else if (input.command) {
+      lines.push(`${BOLD}Command:${RESET}`);
+      wrapText(input.command, w).forEach(l => lines.push(` ${FG.yellow}${l}${RESET}`));
+    } else if (input.file_path) {
+      lines.push(`${BOLD}File:${RESET} ${input.file_path}`);
+      if (input.old_string) { lines.push(`${BOLD}Old:${RESET}`); wrapText(input.old_string, w).forEach(l => lines.push(` ${FG.red}${l}${RESET}`)); }
+      if (input.new_string) { lines.push(`${BOLD}New:${RESET}`); wrapText(input.new_string, w).forEach(l => lines.push(` ${FG.green}${l}${RESET}`)); }
+      if (input.content) { lines.push(`${BOLD}Content:${RESET}`); wrapText(input.content.slice(0, 2000), w).forEach(l => lines.push(` ${l}`)); }
+    } else if (input.pattern) {
+      lines.push(`${BOLD}Pattern:${RESET} ${input.pattern}`);
+      if (input.path) lines.push(`${BOLD}Path:${RESET} ${input.path}`);
+    } else if (input.description) {
+      lines.push(`${BOLD}Description:${RESET}`);
+      wrapText(input.description, w).forEach(l => lines.push(` ${l}`));
+    } else {
+      lines.push(`${BOLD}Input:${RESET}`);
+      wrapText(JSON.stringify(input, null, 2), w).forEach(l => lines.push(` ${DIM}${l}${RESET}`));
+    }
+  } else if (cat === "post_tool") {
+    const resp = d.tool_response || {};
+    const text = resp.stdout || resp.content || d.tool_result || "";
+    if (typeof text === "string" && text) {
+      lines.push(`${BOLD}Output:${RESET}`);
+      wrapText(text.slice(0, 3000), w).forEach(l => lines.push(` ${FG.green}${l}${RESET}`));
+    } else if (typeof text === "object") {
+      lines.push(`${BOLD}Response:${RESET}`);
+      wrapText(JSON.stringify(text, null, 2).slice(0, 3000), w).forEach(l => lines.push(` ${DIM}${l}${RESET}`));
+    }
+  } else if (cat === "sub_agent") {
+    lines.push(`${BOLD}Agent Type:${RESET} ${d.agent_type || "Agent"}`);
+    lines.push(`${BOLD}Agent ID:${RESET} ${d.agent_id || "unknown"}`);
+    // Try to get the prompt from the stored _agentPrompt or description
+    const prompt = d._agentPrompt || d.prompt || d.description || "";
+    if (prompt) {
+      lines.push("");
+      lines.push(`${BOLD}Prompt:${RESET}`);
+      wrapText(prompt, w).forEach(l => lines.push(` ${l}`));
+    }
+  } else if (cat === "sub_agent_result") {
+    lines.push(`${BOLD}Agent Type:${RESET} ${d.agent_type || "Agent"}`);
+    const msg = d.last_assistant_message || "";
+    if (msg) {
+      lines.push("");
+      lines.push(`${BOLD}Result:${RESET}`);
+      wrapText(msg, w).forEach(l => lines.push(` ${l}`));
+    }
+  } else if (cat === "tool_failure") {
+    lines.push(`${BOLD}Error:${RESET}`);
+    wrapText(String(d.error || "unknown error"), w).forEach(l => lines.push(` ${FG.red}${l}${RESET}`));
+  } else if (cat === "error") {
+    lines.push(`${BOLD}Error:${RESET}`);
+    wrapText(String(d.tool_result || d.error || "error"), w).forEach(l => lines.push(` ${FG.red}${l}${RESET}`));
+  } else {
+    // Generic: dump JSON
+    lines.push(`${BOLD}Data:${RESET}`);
+    wrapText(JSON.stringify(d, null, 2).slice(0, 3000), w).forEach(l => lines.push(` ${DIM}${l}${RESET}`));
+  }
+
+  return lines;
+}
+
+function wrapText(text, width) {
+  const lines = [];
+  for (const raw of String(text).split("\n")) {
+    if (raw.length <= width) {
+      lines.push(raw);
+    } else {
+      for (let i = 0; i < raw.length; i += width) {
+        lines.push(raw.slice(i, i + width));
+      }
+    }
+  }
+  return lines;
+}
+
 function render() {
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
@@ -454,6 +556,25 @@ function render() {
 
   output += sep + "\n";
 
+  // Detail view mode — show full content for selected event
+  if (navLevel === "detail" && focusIdx >= 0 && focusIdx < queries.length) {
+    const q = queries[focusIdx];
+    const ev = (eventFocusIdx >= 0 && eventFocusIdx < q.events.length) ? q.events[eventFocusIdx] : null;
+    const detailLines = ev ? buildDetailLines(ev, cols) : [`${DIM}No event selected${RESET}`];
+    const titleLine = `${FG.cyan}${BOLD}Detail${RESET}  ${DIM}Esc to close  ↑↓ scroll${RESET}`;
+    output += padLine(titleLine, cols) + "\n";
+    const detailRows = logRows - 1;
+    detailScroll = Math.max(0, Math.min(detailScroll, Math.max(0, detailLines.length - detailRows)));
+    const visible = detailLines.slice(detailScroll, detailScroll + detailRows);
+    for (let i = 0; i < detailRows; i++) {
+      output += padLine(visible[i] || "", cols) + "\n";
+    }
+    output += sep + "\n";
+    output += renderStatusLine(cols) + "\n";
+    process.stdout.write(output);
+    return;
+  }
+
   // Build flat row list from queries
   const filteredQueries = sessionFilter === "all"
     ? queries
@@ -464,17 +585,21 @@ function render() {
     const realIdx = queries.indexOf(q);
     const isFocused = realIdx === focusIdx;
     const chevron = q.collapsed ? "▶" : "▼";
-    const fc = isFocused ? FG.cyan : DIM;
+    const fc = isFocused && navLevel === "query" ? FG.cyan : (isFocused ? FG.white : DIM);
     const queryText = q.userQuery ? q.userQuery.slice(0, 40) : "(preamble)";
     const count = q.events.length;
     const time = new Date(q.startTs).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" });
     const headerLine = `${fc}${chevron}${RESET} ${fc}${queryText}${RESET}  ${DIM}${count}${RESET}  ${DIM}${time}${RESET}`;
-    rowData.push({ text: headerLine, isHeader: true, queryIdx: realIdx });
+    rowData.push({ text: headerLine, isHeader: true, queryIdx: realIdx, eventIdx: -1 });
 
     if (!q.collapsed) {
+      let evIdx = 0;
       for (const ev of q.events) {
-        if (sessionFilter !== "all" && ev.sessionId && ev.sessionId !== sessionFilter) continue;
-        rowData.push({ text: `  ${ev.line}`, isHeader: false, queryIdx: realIdx });
+        if (sessionFilter !== "all" && ev.sessionId && ev.sessionId !== sessionFilter) { evIdx++; continue; }
+        const isEventFocused = navLevel === "event" && realIdx === focusIdx && evIdx === eventFocusIdx;
+        const prefix = isEventFocused ? `${FG.cyan}▸${RESET} ` : "  ";
+        rowData.push({ text: `${prefix}${ev.line}`, isHeader: false, queryIdx: realIdx, eventIdx: evIdx });
+        evIdx++;
       }
     }
   }
@@ -492,18 +617,22 @@ function render() {
     return;
   }
 
-  // Scroll to keep focused query visible
-  if (focusIdx >= 0) {
-    const focusRow = rowData.findIndex(r => r.isHeader && r.queryIdx === focusIdx);
-    if (focusRow >= 0) {
-      if (focusRow < scrollOffset) scrollOffset = focusRow;
-      if (focusRow >= scrollOffset + logRows) scrollOffset = focusRow - logRows + 1;
-    }
+  // Scroll to keep focused row visible
+  let focusRow = -1;
+  if (navLevel === "event" && focusIdx >= 0) {
+    focusRow = rowData.findIndex(r => !r.isHeader && r.queryIdx === focusIdx && r.eventIdx === eventFocusIdx);
+  }
+  if (focusRow < 0 && focusIdx >= 0) {
+    focusRow = rowData.findIndex(r => r.isHeader && r.queryIdx === focusIdx);
+  }
+  if (focusRow >= 0) {
+    if (focusRow < scrollOffset) scrollOffset = focusRow;
+    if (focusRow >= scrollOffset + logRows) scrollOffset = focusRow - logRows + 1;
   }
   scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, rowData.length - logRows)));
 
   const visibleRows = rowData.slice(scrollOffset, scrollOffset + logRows);
-  rowMap = visibleRows.map(r => r ? { type: r.isHeader ? "header" : "event", queryIdx: r.queryIdx } : null);
+  rowMap = visibleRows.map(r => r ? { type: r.isHeader ? "header" : "event", queryIdx: r.queryIdx, eventIdx: r.eventIdx } : null);
 
   // Render rows with optional agent tree pane
   const showTree = agentTreeVisible && (sessionFilter === "all" || agentTree.some(a => true));
@@ -546,8 +675,56 @@ function handleInput(buf) {
     return;
   }
 
-  if (s === "\x03" || s === "q") { cleanup(); process.exit(0); }
+  // Esc — go back one level
+  if (s === "\x1b" && buf.length === 1) {
+    if (navLevel === "detail") { navLevel = "event"; detailScroll = 0; }
+    else if (navLevel === "event") { navLevel = "query"; eventFocusIdx = -1; }
+    render(); return;
+  }
 
+  if (s === "\x03") { cleanup(); process.exit(0); }
+  // q quits at query level, goes back at event/detail level
+  if (s === "q") {
+    if (navLevel === "detail") { navLevel = "event"; detailScroll = 0; render(); return; }
+    if (navLevel === "event") { navLevel = "query"; eventFocusIdx = -1; render(); return; }
+    cleanup(); process.exit(0);
+  }
+
+  // Detail view: j/k scroll, Esc/q/Enter close
+  if (navLevel === "detail") {
+    if (s === "j" || s === "\x1b[B") { detailScroll++; render(); return; }
+    if (s === "k" || s === "\x1b[A") { detailScroll = Math.max(0, detailScroll - 1); render(); return; }
+    if (s === "\r" || s === " ") { navLevel = "event"; detailScroll = 0; render(); return; }
+    if (s === "g") { detailScroll = 0; render(); return; }
+    if (s === "G") { detailScroll = 99999; render(); return; }
+    return;
+  }
+
+  // Event level: j/k navigate events, Enter opens detail, Esc goes back
+  if (navLevel === "event") {
+    const q = queries[focusIdx];
+    if (!q) { navLevel = "query"; render(); return; }
+
+    if (s === "j" || s === "\x1b[B") {
+      if (eventFocusIdx < q.events.length - 1) eventFocusIdx++;
+      render(); return;
+    }
+    if (s === "k" || s === "\x1b[A") {
+      if (eventFocusIdx > 0) eventFocusIdx--;
+      render(); return;
+    }
+    if (s === "\r" || s === " ") {
+      if (eventFocusIdx >= 0 && eventFocusIdx < q.events.length) {
+        navLevel = "detail"; detailScroll = 0;
+      }
+      render(); return;
+    }
+    if (s === "g") { eventFocusIdx = 0; render(); return; }
+    if (s === "G") { eventFocusIdx = q.events.length - 1; render(); return; }
+    return;
+  }
+
+  // Query level: j/k navigate queries, Enter expand/collapse or enter event level
   if (s === "j" || s === "\x1b[B") {
     if (focusIdx < queries.length - 1) {
       focusIdx++;
@@ -564,7 +741,31 @@ function handleInput(buf) {
 
   if (s === "\r" || s === " ") {
     if (focusIdx >= 0 && focusIdx < queries.length) {
-      queries[focusIdx].collapsed = !queries[focusIdx].collapsed;
+      const q = queries[focusIdx];
+      if (q.collapsed) {
+        q.collapsed = false;
+      } else {
+        // Already expanded — enter event navigation
+        navLevel = "event";
+        eventFocusIdx = 0;
+      }
+    }
+    render(); return;
+  }
+
+  // l / right arrow — enter event level if expanded
+  if (s === "l" || s === "\x1b[C") {
+    if (focusIdx >= 0 && focusIdx < queries.length && !queries[focusIdx].collapsed) {
+      navLevel = "event";
+      eventFocusIdx = 0;
+    }
+    render(); return;
+  }
+
+  // h / left arrow — collapse query
+  if (s === "h" || s === "\x1b[D") {
+    if (focusIdx >= 0 && focusIdx < queries.length) {
+      queries[focusIdx].collapsed = true;
     }
     render(); return;
   }
