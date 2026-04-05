@@ -60,27 +60,22 @@ const hookCmd = '$HOOK_PATH';
 const settings = JSON.parse(fs.readFileSync(path, 'utf-8'));
 if (!settings.hooks) settings.hooks = {};
 
-const preHook = {
-  hooks: [{ type: 'command', command: hookCmd + ' PreToolUse', async: true }]
-};
-const postHook = {
-  hooks: [{ type: 'command', command: hookCmd + ' PostToolUse', async: true }]
-};
+const hookTypes = ['PreToolUse', 'PostToolUse', 'Notification', 'Stop'];
 
-// Check if hooks already exist
 function hasLoupeHook(arr) {
   return (arr || []).some(h =>
     h.hooks?.some(hh => hh.command?.includes('loupe') || hh.command?.includes('logstream'))
   );
 }
 
-if (!hasLoupeHook(settings.hooks.PreToolUse)) {
-  if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
-  settings.hooks.PreToolUse.push(preHook);
-}
-if (!hasLoupeHook(settings.hooks.PostToolUse)) {
-  if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
-  settings.hooks.PostToolUse.push(postHook);
+for (const ht of hookTypes) {
+  const hook = {
+    hooks: [{ type: 'command', command: hookCmd + ' ' + ht, async: true }]
+  };
+  if (!hasLoupeHook(settings.hooks[ht])) {
+    if (!settings.hooks[ht]) settings.hooks[ht] = [];
+    settings.hooks[ht].push(hook);
+  }
 }
 
 fs.writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');

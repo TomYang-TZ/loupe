@@ -193,6 +193,7 @@ function getIslandSession(sid) {
       thinking: false,
       waiting: false,
       waitingTool: null,
+      approved: null,        // briefly set after approval for strikethrough
       idleSince: null,
       userQuery: null,
       recentTools: [],
@@ -217,9 +218,12 @@ function updateIslandFromEntry(entry) {
   const s = getIslandSession(sid);
   if (!s.startTs) s.startTs = entry.ts;
 
-  // Session label
+  // Session label + color
   const sInfo = sessions.get(sid);
-  if (sInfo) s.label = sInfo.label;
+  if (sInfo) {
+    s.label = sInfo.label;
+    s._color = sInfo.color || null;
+  }
 
   // Track user query — only show "starting" at the beginning of a new turn (from idle)
   if (cat === "user_query" && entry.userQuery) {
@@ -273,21 +277,24 @@ function updateIslandFromEntry(entry) {
     } else if (toolName.includes("Agent")) s.phase = "planning";
   }
 
-  // Waiting for confirmation
+  // Approval tracking — strikethrough on completion, no amber waiting state
   if (cat === "tool_use" || cat === "pre_tool") {
-    if (s._pendingToolTimer) clearTimeout(s._pendingToolTimer);
-    const pendingTool = s.tool;
-    s._pendingToolTimer = setTimeout(() => {
-      s.waiting = true;
-      s.waitingTool = pendingTool;
-      sendIslandUpdate();
-    }, 8000);
+    s._pendingToolName = s.tool;
+    s._pendingToolTs = Date.now();
   }
-  if (cat === "post_tool" || cat === "tool_result" || cat === "sub_agent_result" ||
-      cat === "thinking" || cat === "user_query") {
-    if (s._pendingToolTimer) { clearTimeout(s._pendingToolTimer); s._pendingToolTimer = null; }
-    s.waiting = false;
-    s.waitingTool = null;
+  if (cat === "post_tool" || cat === "tool_result" || cat === "sub_agent_result") {
+    const wasManual = s._pendingToolTs && (Date.now() - s._pendingToolTs > 1500);
+    if (wasManual) {
+      s.approved = s._pendingToolName || s.tool;
+      sendIslandUpdate();
+      setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1500);
+    }
+    s._pendingToolName = null;
+    s._pendingToolTs = null;
+    // Clear "waiting for input" — agent is back to working after approval
+    if (s.phase === "waiting for input") {
+      s.phase = s.tool ? "implementing" : "exploring";
+    }
   }
 
   // Errors
@@ -303,9 +310,32 @@ function updateIslandFromEntry(entry) {
     s.tokens = s._totalTokens;
   }
 
-  // Idle detection: reset to idle after 10s of no non-thinking events
-  s.idleSince = null;
-  if (cat !== "thinking") {
+  // Notification hook = Claude needs input → show "needs input"
+  if (cat === "Notification") {
+    s.phase = "waiting for input";
+    s.thinking = false;
+    s.waiting = false;
+    s.waitingTool = null;
+    if (s._idleTimer) clearTimeout(s._idleTimer);
+  }
+
+  // Stop hook = Claude finished → show "done", then idle after 3min
+  if (cat === "Stop") {
+    s.phase = "done";
+    s.thinking = false;
+    s.tool = null;
+    s.toolDetail = null;
+    if (s._idleTimer) clearTimeout(s._idleTimer);
+    s._idleTimer = setTimeout(() => {
+      s.phase = "idle";
+      s.idleSince = Date.now();
+      sendIslandUpdate();
+    }, 3 * 60 * 1000);
+  }
+
+  // Fallback idle timer (20s) for sessions without Notification/Stop hooks
+  if (cat !== "thinking" && cat !== "Notification" && cat !== "Stop") {
+    s.idleSince = null;
     if (s._idleTimer) clearTimeout(s._idleTimer);
     s._idleTimer = setTimeout(() => {
       s.phase = "idle";
@@ -314,7 +344,7 @@ function updateIslandFromEntry(entry) {
       s.thinking = false;
       s.idleSince = Date.now();
       sendIslandUpdate();
-    }, 20000);
+    }, 3 * 60 * 1000);
   }
 
   // Prune stale sessions (no events for 5 min)
@@ -344,13 +374,19 @@ function sendIslandUpdate() {
 
     // Build session dots: { status: "working"|"waiting"|"yourTurn"|"stuck", label }
     const sessionDots = [];
+    let dotIdx = 0;
     for (const [, s] of islandSessions) {
       let status = "working";
-      if (s.phase === "idle") status = "idle";
+      if (s.phase === "waiting for input") status = "needsInput";
+      else if (s.phase === "done") status = "done";
+      else if (s.phase === "idle") status = "idle";
       else if (s.waiting) status = "waiting";
       else if (s.progress === "stuck") status = "stuck";
       else if (s.thinking) status = "thinking";
-      sessionDots.push({ status, label: s.label || s.id.slice(0, 6) });
+      const mainSession = sessions.get(s.id);
+      const dotColor = mainSession?.color || s._color || SESSION_COLORS[dotIdx % SESSION_COLORS.length];
+      sessionDots.push({ status, label: s.label || s.id.slice(0, 6), color: dotColor, id: s.id });
+      dotIdx++;
     }
 
     const elapsed = active.startTs ? Math.floor((Date.now() - active.startTs) / 1000) : 0;
@@ -366,12 +402,15 @@ function sendIslandUpdate() {
       thinking: active.thinking,
       waiting: active.waiting,
       waitingTool: active.waitingTool,
+      approved: active.approved,
       idleSeconds: active.idleSince ? Math.floor((Date.now() - active.idleSince) / 1000) : 0,
       userQuery: active.userQuery,
       recentTools: active.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
       activeFile: active.activeFile,
       elapsed: elapsed,
       sessionDots: sessionDots,
+      activeSessionColor: active._color || (active.id && sessions.get(active.id)?.color) || null,
+      activeSessionId: active.id || null,
     });
   } catch {}
 }
@@ -672,6 +711,8 @@ function categorize(msg) {
       }
       if (hook.hookType === "thinking") return "thinking";
       if (hook.hookType === "user_query") return "user_query";
+      if (hook.hookType === "Notification") return "Notification";
+      if (hook.hookType === "Stop") return "Stop";
     }
     const t = json.type;
     if (t === "user_query") return "user_query";
