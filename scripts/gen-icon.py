@@ -1,160 +1,184 @@
 #!/usr/bin/env python3
-"""Generate Loupe app icon — magnifying glass on Cool Slate background."""
+"""Generate Loupe app icon — 'Loupe_' rendered in ASCII art style.
+
+The text 'Loupe_' drawn using small ASCII characters as pixels,
+on a light background. Monospaced, dev-tool aesthetic.
+"""
 
 from PIL import Image, ImageDraw, ImageFont
-import math, os
+import os
 
 SIZE = 1024
-PAD = int(SIZE * 0.1)  # macOS icon inset
+PAD = int(SIZE * 0.1)
+
+# --- Palette ---
+bg = (250, 249, 247)
+ink = (35, 30, 58)          # deep indigo
+accent = (175, 75, 95)      # dusty rose for the underscore
+border = (232, 230, 226)
+mid = (120, 115, 140)       # for shadow/secondary
+
+# ASCII art letters — each char is 5 wide x 7 tall grid
+# Using block characters to build up each letter
+LETTERS = {
+    'L': [
+        "█    ",
+        "█    ",
+        "█    ",
+        "█    ",
+        "█    ",
+        "█    ",
+        "█████",
+    ],
+    'o': [
+        "     ",
+        "     ",
+        " ███ ",
+        "█   █",
+        "█   █",
+        "█   █",
+        " ███ ",
+    ],
+    'u': [
+        "     ",
+        "     ",
+        "█   █",
+        "█   █",
+        "█   █",
+        "█   █",
+        " ████",
+    ],
+    'p': [
+        "     ",
+        "     ",
+        "████ ",
+        "█   █",
+        "█   █",
+        "████ ",
+        "█    ",
+    ],
+    'e': [
+        "     ",
+        "     ",
+        " ███ ",
+        "█   █",
+        "█████",
+        "█    ",
+        " ███ ",
+    ],
+    '_': [
+        "     ",
+        "     ",
+        "     ",
+        "     ",
+        "     ",
+        "     ",
+        "█████",
+    ],
+}
+
+def render_ascii_text(text, cell_size, ink_color, accent_char='_'):
+    """Render text using ASCII art letter definitions."""
+    # Calculate total dimensions
+    char_w = 5  # grid cells per character
+    char_h = 7
+    spacing = 1  # cells between characters
+    total_cells_w = len(text) * (char_w + spacing) - spacing
+    total_cells_h = char_h
+
+    img_w = total_cells_w * cell_size
+    img_h = total_cells_h * cell_size
+
+    img = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    x_offset = 0
+    for ch in text:
+        grid = LETTERS.get(ch, LETTERS['_'])
+        color = accent if ch == accent_char else ink_color
+        for row_idx, row in enumerate(grid):
+            for col_idx, pixel in enumerate(row):
+                if pixel == '█':
+                    x = (x_offset + col_idx) * cell_size
+                    y = row_idx * cell_size
+                    # Rounded mini-blocks
+                    margin = max(1, cell_size // 8)
+                    draw.rounded_rectangle(
+                        [x + margin, y + margin,
+                         x + cell_size - margin, y + cell_size - margin],
+                        radius=max(1, cell_size // 6),
+                        fill=(*color, 255),
+                    )
+        x_offset += char_w + spacing
+
+    return img
+
 
 img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
 draw = ImageDraw.Draw(img)
 
-# Background: rounded rectangle in Cool Slate dark
-bg_color = (15, 23, 42)  # #0f172a
-radius = int(SIZE * 0.22)  # macOS Big Sur style radius
+# --- Background squircle ---
+radius = int(SIZE * 0.22)
 draw.rounded_rectangle(
     [PAD, PAD, SIZE - PAD, SIZE - PAD],
     radius=radius,
-    fill=bg_color,
+    fill=bg,
 )
-
-# Subtle inner border
-border_color = (30, 41, 59)  # #1e293b (surface)
 draw.rounded_rectangle(
     [PAD, PAD, SIZE - PAD, SIZE - PAD],
     radius=radius,
-    outline=border_color,
-    width=3,
+    outline=border,
+    width=2,
 )
 
-# Magnifying glass
-cx, cy = SIZE // 2, SIZE // 2 - 20  # Center, shifted up slightly
-lens_r = int(SIZE * 0.2)  # Lens radius
-handle_len = int(SIZE * 0.18)
+# --- Render "Loupe_" ---
+cell = 18
+text_img = render_ascii_text("Loupe_", cell, ink, accent_char='_')
 
-# Lens ring (purple accent)
-accent = (139, 92, 246)  # #8b5cf6
-accent_glow = (139, 92, 246, 60)
-ring_width = int(SIZE * 0.035)
+# Center it
+tx = (SIZE - text_img.width) // 2
+ty = (SIZE - text_img.height) // 2
+img.paste(text_img, (tx, ty), text_img)
 
-# Glow behind lens
-for i in range(20, 0, -1):
-    alpha = int(15 * (20 - i) / 20)
-    glow_col = (139, 92, 246, alpha)
-    glow_img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow_img)
-    glow_draw.ellipse(
-        [cx - lens_r - i, cy - lens_r - i, cx + lens_r + i, cy + lens_r + i],
-        fill=glow_col,
-    )
-    img = Image.alpha_composite(img, glow_img)
-    draw = ImageDraw.Draw(img)
+# ==========================================================================
+# Save outputs
+# ==========================================================================
 
-# Lens fill (slightly lighter slate)
-lens_fill = (30, 41, 59)  # #1e293b
-draw.ellipse(
-    [cx - lens_r, cy - lens_r, cx + lens_r, cy + lens_r],
-    fill=lens_fill,
-)
-
-# Lens ring
-draw.ellipse(
-    [cx - lens_r, cy - lens_r, cx + lens_r, cy + lens_r],
-    outline=accent,
-    width=ring_width,
-)
-
-# Lens reflection (subtle arc highlight)
-highlight = (148, 163, 184, 40)  # slate-400 with low alpha
-highlight_img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-highlight_draw = ImageDraw.Draw(highlight_img)
-ref_r = int(lens_r * 0.75)
-highlight_draw.arc(
-    [cx - ref_r, cy - ref_r - 10, cx + ref_r, cy + ref_r - 10],
-    start=200, end=340,
-    fill=(200, 210, 230, 50),
-    width=int(SIZE * 0.015),
-)
-img = Image.alpha_composite(img, highlight_img)
-draw = ImageDraw.Draw(img)
-
-# Handle (bottom-right diagonal)
-angle = math.radians(45)
-hx1 = cx + int(lens_r * math.cos(angle)) - 5
-hy1 = cy + int(lens_r * math.sin(angle)) - 5
-hx2 = hx1 + int(handle_len * math.cos(angle))
-hy2 = hy1 + int(handle_len * math.sin(angle))
-
-handle_width = int(SIZE * 0.045)
-# Handle shadow
-draw.line(
-    [(hx1 + 4, hy1 + 4), (hx2 + 4, hy2 + 4)],
-    fill=(0, 0, 0, 80),
-    width=handle_width + 4,
-)
-# Handle body (slate-400)
-handle_color = (148, 163, 184)  # #94a3b8
-draw.line(
-    [(hx1, hy1), (hx2, hy2)],
-    fill=handle_color,
-    width=handle_width,
-)
-# Handle cap
-cap_r = int(handle_width * 0.6)
-draw.ellipse(
-    [hx2 - cap_r, hy2 - cap_r, hx2 + cap_r, hy2 + cap_r],
-    fill=handle_color,
-)
-
-# "loupe_" text inside the lens
-try:
-    font = ImageFont.truetype("/System/Library/Fonts/SFMono-Bold.otf", int(SIZE * 0.055))
-except:
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", int(SIZE * 0.055))
-    except:
-        font = ImageFont.load_default()
-
-text = "loupe"
-text_color = (148, 163, 184)  # slate-400
-bbox = draw.textbbox((0, 0), text, font=font)
-tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-draw.text(
-    (cx - tw // 2, cy - th // 2),
-    text,
-    fill=text_color,
-    font=font,
-)
-
-# Cursor underscore in accent
-cursor = "_"
-cursor_bbox = draw.textbbox((0, 0), cursor, font=font)
-cw = cursor_bbox[2] - cursor_bbox[0]
-draw.text(
-    (cx + tw // 2, cy - th // 2),
-    cursor,
-    fill=accent,
-    font=font,
-)
-
-# Save full-size
 out_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(out_dir)
+
 icon_path = os.path.join(project_dir, "native", "icon_1024.png")
 img.save(icon_path, "PNG")
 print(f"Saved: {icon_path}")
 
-# Generate .iconset
 iconset_dir = os.path.join(project_dir, "native", "Loupe.iconset")
 os.makedirs(iconset_dir, exist_ok=True)
-
-sizes = [16, 32, 64, 128, 256, 512, 1024]
-for s in sizes:
-    resized = img.resize((s, s), Image.LANCZOS)
-    resized.save(os.path.join(iconset_dir, f"icon_{s}x{s}.png"))
+for s in [16, 32, 64, 128, 256, 512, 1024]:
+    img.resize((s, s), Image.LANCZOS).save(os.path.join(iconset_dir, f"icon_{s}x{s}.png"))
     if s <= 512:
-        resized2x = img.resize((s * 2, s * 2), Image.LANCZOS)
-        resized2x.save(os.path.join(iconset_dir, f"icon_{s}x{s}@2x.png"))
-
+        img.resize((s*2, s*2), Image.LANCZOS).save(os.path.join(iconset_dir, f"icon_{s}x{s}@2x.png"))
 print(f"Iconset: {iconset_dir}")
+
+images_dir = os.path.join(project_dir, "docs", "images")
+os.makedirs(images_dir, exist_ok=True)
+img.resize((16, 16), Image.LANCZOS).save(os.path.join(images_dir, "favicon.png"))
+img.resize((128, 128), Image.LANCZOS).save(os.path.join(images_dir, "logo.png"))
+print(f"Favicon + Logo: {images_dir}")
+
+# Social preview
+preview_bg = (22, 18, 35)
+preview = Image.new("RGBA", (1280, 640), (*preview_bg, 255))
+pi = img.resize((300, 300), Image.LANCZOS)
+ix, iy = (1280 - 300) // 2, (640 - 300) // 2 - 40
+preview.paste(pi, (ix, iy), pi)
+pd = ImageDraw.Draw(preview)
+try: tf = ImageFont.truetype("/System/Library/Fonts/SFMono-Regular.otf", 22)
+except:
+    try: tf = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 22)
+    except: tf = ImageFont.load_default()
+
+tag = "Real-time log viewer for Claude Code sessions"
+bb = pd.textbbox((0, 0), tag, font=tf)
+pd.text(((1280 - bb[2] + bb[0]) // 2, iy + 320), tag, fill=(130, 125, 140, 255), font=tf)
+preview.save(os.path.join(images_dir, "social-preview.png"))
+print(f"Social preview: {os.path.join(images_dir, 'social-preview.png')}")
