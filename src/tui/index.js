@@ -627,7 +627,7 @@ function render() {
       output += padLine(visible[i] || "", cols) + "\n";
     }
     output += sep + "\n";
-    output += renderStatusLine(cols) + "\n";
+    output += renderStatusLine(cols);
     process.stdout.write(output);
     return;
   }
@@ -700,7 +700,7 @@ function render() {
       output += padLine(i === mid ? emptyMsg : "", cols) + "\n";
     }
     output += sep + "\n";
-    output += renderStatusLine(cols) + "\n";
+    output += renderStatusLine(cols);
     process.stdout.write(output);
     return;
   }
@@ -740,7 +740,7 @@ function render() {
   }
 
   output += sep + "\n";
-  output += renderStatusLine(cols) + "\n";
+  output += renderStatusLine(cols);
 
   // "↓ new" indicator
   if (hasNewQueries && !autoFollow) {
