@@ -1,4 +1,4 @@
-# Loupe
+# Loupe_
 
 Real-time observer for Claude Code sessions. Streams tool calls, thinking blocks, approvals, errors, and agent activity into three display modes.
 
@@ -30,8 +30,6 @@ Interactive terminal dashboard. Auto-opens in Ghostty splits alongside the windo
 - `↑`/`↓` navigate, `→` drill in, `←` back out, `Enter` expand/collapse
 - Detail view for full thinking text, prompts, tool I/O
 - Agent tree pane, status line, session tabs (`1`-`9`)
-- Rejection strikethrough with user message
-
 ```bash
 LOUPE_PORT=8390 node src/tui/index.js
 ```
