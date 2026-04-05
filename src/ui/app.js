@@ -848,16 +848,41 @@ function rebuildPanes() {
   panes.clear();
   mainContainer = null;
 
-  // Always use a single pane — sessions stacked vertically with dividers
-  paneContainer.classList.remove("multi-pane");
-  paneContainer.classList.remove("grid-layout");
-  paneContainer.style.removeProperty("grid-template-columns");
-  paneContainer.style.removeProperty("grid-template-rows");
-  const p = createPane("main", activeSession === "all" ? "All" : (sessions.get(activeSession)?.label || activeSession), "var(--accent)");
-  paneContainer.appendChild(p.el);
-  panes.set("main", p);
-  mainContainer = p.scrollEl;
-  Tiling.clear();
+  if (activeSession === "all") {
+    // All mode: single pane with sessions stacked vertically
+    paneContainer.classList.remove("multi-pane");
+    paneContainer.classList.remove("grid-layout");
+    paneContainer.style.removeProperty("grid-template-columns");
+    paneContainer.style.removeProperty("grid-template-rows");
+    const p = createPane("main", "All", "var(--accent)");
+    paneContainer.appendChild(p.el);
+    panes.set("main", p);
+    mainContainer = p.scrollEl;
+    Tiling.clear();
+  } else if (sessions.size > 1 && activeSession !== "all") {
+    // Individual session selected with multiple sessions: use Tiling for that session
+    paneContainer.classList.remove("multi-pane");
+    paneContainer.classList.remove("grid-layout");
+    paneContainer.style.removeProperty("grid-template-columns");
+    paneContainer.style.removeProperty("grid-template-rows");
+    const sInfo = sessions.get(activeSession);
+    const p = createPane("main", sInfo?.label || activeSession, sInfo?.color || "var(--accent)");
+    paneContainer.appendChild(p.el);
+    panes.set("main", p);
+    mainContainer = p.scrollEl;
+    Tiling.clear();
+  } else {
+    // Single session
+    paneContainer.classList.remove("multi-pane");
+    paneContainer.classList.remove("grid-layout");
+    paneContainer.style.removeProperty("grid-template-columns");
+    paneContainer.style.removeProperty("grid-template-rows");
+    const p = createPane("main", "All", "var(--accent)");
+    paneContainer.appendChild(p.el);
+    panes.set("main", p);
+    mainContainer = p.scrollEl;
+    Tiling.clear();
+  }
 
   // Apply saved zoom
   const z = localStorage.getItem("loupe-zoom");
@@ -2245,6 +2270,10 @@ function rebuildAllPaneContents() {
       let topicOffset = 0;
       let sessionNum = 2;
       for (const [sid, sInfo] of sessions) {
+        // Check if session has any queries/events before rendering
+        const gs = sessionGroups.get(sid);
+        if (!gs || gs.tasks.length === 0) { sessionNum++; continue; }
+
         // Session divider header
         const divider = document.createElement("div");
         divider.className = "session-section-header";
