@@ -201,9 +201,18 @@ function looksLikeJson(line) {
 }
 
 // --- WebSocket ---
+// Clients in backlog send are buffered — live events queued until backlog completes
+const pendingBacklog = new Set(); // clients currently receiving backlog
+const pendingQueue = new Map();   // client → [queued messages]
+
 function broadcast(data) {
   for (const client of wss.clients) {
-    if (client.readyState === 1) {
+    if (client.readyState !== 1) continue;
+    if (pendingBacklog.has(client)) {
+      // Queue live events until backlog is done
+      if (!pendingQueue.has(client)) pendingQueue.set(client, []);
+      pendingQueue.get(client).push(data);
+    } else {
       client.send(data);
     }
   }
@@ -738,7 +747,18 @@ const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
   console.log(`Client connected (total: ${wss.clients.size})`);
-  sendBacklog(ws);
+  pendingBacklog.add(ws);
+  sendBacklog(ws).then(() => {
+    pendingBacklog.delete(ws);
+    // Flush live events that arrived during backlog send
+    const queued = pendingQueue.get(ws);
+    if (queued) {
+      for (const data of queued) {
+        if (ws.readyState === 1) ws.send(data);
+      }
+      pendingQueue.delete(ws);
+    }
+  });
 
   ws.on("close", () => {
     console.log(`Client disconnected (total: ${wss.clients.size})`);

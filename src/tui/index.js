@@ -428,7 +428,7 @@ function handleMessage(data) {
     let target = null;
     if (sessionId) {
       for (let i = queries.length - 1; i >= 0; i--) {
-        if (queries[i].sessionId === sessionId || queries[i].events.some(e => e.sessionId === sessionId)) {
+        if (queries[i].sessionId === sessionId) {
           target = queries[i];
           break;
         }
@@ -725,7 +725,7 @@ function render() {
     // Single session filter — flat list
     const filteredQueries = sessionFilter === "all"
       ? queries
-      : queries.filter(q => q.sessionId === sessionFilter || q.events.some(e => e.sessionId === sessionFilter));
+      : queries.filter(q => q.sessionId === sessionFilter);
     for (const q of filteredQueries) addQueryRows(q);
   }
 
