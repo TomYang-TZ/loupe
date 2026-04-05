@@ -720,6 +720,7 @@ body.minimal .lock-wrapper .lock-body { width: 7px; }
 .log-entry.rejected .entry-tool,
 .log-entry.rejected .entry-summary { text-decoration: line-through; }
 .log-entry.rejected { border-left-color: var(--red) !important; }
+.log-entry.rejected .reject-msg { color: var(--red); font-size: 9px; font-style: italic; opacity: 0.8; }
 
 /* Session dividers — full-width markers */
 .log-entry.session-divider {

@@ -84,10 +84,14 @@ if ! server_running; then
             fi
             ;;
         *)
-            # Default: window mode (native app, same as before)
+            # Default: window mode (native app + TUI split in Ghostty)
             APP_BUNDLE="$LOUPE_DIR/Loupe.app"
             if [ -d "$APP_BUNDLE" ] && ! pgrep -f "Loupe.app/Contents/MacOS/loupe" > /dev/null 2>&1; then
                 LOUPE_PORT="$PORT" LOUPE_SERVER_PID="$SERVER_PID" open "$APP_BUNDLE"
+            fi
+            # Also open TUI in Ghostty split if Ghostty is running
+            if pgrep -x "ghostty" > /dev/null 2>&1; then
+                "$LOUPE_DIR/scripts/ghostty-split.sh" "$PORT" &
             fi
             ;;
     esac

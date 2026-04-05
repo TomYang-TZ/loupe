@@ -58,6 +58,19 @@ function findTranscriptFiles() {
   return files;
 }
 
+function extractUserMessage(text) {
+  // Extract user's message from rejection boilerplate
+  // "...the user said:\nactual message" → "actual message"
+  const match = text.match(/the user said:\s*\n?(.*)/s);
+  if (match && match[1].trim()) return match[1].trim();
+  // Fallback: strip known boilerplate
+  return text
+    .replace(/\[Request interrupted by user for tool use\]\s*/g, "")
+    .replace(/The user doesn't want to proceed.*?the user said:\s*/s, "")
+    .replace(/STOP what you are doing.*$/s, "")
+    .trim() || null;
+}
+
 function processFile(filePath) {
   let pos = filePositions.get(filePath) || 0;
   let stat;
@@ -110,7 +123,7 @@ function processFile(filePath) {
               data: {
                 session_id: sessionId,
                 type: "tool_rejected",
-                message: text.replace(/\[Request interrupted by user for tool use\]\s*/, "").trim() || null,
+                message: extractUserMessage(text),
               },
             };
             fs.appendFileSync(outputFile, JSON.stringify(entry) + "\n");

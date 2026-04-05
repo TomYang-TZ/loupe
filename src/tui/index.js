@@ -270,6 +270,22 @@ function handleMessage(data) {
   // Skip hidden categories from rendering (state tracking above still runs)
   if (tuiHidden) { render(); return; }
 
+  // Collapse post_tool into the matching USE line — append ✓ instead of a separate OK line
+  if (cat === "post_tool") {
+    // Find last pre_tool in the current session's query and append ✓
+    for (let qi = queries.length - 1; qi >= 0; qi--) {
+      const q = queries[qi];
+      for (let ei = q.events.length - 1; ei >= 0; ei--) {
+        if (q.events[ei].cat === "pre_tool" && !q.events[ei]._completed) {
+          q.events[ei].line += ` ${FG.green}✓${RESET}`;
+          q.events[ei]._completed = true;
+          render(); return;
+        }
+      }
+    }
+    // No matching USE found — fall through to render as OK
+  }
+
   // Build event ANSI line
   const ts = new Date(msg.ts).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
   let line = `${DIM}${ts}${RESET} `;
@@ -353,12 +369,13 @@ function handleMessage(data) {
     }
   } else if (cat === "tool_rejected") {
     // Rejection: search ALL queries backwards for the last pre_tool and strikethrough it
-    // Don't add tool_rejected as an event — it's just a signal
+    const rejectMsg = json?.data?.message || null;
+    const msgSuffix = rejectMsg ? `  ${FG.red}"${rejectMsg.slice(0, 40)}"${RESET}` : "";
     outer: for (let qi = queries.length - 1; qi >= 0; qi--) {
       for (let ei = queries[qi].events.length - 1; ei >= 0; ei--) {
         if (queries[qi].events[ei].cat === "pre_tool") {
           const orig = queries[qi].events[ei].line;
-          queries[qi].events[ei].line = `${DIM}${FG.red}✗${RESET} ${DIM}${stripAnsi(orig)}${RESET}`;
+          queries[qi].events[ei].line = `${DIM}${FG.red}✗${RESET} ${DIM}${stripAnsi(orig)}${RESET}${msgSuffix}`;
           break outer;
         }
       }
@@ -561,8 +578,8 @@ function render() {
   // Session tabs
   if (showTabs) {
     let tabLine = " ";
-    tabLine += sessionFilter === "all" ? `${BOLD}${FG.cyan}[All]${RESET}` : `${DIM}[All]${RESET}`;
-    let idx = 1;
+    tabLine += sessionFilter === "all" ? `${BOLD}${FG.cyan}[1:All]${RESET}` : `${DIM}[1:All]${RESET}`;
+    let idx = 2;
     for (const [sid, sInfo] of sessions) {
       const active = sessionFilter === sid;
       const label = `${idx}:${sInfo.label}`;

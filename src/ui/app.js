@@ -1291,9 +1291,16 @@ function handleLine(msg) {
   // (user_query fires as "[Request interrupted by user for tool use]" on reject)
   if (wasWaiting && (category === "user_query" || category === "thinking" || category === "tool_rejected")) {
     // Find the most recent tool_use entry and mark it rejected
+    const rejectMsg = (category === "tool_rejected") ? (entry.json?.data?.message || null) : null;
     for (let i = entries.length - 1; i >= Math.max(0, entries.length - 20); i--) {
       if (entries[i].category === "tool_use" && entries[i].el) {
         entries[i].el.classList.add("rejected");
+        if (rejectMsg) {
+          const msgEl = document.createElement("span");
+          msgEl.className = "reject-msg";
+          msgEl.textContent = ` "${rejectMsg.slice(0, 50)}"`;
+          entries[i].el.querySelector(".entry-row")?.appendChild(msgEl);
+        }
         break;
       }
     }
