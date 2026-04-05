@@ -721,6 +721,34 @@ body.minimal .lock-wrapper .lock-body { width: 7px; }
 .log-entry.rejected .entry-summary { text-decoration: line-through; }
 .log-entry.rejected { border-left-color: var(--red) !important; }
 .log-entry.rejected .reject-msg { color: var(--red); font-size: 9px; font-style: italic; opacity: 0.8; }
+.approve-msg { color: #f59e0b; font-size: 9px; font-style: italic; opacity: 0.8; }
+
+/* Session section headers — vertical stacking in All mode */
+.session-section-header {
+  padding: 6px 12px 4px;
+  margin-top: 12px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  border-top: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-light);
+  background: var(--accent-dim);
+}
+
+.session-section-header:first-child {
+  margin-top: 0;
+}
+
+.session-section-num {
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+
+[data-theme="light"] .session-section-header {
+  color: #7c3aed;
+  background: rgba(124, 58, 237, 0.06);
+}
 
 /* Session dividers — full-width markers */
 .log-entry.session-divider {

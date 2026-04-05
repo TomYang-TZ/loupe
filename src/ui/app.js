@@ -848,35 +848,16 @@ function rebuildPanes() {
   panes.clear();
   mainContainer = null;
 
-  if (activeSession !== "all" || sessions.size <= 1) {
-    paneContainer.classList.remove("multi-pane");
-    paneContainer.classList.remove("grid-layout");
-    paneContainer.style.removeProperty("grid-template-columns");
-    paneContainer.style.removeProperty("grid-template-rows");
-    const p = createPane("main", "All", "var(--accent)");
-    paneContainer.appendChild(p.el);
-    panes.set("main", p);
-    mainContainer = p.scrollEl;
-    Tiling.clear();
-  } else {
-    syncSessionOrder();
-    paneContainer.classList.remove("grid-layout");
-
-    // Build tiling tree from session order (preserves existing tree if sessions match)
-    const tilingIds = Tiling.getSessionIds();
-    const currentIds = new Set(sessionOrder.filter(id => sessions.has(id)));
-    const tilingSet = new Set(tilingIds);
-
-    // Batch add/remove without per-op rebuilds
-    for (const id of currentIds) {
-      if (!tilingSet.has(id)) Tiling.addSession(id, false);
-    }
-    for (const id of tilingIds) {
-      if (!currentIds.has(id)) Tiling.removeSession(id, false);
-    }
-
-    Tiling.rebuild();
-  }
+  // Always use a single pane — sessions stacked vertically with dividers
+  paneContainer.classList.remove("multi-pane");
+  paneContainer.classList.remove("grid-layout");
+  paneContainer.style.removeProperty("grid-template-columns");
+  paneContainer.style.removeProperty("grid-template-rows");
+  const p = createPane("main", activeSession === "all" ? "All" : (sessions.get(activeSession)?.label || activeSession), "var(--accent)");
+  paneContainer.appendChild(p.el);
+  panes.set("main", p);
+  mainContainer = p.scrollEl;
+  Tiling.clear();
 
   // Apply saved zoom
   const z = localStorage.getItem("loupe-zoom");
@@ -893,10 +874,7 @@ function updateGridControlsVisibility() {
 }
 
 function getContainerFor(entry) {
-  if (activeSession !== "all" || sessions.size <= 1) return panes.get("main")?.scrollEl || null;
-  if (entry.sessionId && panes.has(entry.sessionId)) return panes.get(entry.sessionId).scrollEl;
-  const first = panes.values().next().value;
-  return first?.scrollEl || null;
+  return panes.get("main")?.scrollEl || null;
 }
 
 function shouldAutoScroll(entry) {
@@ -2261,12 +2239,20 @@ function rebuildAllPaneContents() {
       matchCount = r.matchCount;
     }
   } else {
-    // Multi-session: render grouped per pane, sequential topic numbers
-    let topicOffset = 0;
-    for (const [sid] of sessions) {
-      const pane = panes.get(sid);
-      if (pane) {
-        const r = renderGroupedEntries(pane.scrollEl, sid, topicOffset);
+    // Multi-session "All": render all sessions vertically with dividers
+    const container = panes.get("main")?.scrollEl;
+    if (container) {
+      let topicOffset = 0;
+      let sessionNum = 2;
+      for (const [sid, sInfo] of sessions) {
+        // Session divider header
+        const divider = document.createElement("div");
+        divider.className = "session-section-header";
+        divider.innerHTML = `<span class="session-section-num">${sessionNum}:</span>${esc(sInfo.label || sid.slice(0, 8))}`;
+        container.appendChild(divider);
+        sessionNum++;
+
+        const r = renderGroupedEntries(container, sid, topicOffset);
         matchCount += r.matchCount;
         topicOffset += r.topicCount;
       }
