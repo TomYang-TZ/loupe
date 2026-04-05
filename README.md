@@ -11,9 +11,9 @@ bash scripts/install.sh
 Configures 17 Claude Code hooks and compiles the native app. Loupe auto-starts on your next session.
 
 ```bash
-./loupe              # start (if not running)
-./loupe restart      # kill and restart
-./loupe stop         # stop everything
+npm start            # start (if not running)
+npm run restart      # kill and restart
+npm run stop         # stop everything
 ```
 
 ## Display Modes
