@@ -127,6 +127,26 @@ function processFile(filePath) {
               },
             };
             fs.appendFileSync(outputFile, JSON.stringify(entry) + "\n");
+          } else if (Array.isArray(content)) {
+            // Detect approval with message: tool_result (not error) + text block
+            const hasToolResult = content.some(b => b.type === "tool_result" && !b.is_error);
+            const textBlocks = content.filter(b => b.type === "text" && b.text?.trim());
+            if (hasToolResult && textBlocks.length > 0) {
+              const approvalMsg = textBlocks.map(b => b.text.trim()).join(" ");
+              if (approvalMsg) {
+                const sessionId = path.basename(filePath, ".jsonl");
+                const entry = {
+                  _logstream_type: "tool_approved_with_message",
+                  _ts: new Date().toISOString(),
+                  data: {
+                    session_id: sessionId,
+                    type: "tool_approved_with_message",
+                    message: approvalMsg,
+                  },
+                };
+                fs.appendFileSync(outputFile, JSON.stringify(entry) + "\n");
+              }
+            }
           }
         }
         // Thinking block extraction
