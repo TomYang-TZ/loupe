@@ -805,6 +805,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     var retryTimer: Timer?
     var hasPositionedWindow = false
     var autoHideEnabled = false
+    var wsTask: URLSessionWebSocketTask?
     var autoHideObserver: Any?
     var autoHideSuppressed = false
 
@@ -995,7 +996,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         // Only show window if not island-only mode
         islandOnlyMode = ProcessInfo.processInfo.environment["LOUPE_ISLAND_ONLY"] == "1"
             || CommandLine.arguments.contains("--island-only")
-        if !islandOnlyMode {
+        if islandOnlyMode {
+            // Window stays hidden — island gets data via direct WebSocket
+        } else {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -1005,6 +1008,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
             island.setup(screen: screen)
             island.show()
         }
+
+        // Connect to server WebSocket for island state updates
+        connectIslandWebSocket()
 
         // Re-create island if display configuration changes
         NotificationCenter.default.addObserver(
@@ -1178,7 +1184,74 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         }
     }
 
+    // MARK: - Direct WebSocket for island state
+
+    func connectIslandWebSocket() {
+        let url = URL(string: "ws://localhost:\(port)/ws")!
+        let session = URLSession(configuration: .default)
+        wsTask = session.webSocketTask(with: url)
+        wsTask?.resume()
+        receiveIslandMessage()
+    }
+
+    func receiveIslandMessage() {
+        wsTask?.receive { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .success(let message):
+                if case .string(let text) = message,
+                   let data = text.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let type = json["type"] as? String, type == "island_state",
+                   let stateData = json["data"] as? [String: Any] {
+                    DispatchQueue.main.async {
+                        self.applyIslandState(stateData)
+                    }
+                }
+                self.receiveIslandMessage()
+            case .failure(_):
+                // Reconnect after delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    self?.connectIslandWebSocket()
+                }
+            }
+        }
+    }
+
+    func applyIslandState(_ data: [String: Any]) {
+        island.updateSignals(
+            phase: data["phase"] as? String ?? "idle",
+            progress: data["progress"] as? String,
+            tool: data["tool"] as? String,
+            toolDetail: data["toolDetail"] as? String,
+            files: data["files"] as? Int ?? 0,
+            sessions: data["sessions"] as? Int ?? 0,
+            tokens: data["tokens"] as? Int ?? 0,
+            errors: data["errors"] as? Int ?? 0,
+            thinking: data["thinking"] as? Bool ?? false,
+            waiting: data["waiting"] as? Bool ?? false,
+            waitingTool: data["waitingTool"] as? String,
+            approved: data["approved"] as? String,
+            idleSeconds: data["idleSeconds"] as? Int ?? 0,
+            userQuery: data["userQuery"] as? String,
+            recentTools: data["recentTools"] as? [String] ?? [],
+            activeFile: data["activeFile"] as? String,
+            elapsed: data["elapsed"] as? Int ?? 0,
+            sessionDots: (data["sessionDots"] as? [[String: Any]])?.map { d in
+                (status: d["status"] as? String ?? "working",
+                 label: d["label"] as? String ?? "",
+                 color: d["color"] as? String ?? "",
+                 id: d["id"] as? String ?? "")
+            } ?? [],
+            activeSessionColor: data["activeSessionColor"] as? String,
+            activeSessionId: data["activeSessionId"] as? String
+        )
+        island.islandView?.pulsing = data["pulsing"] as? Bool ?? false
+        island.islandView?.rejectedTool = data["rejected"] as? String
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        wsTask?.cancel(with: .goingAway, reason: nil)
         island.teardown()
         if let pidStr = ProcessInfo.processInfo.environment["LOGSTREAM_SERVER_PID"],
            let pid = Int32(pidStr) {

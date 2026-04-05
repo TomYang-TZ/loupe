@@ -5,6 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const { WebSocketServer } = require("ws");
 const { fork, execFile } = require("child_process");
+const islandState = require("./island-state");
 
 const args = process.argv.slice(2);
 let port = 8390;
@@ -181,6 +182,8 @@ function readNewBytes() {
       if (msg.json && isReplayAnalysisLine(msg.json)) continue;
       trackSession(line);
       broadcast(JSON.stringify(msg));
+      // Feed to island state machine (skip during initial backlog read)
+      if (msg.json && !islandBacklogReading) islandState.processEvent(msg.json, msg.ts);
     }
   });
 }
@@ -247,18 +250,8 @@ function truncateDeep(obj, depth) {
 async function sendBacklog(ws) {
   try {
     const content = fs.readFileSync(filePath, "utf-8");
-    const lines = content.split("\n").filter((l) => l.trim() !== "");
-
-    // Only send entries from the last 5 minutes
-    const cutoff = Date.now() - 5 * 60 * 1000;
-    const recent = lines.filter((line) => {
-      try {
-        const obj = JSON.parse(line);
-        const ts = obj._ts ? new Date(obj._ts).getTime() : 0;
-        return ts > cutoff;
-      } catch { return true; }
-    });
-    const backlog = recent.slice(-200);
+    const allLines = content.split("\n").filter((l) => l.trim() !== "");
+    const backlog = allLines.slice(-200);
 
     for (const line of backlog) {
       const truncated = truncateForBacklog(line);
@@ -764,11 +757,36 @@ wss.on("connection", (ws) => {
     try {
       const msg = JSON.parse(data.toString());
       if (msg.type === "show_window") {
-        // Relay to all other clients (the window app will handle it)
         for (const client of wss.clients) {
           if (client !== ws && client.readyState === 1) {
             client.send(JSON.stringify({ type: "show_window" }));
           }
+        }
+      }
+      // Dynamic history: client requests older events
+      // { type: "fetch_history", before: timestamp, count: 200 }
+      if (msg.type === "fetch_history") {
+        const before = msg.before || Date.now();
+        const count = Math.min(msg.count || 200, 500);
+        try {
+          const content = fs.readFileSync(filePath, "utf-8");
+          const allLines = content.split("\n").filter(l => l.trim() !== "");
+          const older = [];
+          for (let i = allLines.length - 1; i >= 0 && older.length < count; i--) {
+            try {
+              const obj = JSON.parse(allLines[i]);
+              const ts = obj._ts ? new Date(obj._ts).getTime() : 0;
+              if (ts < before) older.unshift(allLines[i]);
+            } catch {}
+          }
+          for (const line of older) {
+            const m = buildMessage(truncateForBacklog(line));
+            if (m.json && isReplayAnalysisLine(m.json)) continue;
+            ws.send(JSON.stringify({ ...m, type: "history" }));
+          }
+          ws.send(JSON.stringify({ type: "history_done", count: older.length }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: "history_done", count: 0, error: err.message }));
         }
       }
     } catch (e) { /* ignore non-JSON */ }
@@ -808,6 +826,21 @@ if (fs.existsSync(watcherScript)) {
     watcherProcess = null;
   });
 }
+
+// --- Island state ---
+let islandBacklogReading = true;
+// Normalize after initial backlog read (first readNewBytes completes within ~1s)
+setTimeout(() => { islandBacklogReading = false; }, 2000);
+
+islandState.init((state) => {
+  // Send island state only to non-backlog clients (don't queue during backlog)
+  const msg = JSON.stringify({ type: "island_state", data: state });
+  for (const client of wss.clients) {
+    if (client.readyState === 1 && !pendingBacklog.has(client)) {
+      client.send(msg);
+    }
+  }
+});
 
 // --- Start ---
 server.listen(port, () => {
