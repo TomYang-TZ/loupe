@@ -1151,7 +1151,8 @@ function extractUserQuery(msg) {
   const json = msg.json;
   if (!json) return null;
   const hook = unwrapHook(json);
-  return (hook?.inner || json).user_query || null;
+  const inner = hook?.inner || json;
+  return inner.user_query || inner.prompt || null;
 }
 
 function extractMeta(msg) {
@@ -1290,8 +1291,7 @@ function handleLine(msg) {
     }
   }
 
-  // user_query goes through grouping (creates Q headers) but doesn't render as a standalone card
-  const streamHidden = streamHiddenCategories.has(entry.category) || entry.category === "user_query";
+  const streamHidden = streamHiddenCategories.has(entry.category);
 
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
