@@ -36,10 +36,13 @@ let errorCount = 0;
 let tokenTotal = 0;
 const fileSet = new Set();
 
-// Query-grouped data model
-const queries = [];
+// Query-grouped data model — per session, like window mode
+const sessionQueries = new Map(); // sessionId → [query objects]
 let queryIdCounter = 0;
-const MAX_QUERIES = 200;
+const MAX_QUERIES_PER_SESSION = 100;
+
+// Flat derived list for navigation (rebuilt each render)
+let queries = [];
 let focusIdx = -1;
 let autoFollow = true;
 let hasNewQueries = false;
@@ -151,6 +154,12 @@ function extractToolInfo(json) {
   return { name, detail };
 }
 
+function getSessionQueries(sid) {
+  const key = sid || "_default";
+  if (!sessionQueries.has(key)) sessionQueries.set(key, []);
+  return sessionQueries.get(key);
+}
+
 function extractSessionId(json) {
   return json?.data?.session_id || null;
 }
@@ -201,7 +210,7 @@ function handleMessage(data) {
     if (msg.type === "reset") {
       eventCount = 0; errorCount = 0; tokenTotal = 0;
       fileSet.clear();
-      queries.length = 0; queryIdCounter = 0;
+      sessionQueries.clear(); queries = []; queryIdCounter = 0;
       focusIdx = -1; autoFollow = true; hasNewQueries = false;
       sessions.clear(); sessionFilter = "all";
       phase = "idle"; currentTool = null;
@@ -222,11 +231,11 @@ function handleMessage(data) {
     const approveMsg = json?.data?.message || "";
     const approveSid = extractSessionId(json);
     if (approveMsg) {
-      for (let qi = queries.length - 1; qi >= 0; qi--) {
-        if (approveSid && queries[qi].sessionId !== approveSid) continue;
-        for (let ei = queries[qi].events.length - 1; ei >= 0; ei--) {
-          if (queries[qi].events[ei].cat === "pre_tool" && queries[qi].events[ei]._completed) {
-            queries[qi].events[ei].line += `  ${FG.yellow}"${approveMsg.slice(0, 40)}"${RESET}`;
+      const aq = getSessionQueries(approveSid);
+      for (let qi = aq.length - 1; qi >= 0; qi--) {
+        for (let ei = aq[qi].events.length - 1; ei >= 0; ei--) {
+          if (aq[qi].events[ei].cat === "pre_tool" && aq[qi].events[ei]._completed) {
+            aq[qi].events[ei].line += `  ${FG.yellow}"${approveMsg.slice(0, 40)}"${RESET}`;
             render(); return;
           }
         }
@@ -298,9 +307,9 @@ function handleMessage(data) {
 
   // Collapse post_tool into the matching USE line — append ✓ instead of a separate OK line
   if (cat === "post_tool") {
-    // Find last pre_tool in the current session's query and append ✓
-    for (let qi = queries.length - 1; qi >= 0; qi--) {
-      const q = queries[qi];
+    const postSq = getSessionQueries(sessionId);
+    for (let qi = postSq.length - 1; qi >= 0; qi--) {
+      const q = postSq[qi];
       for (let ei = q.events.length - 1; ei >= 0; ei--) {
         if (q.events[ei].cat === "pre_tool" && !q.events[ei]._completed) {
           q.events[ei].line += ` ${FG.green}✓${RESET}`;
@@ -382,64 +391,44 @@ function handleMessage(data) {
   }
   if (sessionId && sessions.has(sessionId)) sessions.get(sessionId).eventCount++;
 
-  // Query grouping
+  // Per-session query grouping (same architecture as window mode)
   const userQuery = extractUserQuery(json);
-  // Skip system/notification prompts from becoming query boundaries
   const isSystemPrompt = userQuery && (userQuery.includes("<task-notification>") || userQuery.includes("<system-reminder>"));
   const isQueryBoundary = cat === "user_query" && userQuery && !isSystemPrompt;
   const eventObj = { line, cat, sessionId, ts: msg.ts, json };
+  const sq = getSessionQueries(sessionId);
 
   if (isQueryBoundary) {
     // Absorb preamble events into this query
     let preambleEvents = [];
-    if (queries.length > 0 && queries[queries.length - 1]._preamble) {
-      const preamble = queries.pop();
-      preambleEvents = preamble.events;
+    if (sq.length > 0 && sq[sq.length - 1]._preamble) {
+      preambleEvents = sq.pop().events;
     }
-    // Auto-collapse previous, expand new when following
-    if (autoFollow && queries.length > 0) {
-      queries[queries.length - 1].collapsed = true;
-    }
+    // Auto-collapse previous query in this session
+    if (sq.length > 0) sq[sq.length - 1].collapsed = true;
     const q = { id: ++queryIdCounter, userQuery, sessionId, startTs: msg.ts, endTs: msg.ts, events: preambleEvents, collapsed: !autoFollow };
-    queries.push(q);
-    if (queries.length > MAX_QUERIES) queries.shift();
-    if (autoFollow) {
-      focusIdx = queries.length - 1;
-    } else {
-      hasNewQueries = true;
-    }
+    sq.push(q);
+    if (sq.length > MAX_QUERIES_PER_SESSION) sq.shift();
+    hasNewQueries = true;
   } else if (cat === "tool_rejected") {
-    // Rejection: search queries backwards (same session) for the last pre_tool
+    // Rejection: search this session's queries for the last pre_tool
     const rejectMsg = json?.data?.message || null;
-    const rejectSid = extractSessionId(json);
     const msgSuffix = rejectMsg ? `  ${FG.red}"${rejectMsg.slice(0, 40)}"${RESET}` : "";
-    outer: for (let qi = queries.length - 1; qi >= 0; qi--) {
-      if (rejectSid && queries[qi].sessionId !== rejectSid) continue;
-      for (let ei = queries[qi].events.length - 1; ei >= 0; ei--) {
-        if (queries[qi].events[ei].cat === "pre_tool") {
-          const orig = queries[qi].events[ei].line;
-          queries[qi].events[ei].line = `${DIM}${FG.red}✗${RESET} ${DIM}${stripAnsi(orig)}${RESET}${msgSuffix}`;
+    outer: for (let qi = sq.length - 1; qi >= 0; qi--) {
+      for (let ei = sq[qi].events.length - 1; ei >= 0; ei--) {
+        if (sq[qi].events[ei].cat === "pre_tool") {
+          const orig = sq[qi].events[ei].line;
+          sq[qi].events[ei].line = `${DIM}${FG.red}✗${RESET} ${DIM}${stripAnsi(orig)}${RESET}${msgSuffix}`;
           break outer;
         }
       }
     }
   } else {
-    // Find the last query for this event's session, or fall back to global last
-    let target = null;
-    if (sessionId) {
-      for (let i = queries.length - 1; i >= 0; i--) {
-        if (queries[i].sessionId === sessionId) {
-          target = queries[i];
-          break;
-        }
-      }
+    // Append to last query in this session, or create preamble
+    if (sq.length === 0) {
+      sq.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _preamble: true });
     }
-    if (!target) {
-      // No query for this session yet — create a preamble for THIS session
-      const preamble = { id: ++queryIdCounter, userQuery: null, sessionId: sessionId || null, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _preamble: true };
-      queries.push(preamble);
-      target = preamble;
-    }
+    const target = sq[sq.length - 1];
     target.events.push(eventObj);
     target.endTs = msg.ts;
   }
@@ -596,6 +585,22 @@ function wrapText(text, width) {
 }
 
 function render() {
+  // Rebuild flat queries list from per-session data
+  queries = [];
+  for (const [, sq] of sessionQueries) {
+    for (const q of sq) queries.push(q);
+  }
+
+  // Auto-follow: focus on latest query
+  if (autoFollow && queries.length > 0) {
+    // Find the most recent query across all sessions
+    let latestIdx = 0, latestTs = 0;
+    for (let i = 0; i < queries.length; i++) {
+      if (queries[i].endTs >= latestTs) { latestTs = queries[i].endTs; latestIdx = i; }
+    }
+    focusIdx = latestIdx;
+  }
+
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
 
