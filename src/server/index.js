@@ -251,7 +251,22 @@ async function sendBacklog(ws) {
   try {
     const content = fs.readFileSync(filePath, "utf-8");
     const allLines = content.split("\n").filter((l) => l.trim() !== "");
-    const backlog = allLines.slice(-200);
+
+    // Scan backwards to find query boundaries (UserPromptSubmit/user_query)
+    // Send only events that belong to queries from the last 200 lines
+    const tail = allLines.slice(-200);
+    let firstQueryIdx = -1;
+    for (let i = 0; i < tail.length; i++) {
+      try {
+        const obj = JSON.parse(tail[i]);
+        const type = obj._logstream_type || obj.data?.hook_event_name;
+        if (type === "UserPromptSubmit" || type === "user_query") {
+          if (firstQueryIdx < 0) firstQueryIdx = i;
+        }
+      } catch {}
+    }
+    // Only send from the first query boundary onwards (skip orphaned preamble)
+    const backlog = firstQueryIdx >= 0 ? tail.slice(firstQueryIdx) : tail.slice(-50);
 
     for (const line of backlog) {
       const truncated = truncateForBacklog(line);
