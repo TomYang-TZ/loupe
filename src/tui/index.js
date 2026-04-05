@@ -625,15 +625,17 @@ function render() {
     // Also collect queries with no sessionId
     const noSession = queries.filter(q => !q.sessionId || !sessions.has(q.sessionId));
 
-    for (const sid of sessionIds) {
+    for (let si = 0; si < sessionIds.length; si++) {
+      const sid = sessionIds[si];
       const sInfo = sessions.get(sid);
       const sQueries = queries.filter(q => q.sessionId === sid || q.events.some(e => e.sessionId === sid));
       if (sQueries.length === 0) continue;
 
-      // Session header
+      // Session header numbered like tabs (2:xxx, 3:xxx)
       const sLabel = sInfo.label || sid.slice(0, 8);
       const sCount = sInfo.eventCount || 0;
-      rowData.push({ text: `${BOLD}${FG.cyan}── ${sLabel}${RESET} ${DIM}(${sCount} events)${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
+      const sNum = si + 2; // 1=All, 2+=sessions
+      rowData.push({ text: `${BOLD}${FG.cyan}── ${sNum}:${sLabel}${RESET} ${DIM}(${sCount} events)${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
 
       for (const q of sQueries) addQueryRows(q);
     }
@@ -737,36 +739,35 @@ function handleInput(buf) {
     cleanup(); process.exit(0);
   }
 
-  // Detail view: j/k scroll, Esc/q/Enter close
+  // ← / h = back one level
+  const isLeft = s === "h" || s === "\x1b[D";
+  // → / l = forward one level
+  const isRight = s === "l" || s === "\x1b[C";
+  // ↑ / k = up within level
+  const isUp = s === "k" || s === "\x1b[A";
+  // ↓ / j = down within level
+  const isDown = s === "j" || s === "\x1b[B";
+  const isEnter = s === "\r" || s === " ";
+
+  // === Detail level ===
   if (navLevel === "detail") {
-    if (s === "j" || s === "\x1b[B") { detailScroll++; render(); return; }
-    if (s === "k" || s === "\x1b[A") { detailScroll = Math.max(0, detailScroll - 1); render(); return; }
-    if (s === "\r" || s === " " || s === "h" || s === "\x1b[D") { navLevel = "event"; detailScroll = 0; render(); return; }
+    if (isDown) { detailScroll++; render(); return; }
+    if (isUp) { detailScroll = Math.max(0, detailScroll - 1); render(); return; }
+    if (isLeft || isEnter) { navLevel = "event"; detailScroll = 0; render(); return; }
     if (s === "g") { detailScroll = 0; render(); return; }
     if (s === "G") { detailScroll = 99999; render(); return; }
     return;
   }
 
-  // Event level: j/k navigate events, Enter opens detail, Esc goes back
+  // === Event level ===
   if (navLevel === "event") {
     const q = queries[focusIdx];
     if (!q) { navLevel = "query"; render(); return; }
 
-    // h / left arrow — go back to query level
-    if (s === "h" || s === "\x1b[D") {
-      navLevel = "query"; eventFocusIdx = -1;
-      render(); return;
-    }
-
-    if (s === "j" || s === "\x1b[B") {
-      if (eventFocusIdx < q.events.length - 1) eventFocusIdx++;
-      render(); return;
-    }
-    if (s === "k" || s === "\x1b[A") {
-      if (eventFocusIdx > 0) eventFocusIdx--;
-      render(); return;
-    }
-    if (s === "\r" || s === " ") {
+    if (isDown) { if (eventFocusIdx < q.events.length - 1) eventFocusIdx++; render(); return; }
+    if (isUp) { if (eventFocusIdx > 0) eventFocusIdx--; render(); return; }
+    if (isLeft) { navLevel = "query"; eventFocusIdx = -1; render(); return; }
+    if (isRight || isEnter) {
       if (eventFocusIdx >= 0 && eventFocusIdx < q.events.length) {
         navLevel = "detail"; detailScroll = 0;
       }
@@ -777,8 +778,8 @@ function handleInput(buf) {
     return;
   }
 
-  // Query level: j/k navigate queries, Enter expand/collapse or enter event level
-  if (s === "j" || s === "\x1b[B") {
+  // === Query level ===
+  if (isDown) {
     if (focusIdx < queries.length - 1) {
       focusIdx++;
       autoFollow = focusIdx === queries.length - 1;
@@ -787,36 +788,31 @@ function handleInput(buf) {
     render(); return;
   }
 
-  if (s === "k" || s === "\x1b[A") {
+  if (isUp) {
     if (focusIdx > 0) { focusIdx--; autoFollow = false; }
     render(); return;
   }
 
-  if (s === "\r" || s === " ") {
+  // Enter = toggle expand/collapse
+  if (isEnter) {
     if (focusIdx >= 0 && focusIdx < queries.length) {
-      const q = queries[focusIdx];
-      if (q.collapsed) {
-        q.collapsed = false;
-      } else {
-        // Already expanded — enter event navigation
-        navLevel = "event";
-        eventFocusIdx = 0;
-      }
+      queries[focusIdx].collapsed = !queries[focusIdx].collapsed;
     }
     render(); return;
   }
 
-  // l / right arrow — enter event level if expanded
-  if (s === "l" || s === "\x1b[C") {
-    if (focusIdx >= 0 && focusIdx < queries.length && !queries[focusIdx].collapsed) {
+  // → = enter event level (expand first if collapsed)
+  if (isRight) {
+    if (focusIdx >= 0 && focusIdx < queries.length) {
+      queries[focusIdx].collapsed = false;
       navLevel = "event";
       eventFocusIdx = 0;
     }
     render(); return;
   }
 
-  // h / left arrow — collapse query
-  if (s === "h" || s === "\x1b[D") {
+  // ← = collapse query
+  if (isLeft) {
     if (focusIdx >= 0 && focusIdx < queries.length) {
       queries[focusIdx].collapsed = true;
     }
