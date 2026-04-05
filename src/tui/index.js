@@ -829,6 +829,15 @@ function handleInput(buf) {
     cleanup(); process.exit(0);
   }
 
+  // Session switching — works at any level
+  if (s === "1") { sessionFilter = "all"; render(); return; }
+  if (s >= "2" && s <= "9") {
+    const idx = parseInt(s) - 2;
+    const sessionIds = [...sessions.keys()];
+    if (idx < sessionIds.length) sessionFilter = sessionIds[idx];
+    render(); return;
+  }
+
   // ← / h = back one level
   const isLeft = s === "h" || s === "\x1b[D";
   // → / l = forward one level
@@ -938,14 +947,6 @@ function handleInput(buf) {
   // w = open native window mode
   if (s === "w") { openWindow(); render(); return; }
 
-  if (s === "1") { sessionFilter = "all"; render(); return; }
-
-  if (s >= "2" && s <= "9") {
-    const idx = parseInt(s) - 2;
-    const sessionIds = [...sessions.keys()];
-    if (idx < sessionIds.length) sessionFilter = sessionIds[idx];
-    render(); return;
-  }
 }
 
 function handleMouse(button, col, row) {

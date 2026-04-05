@@ -381,6 +381,7 @@ function updateIslandFromEntry(entry) {
   if (!sid) { sendIslandUpdate(); return; } // skip entries without session
   const s = getIslandSession(sid);
   if (!s.startTs) s.startTs = entry.ts;
+  s._lastActivityTs = entry.ts;
 
   // Session label + color
   const sInfo = sessions.get(sid);
@@ -389,14 +390,15 @@ function updateIslandFromEntry(entry) {
     s._color = sInfo.color || null;
   }
 
-  // Track user query — only show "starting" at the beginning of a new turn (from idle)
+  // Track user query — new turn resets phase
   if (cat === "user_query" && entry.userQuery) {
     s.userQuery = entry.userQuery.slice(0, 120);
-    if (s.phase === "idle") {
-      s.phase = "starting";
-    }
+    s.phase = "starting";
+    s.pulsing = false;
+    if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
     s.idleSince = null;
     if (s._idleTimer) { clearTimeout(s._idleTimer); s._idleTimer = null; }
+    s._lastActivityTs = entry.ts;
   }
 
   // Track thinking — also clears "starting"
@@ -441,8 +443,18 @@ function updateIslandFromEntry(entry) {
     } else if (toolName.includes("Agent")) s.phase = "planning";
   }
 
-  // Approval tracking
+  // Approval tracking — any tool activity after waiting means approval was granted
   if (cat === "tool_use" || cat === "pre_tool") {
+    // New tool arriving while waiting = previous tool was approved
+    if (s.waiting || s.phase === "waiting for input") {
+      s.approved = s.waitingTool || s._pendingToolName || s.tool;
+      s.waiting = false;
+      s.pulsing = false;
+      s.waitingTool = null;
+      if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
+      sendIslandUpdate();
+      setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1000);
+    }
     s._pendingToolName = s.tool;
     s._pendingToolTs = Date.now();
   }
@@ -461,19 +473,29 @@ function updateIslandFromEntry(entry) {
     s._pendingToolName = null;
     s._pendingToolTs = null;
   }
+  // Thinking after waiting also means approval (Claude resumed work)
+  if (cat === "thinking" && (s.waiting || s.phase === "waiting for input")) {
+    s.approved = s.waitingTool || s.tool;
+    s.waiting = false;
+    s.pulsing = false;
+    s.waitingTool = null;
+    if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
+    s.phase = "exploring";
+    sendIslandUpdate();
+    setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1000);
+  }
 
   // Rejection detection — tool_rejected, user_query, or thinking after waiting = tool was rejected
+  // Only check the session that the event belongs to (not all sessions)
   if (cat === "user_query" || cat === "thinking" || cat === "tool_rejected") {
-    for (const [, ss] of islandSessions) {
-      if (ss.waiting) {
-        ss.rejected = ss.waitingTool || "tool";
-        ss.waiting = false;
-        ss.pulsing = false;
-        ss.waitingTool = null;
-        if (ss._pulseTimer) { clearTimeout(ss._pulseTimer); ss._pulseTimer = null; }
-        ss.phase = "exploring";
-        setTimeout(() => { ss.rejected = null; sendIslandUpdate(); }, 1500);
-      }
+    if (s.waiting) {
+      s.rejected = s.waitingTool || "tool";
+      s.waiting = false;
+      s.pulsing = false;
+      s.waitingTool = null;
+      if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
+      s.phase = "exploring";
+      setTimeout(() => { s.rejected = null; sendIslandUpdate(); }, 1500);
     }
     sendIslandUpdate();
   }
@@ -579,14 +601,14 @@ function updateIslandFromEntry(entry) {
     s.toolDetail = null;
   }
 
-  // Stop hook = Claude finished → "done", then idle after 3min
+  // Stop hook = Claude finished → "done", then idle after 10s
   // StopFailure takes precedence — suppress "done" if StopFailure arrived within 500ms
   if (cat === "Stop" && !(s._stopFailureTs && (Date.now() - s._stopFailureTs < 500))) {
     s.phase = "done";
     s.thinking = false;
     s.tool = null;
     s.toolDetail = null;
-    // Pulse 5 times for done
+    // Pulse for done
     s.pulsing = true;
     if (s._pulseTimer) clearTimeout(s._pulseTimer);
     s._pulseTimer = setTimeout(() => { s.pulsing = false; sendIslandUpdate(); }, 5000);
@@ -595,11 +617,11 @@ function updateIslandFromEntry(entry) {
       s.phase = "idle";
       s.idleSince = Date.now();
       sendIslandUpdate();
-    }, 3 * 60 * 1000);
+    }, 10000);
   }
 
-  // Fallback idle timer (20s) for sessions without Notification/Stop hooks
-  if (cat !== "thinking" && cat !== "Notification" && cat !== "Stop") {
+  // Fallback idle timer — reset on activity (not on Stop/thinking/Notification which have their own timers)
+  if (cat !== "thinking" && cat !== "Notification" && cat !== "Stop" && cat !== "stop_failure") {
     s.idleSince = null;
     if (s._idleTimer) clearTimeout(s._idleTimer);
     s._idleTimer = setTimeout(() => {
@@ -609,7 +631,7 @@ function updateIslandFromEntry(entry) {
       s.thinking = false;
       s.idleSince = Date.now();
       sendIslandUpdate();
-    }, 3 * 60 * 1000);
+    }, 30000);
   }
 
   // Prune stale sessions (no events for 5 min)
@@ -632,7 +654,7 @@ function sendIslandUpdate() {
     let active = null;
     let latestTs = 0;
     for (const [, s] of islandSessions) {
-      const t = s.recentTools.length > 0 ? s.recentTools[s.recentTools.length - 1].ts : (s.startTs || 0);
+      const t = s._lastActivityTs || s.startTs || 0;
       if (t > latestTs) { latestTs = t; active = s; }
     }
     if (!active) active = { phase: "idle", progress: null, tool: null, toolDetail: null, files: 0, tokens: 0, errors: 0, thinking: false, waiting: false, waitingTool: null, yourTurn: false, userQuery: null, recentTools: [], activeFile: null, startTs: null };
