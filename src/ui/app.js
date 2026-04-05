@@ -448,9 +448,9 @@ function updateIslandFromEntry(entry) {
     if (s.waiting || s.phase === "waiting for input") {
       s.approved = s.waitingTool || s._pendingToolName || s.tool;
       s.waiting = false;
-      s.waitingPulsing = false;
+      s.pulsing = false;
       s.waitingTool = null;
-      if (s._waitingPulseTimer) { clearTimeout(s._waitingPulseTimer); s._waitingPulseTimer = null; }
+      if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
       s.phase = s.tool ? "implementing" : "exploring";
       sendIslandUpdate();
       setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1000);
@@ -465,9 +465,9 @@ function updateIslandFromEntry(entry) {
       if (ss.waiting) {
         ss.rejected = ss.waitingTool || "tool";
         ss.waiting = false;
-        ss.waitingPulsing = false;
+        ss.pulsing = false;
         ss.waitingTool = null;
-        if (ss._waitingPulseTimer) { clearTimeout(ss._waitingPulseTimer); ss._waitingPulseTimer = null; }
+        if (ss._pulseTimer) { clearTimeout(ss._pulseTimer); ss._pulseTimer = null; }
         ss.phase = "exploring";
         setTimeout(() => { ss.rejected = null; sendIslandUpdate(); }, 1500);
       }
@@ -495,6 +495,10 @@ function updateIslandFromEntry(entry) {
     // Don't clear waiting/waitingTool if PermissionRequest already set them
     if (!s.waiting) {
       s.waitingTool = null;
+      // Pulse 10 times for waiting for input
+      s.pulsing = true;
+      if (s._pulseTimer) clearTimeout(s._pulseTimer);
+      s._pulseTimer = setTimeout(() => { s.pulsing = false; sendIslandUpdate(); }, 10000);
     }
     if (s._idleTimer) clearTimeout(s._idleTimer);
   }
@@ -503,15 +507,15 @@ function updateIslandFromEntry(entry) {
   if (cat === "permission_request") {
     const toolName = entry.json?.data?.tool_name || entry.title || "tool";
     s.waiting = true;
-    s.waitingPulsing = true;
+    s.pulsing = true;
     s.waitingTool = toolName;
     s.phase = "waiting for input";
     s.thinking = false;
     if (s._idleTimer) clearTimeout(s._idleTimer);
     // Pulse for ~10s then hold steady
-    if (s._waitingPulseTimer) clearTimeout(s._waitingPulseTimer);
-    s._waitingPulseTimer = setTimeout(() => {
-      s.waitingPulsing = false;
+    if (s._pulseTimer) clearTimeout(s._pulseTimer);
+    s._pulseTimer = setTimeout(() => {
+      s.pulsing = false;
       sendIslandUpdate();
     }, 10000);
   }
@@ -579,6 +583,10 @@ function updateIslandFromEntry(entry) {
     s.thinking = false;
     s.tool = null;
     s.toolDetail = null;
+    // Pulse 5 times for done
+    s.pulsing = true;
+    if (s._pulseTimer) clearTimeout(s._pulseTimer);
+    s._pulseTimer = setTimeout(() => { s.pulsing = false; sendIslandUpdate(); }, 5000);
     if (s._idleTimer) clearTimeout(s._idleTimer);
     s._idleTimer = setTimeout(() => {
       s.phase = "idle";
@@ -655,7 +663,7 @@ function sendIslandUpdate() {
       errors: active.errors,
       thinking: active.thinking,
       waiting: active.waiting,
-      waitingPulsing: active.waitingPulsing || false,
+      pulsing: active.pulsing || false,
       waitingTool: active.waitingTool,
       approved: active.approved,
       denied: active.denied || null,
@@ -922,7 +930,7 @@ function connect() {
       // Clear stale waiting states from backlog replay
       for (const [, ss] of islandSessions) {
         ss.waiting = false;
-        ss.waitingPulsing = false;
+        ss.pulsing = false;
         ss.waitingTool = null;
         ss.rejected = null;
       }

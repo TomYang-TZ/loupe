@@ -94,7 +94,7 @@ class IslandView: NSView {
     var errorCount: Int = 0
     var thinkingActive: Bool = false
     var waitingForConfirmation: Bool = false
-    var waitingPulsing: Bool = false
+    var pulsing: Bool = false
     var waitingTool: String? = nil
     var approvedTool: String? = nil
     var rejectedTool: String? = nil
@@ -124,9 +124,12 @@ class IslandView: NSView {
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
 
-    // Pill geometry
-    let pillWidth: CGFloat = 220
+    // Pill geometry — dynamic width
+    let pillMinWidth: CGFloat = 80
+    let pillMaxWidth: CGFloat = 260
     let pillHeight: CGFloat = 28
+    private var pillTargetWidth: CGFloat = 160
+    private var pillCurrentWidth: CGFloat = 160
     let expandedWidth: CGFloat = 380
     let expandedHeight: CGFloat = 220
 
@@ -194,6 +197,14 @@ class IslandView: NSView {
             needsRedraw = true
         } else {
             warmT = warmTarget
+        }
+
+        // Smooth pill width animation
+        if abs(pillCurrentWidth - pillTargetWidth) > 0.5 {
+            pillCurrentWidth += (pillTargetWidth - pillCurrentWidth) * 0.1
+            needsRedraw = true
+        } else {
+            pillCurrentWidth = pillTargetWidth
         }
 
         // Pulse for stuck/thinking/waiting states
@@ -295,10 +306,23 @@ class IslandView: NSView {
 
     private func pillRect() -> NSRect {
         let t = animT
+        let baseW = pillCurrentWidth
         let wGrow = warmT * 30
         let hGrow = warmT * 4
-        let w = pillWidth + wGrow + (expandedWidth - pillWidth - wGrow) * t
+        let w = baseW + wGrow + (expandedWidth - baseW - wGrow) * t
         let h = pillHeight + hGrow + (expandedHeight - pillHeight - hGrow) * t
+
+        // Heartbeat scale when pulsing (collapsed only)
+        if pulsing && t < 0.1 {
+            let beat = CGFloat(sin(Double(pulsePhase) * 2))
+            let scale: CGFloat = 1.0 + 0.03 * beat  // subtle 3% breathe
+            let cw = w * scale
+            let ch = h * scale
+            let cx = bounds.maxX - w / 2 - 8
+            let cy = bounds.maxY - h / 2 - 2
+            return NSRect(x: cx - cw / 2, y: cy - ch / 2, width: cw, height: ch)
+        }
+
         // Right-aligned within panel (close to notch), top of screen
         let x = bounds.maxX - w - 8
         let y = bounds.maxY - h - 2
@@ -418,7 +442,7 @@ class IslandView: NSView {
 
         for (i, dot) in dots.enumerated() {
             let dotColor = IslandView.dotStatusColors[dot.status] ?? IslandView.dotStatusColors["working"]!
-            let needsPulse = (dot.status == "waiting" && waitingPulsing) || dot.status == "stuck"
+            let needsPulse = pulsing || dot.status == "stuck"
             let pulse: CGFloat = needsPulse ? (0.6 + 0.4 * CGFloat(sin(Double(pulsePhase) * 2 + Double(i) * 0.5))) : 1.0
 
             // Draw the dot
@@ -437,7 +461,7 @@ class IslandView: NSView {
             }
 
             // Glow ring for waiting only
-            if dot.status == "waiting" && waitingPulsing {
+            if pulsing && (dot.status == "waiting" || dot.status == "done" || dot.status == "needsInput") {
                 let ringR = dotR + 2.5 * pulse
                 ctx.setStrokeColor(dotColor.withAlphaComponent(Double(alpha * pulse * 0.3)).cgColor)
                 ctx.setLineWidth(1.0)
@@ -471,8 +495,23 @@ class IslandView: NSView {
             labelColor = NSColor(white: 0.85, alpha: 1)
         }
 
+        // Compute dynamic pill width from content
+        let dotsSectionWidth: CGFloat = cursorX - rect.minX  // dots already drawn up to cursorX
+        let labelFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+        let labelSize = (label as NSString).size(withAttributes: [.font: labelFont])
+        // Also account for right-side tool text
+        var rightWidth: CGFloat = 0
+        if let tool = activeToolName, !waitingForConfirmation, currentPhase != "idle" {
+            var rt = tool
+            if let detail = activeToolDetail, !detail.isEmpty { rt = "\(tool) \(detail)" }
+            let rightFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
+            rightWidth = (rt as NSString).size(withAttributes: [.font: rightFont]).width + 16
+        }
+        let contentWidth = dotsSectionWidth + labelSize.width + rightWidth + 20  // 20 = padding
+        pillTargetWidth = min(pillMaxWidth, max(pillMinWidth, contentWidth))
+
         // Pulse the label for approval, waiting for input, and strikethrough states
-        let shouldPulseLabel = waitingPulsing
+        let shouldPulseLabel = pulsing
         let labelPulse: CGFloat = shouldPulseLabel ? (0.5 + 0.5 * CGFloat(sin(Double(pulsePhase) * 2))) : 1.0
         var labelAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
@@ -559,7 +598,7 @@ class IslandView: NSView {
             let bannerH: CGFloat = 22
             let bannerRect = CGRect(x: rect.minX + pad - 4, y: y - 4, width: rect.width - 2 * pad + 8, height: bannerH)
             let bannerPath = CGPath(roundedRect: bannerRect, cornerWidth: 6, cornerHeight: 6, transform: nil)
-            let bannerPulse: CGFloat = waitingPulsing ? (0.7 + 0.3 * CGFloat(sin(Double(pulsePhase) * 2))) : 0.7
+            let bannerPulse: CGFloat = pulsing ? (0.7 + 0.3 * CGFloat(sin(Double(pulsePhase) * 2))) : 0.7
             ctx.setFillColor(waitingColor.withAlphaComponent(Double(alpha) * 0.15 * Double(bannerPulse)).cgColor)
             ctx.addPath(bannerPath)
             ctx.fillPath()
@@ -677,7 +716,7 @@ class IslandView: NSView {
         errorCount = errors
         thinkingActive = thinking
         waitingForConfirmation = waiting
-        // waitingPulsing is set separately via the JS payload
+        // pulsing is set separately via the JS payload
         self.waitingTool = waitingTool
         self.approvedTool = approved
         self.idleSeconds = idleSeconds
@@ -827,7 +866,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
                 activeSessionColor: data["activeSessionColor"] as? String,
                 activeSessionId: data["activeSessionId"] as? String
             )
-            island.islandView?.waitingPulsing = data["waitingPulsing"] as? Bool ?? false
+            island.islandView?.pulsing = data["pulsing"] as? Bool ?? false
             island.islandView?.rejectedTool = data["rejected"] as? String
         }
     }
