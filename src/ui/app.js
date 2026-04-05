@@ -205,6 +205,8 @@ function getGroupState(sessionId) {
 }
 
 const streamHiddenCategories = new Set(["Notification", "Stop", "permission_request", "permission_denied", "tool_rejected", "tool_approved_msg"]);
+// Categories that go into groups for state tracking but don't render as cards
+const streamNoRenderCategories = new Set(["post_tool"]);
 
 function assignToGroup(entry) {
   // Stream-hidden entries and session boundaries don't go into groups
@@ -835,7 +837,10 @@ Tiling.init(paneContainer, (sessionId) => {
   const info = sessions.get(sessionId);
   if (!info) return null;
   if (!info.color) info.color = nextSessionColor();
-  const p = createPane(sessionId, info.label, info.color);
+  // Number sessions: 2:xxx, 3:xxx (1=All)
+  const sessionIds = [...sessions.keys()];
+  const sNum = sessionIds.indexOf(sessionId) + 2;
+  const p = createPane(sessionId, `${sNum}:${info.label}`, info.color);
   panes.set(sessionId, p);
   return p.el;
 }, {
@@ -1324,7 +1329,7 @@ function handleLine(msg) {
     }
   }
 
-  const streamHidden = streamHiddenCategories.has(entry.category);
+  const streamHidden = streamHiddenCategories.has(entry.category) || streamNoRenderCategories.has(entry.category);
 
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
