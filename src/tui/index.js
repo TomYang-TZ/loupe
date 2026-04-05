@@ -364,13 +364,25 @@ function handleMessage(data) {
       }
     }
   } else {
-    if (queries.length === 0) {
-      queries.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: false });
-      focusIdx = 0;
+    // Find the last query for this event's session, or fall back to global last
+    let target = null;
+    if (sessionId) {
+      for (let i = queries.length - 1; i >= 0; i--) {
+        if (queries[i].sessionId === sessionId || queries[i].events.some(e => e.sessionId === sessionId)) {
+          target = queries[i];
+          break;
+        }
+      }
     }
-    const current = queries[queries.length - 1];
-    current.events.push(eventObj);
-    current.endTs = msg.ts;
+    if (!target) {
+      if (queries.length === 0) {
+        queries.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: false });
+        focusIdx = 0;
+      }
+      target = queries[queries.length - 1];
+    }
+    target.events.push(eventObj);
+    target.endTs = msg.ts;
   }
 
   render();
