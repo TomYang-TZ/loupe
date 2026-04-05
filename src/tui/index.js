@@ -595,12 +595,9 @@ function render() {
   }
 
   // Build flat row list from queries
-  const filteredQueries = sessionFilter === "all"
-    ? queries
-    : queries.filter(q => q.sessionId === sessionFilter || q.events.some(e => e.sessionId === sessionFilter));
-
   const rowData = [];
-  for (const q of filteredQueries) {
+
+  function addQueryRows(q) {
     const realIdx = queries.indexOf(q);
     const isFocused = realIdx === focusIdx;
     const chevron = q.collapsed ? "▶" : "▼";
@@ -614,13 +611,44 @@ function render() {
     if (!q.collapsed) {
       let evIdx = 0;
       for (const ev of q.events) {
-        if (sessionFilter !== "all" && ev.sessionId && ev.sessionId !== sessionFilter) { evIdx++; continue; }
         const isEventFocused = navLevel === "event" && realIdx === focusIdx && evIdx === eventFocusIdx;
         const prefix = isEventFocused ? `${FG.cyan}▸${RESET} ` : "  ";
         rowData.push({ text: `${prefix}${ev.line}`, isHeader: false, queryIdx: realIdx, eventIdx: evIdx });
         evIdx++;
       }
     }
+  }
+
+  if (sessionFilter === "all" && sessions.size > 0) {
+    // Group queries by session, each session gets a header
+    const sessionIds = [...sessions.keys()];
+    // Also collect queries with no sessionId
+    const noSession = queries.filter(q => !q.sessionId || !sessions.has(q.sessionId));
+
+    for (const sid of sessionIds) {
+      const sInfo = sessions.get(sid);
+      const sQueries = queries.filter(q => q.sessionId === sid || q.events.some(e => e.sessionId === sid));
+      if (sQueries.length === 0) continue;
+
+      // Session header
+      const sLabel = sInfo.label || sid.slice(0, 8);
+      const sCount = sInfo.eventCount || 0;
+      rowData.push({ text: `${BOLD}${FG.cyan}── ${sLabel}${RESET} ${DIM}(${sCount} events)${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
+
+      for (const q of sQueries) addQueryRows(q);
+    }
+
+    // Queries without session
+    if (noSession.length > 0) {
+      rowData.push({ text: `${BOLD}${FG.gray}── unsorted${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
+      for (const q of noSession) addQueryRows(q);
+    }
+  } else {
+    // Single session filter — flat list
+    const filteredQueries = sessionFilter === "all"
+      ? queries
+      : queries.filter(q => q.sessionId === sessionFilter || q.events.some(e => e.sessionId === sessionFilter));
+    for (const q of filteredQueries) addQueryRows(q);
   }
 
   // Empty state
