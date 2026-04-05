@@ -4,7 +4,7 @@
 
 set -e
 
-LOUPE_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOUPE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$HOME/.claude/logs"
 LOG_FILE="$LOG_DIR/loupe.jsonl"
 PID_FILE="$LOG_DIR/loupe.pid"
