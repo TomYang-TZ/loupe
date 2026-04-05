@@ -857,7 +857,7 @@ function handleInput(buf) {
     cleanup(); process.exit(0);
   }
 
-  // Session switching — works at any level
+  // Global keys — work at any level
   if (s === "1") { sessionFilter = "all"; render(); return; }
   if (s >= "2" && s <= "9") {
     const idx = parseInt(s) - 2;
@@ -865,6 +865,14 @@ function handleInput(buf) {
     if (idx < sessionIds.length) sessionFilter = sessionIds[idx];
     render(); return;
   }
+  if (s === "c") {
+    allCollapsed = !allCollapsed;
+    for (const [, sq] of sessionQueries) {
+      for (const q of sq) q.collapsed = allCollapsed;
+    }
+    render(); return;
+  }
+  if (s === "w") { openWindow(); render(); return; }
 
   // ← / h = back one level
   const isLeft = s === "h" || s === "\x1b[D";
@@ -963,17 +971,7 @@ function handleInput(buf) {
     render(); return;
   }
 
-  // c = toggle collapse/expand all
-  if (s === "c") {
-    allCollapsed = !allCollapsed;
-    for (const [, sq] of sessionQueries) {
-      for (const q of sq) q.collapsed = allCollapsed;
-    }
-    render(); return;
-  }
 
-  // w = open native window mode
-  if (s === "w") { openWindow(); render(); return; }
 
 }
 
