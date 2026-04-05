@@ -74,6 +74,8 @@ const TREE_WIDTH = 28;
 
 // Mouse click mapping
 let rowMap = [];
+// Navigation order — maps visual position to query index (rebuilt each render)
+let navOrder = [];
 
 // ===== Category colors =====
 const catColors = {
@@ -374,11 +376,17 @@ function handleMessage(data) {
   const eventObj = { line, cat, sessionId, ts: msg.ts, json };
 
   if (isQueryBoundary) {
+    // Absorb preamble events into this query
+    let preambleEvents = [];
+    if (queries.length > 0 && queries[queries.length - 1]._preamble) {
+      const preamble = queries.pop();
+      preambleEvents = preamble.events;
+    }
     // Auto-collapse previous, expand new when following
     if (autoFollow && queries.length > 0) {
       queries[queries.length - 1].collapsed = true;
     }
-    const q = { id: ++queryIdCounter, userQuery, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: !autoFollow };
+    const q = { id: ++queryIdCounter, userQuery, sessionId, startTs: msg.ts, endTs: msg.ts, events: preambleEvents, collapsed: !autoFollow };
     queries.push(q);
     if (queries.length > MAX_QUERIES) queries.shift();
     if (autoFollow) {
@@ -413,11 +421,18 @@ function handleMessage(data) {
       }
     }
     if (!target) {
-      if (queries.length === 0) {
-        queries.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: false });
-        focusIdx = 0;
+      // No query for this session yet — buffer in a hidden preamble
+      // that will be absorbed by the first real UserPromptSubmit query
+      if (queries.length === 0 || !queries[queries.length - 1].userQuery) {
+        // Reuse existing preamble or create one
+        if (queries.length === 0) {
+          queries.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _preamble: true });
+          // Don't set focusIdx for preamble — wait for real query
+        }
+        target = queries[queries.length - 1];
+      } else {
+        target = queries[queries.length - 1];
       }
-      target = queries[queries.length - 1];
     }
     target.events.push(eventObj);
     target.endTs = msg.ts;
@@ -635,8 +650,12 @@ function render() {
   // Build flat row list from queries
   const rowData = [];
 
+  navOrder = []; // rebuild navigation order
+
   function addQueryRows(q) {
+    if (q._preamble) return; // skip preamble queries
     const realIdx = queries.indexOf(q);
+    navOrder.push(realIdx);
     const isFocused = realIdx === focusIdx;
     const chevron = q.collapsed ? "▶" : "▼";
     const fc = isFocused && navLevel === "query" ? `${BOLD}${FG.cyan}` : (isFocused ? `${BOLD}${FG.white}` : DIM);
@@ -818,17 +837,23 @@ function handleInput(buf) {
   }
 
   // === Query level ===
+  // Navigate using visual order (navOrder), not raw query index
   if (isDown) {
-    if (focusIdx < queries.length - 1) {
-      focusIdx++;
-      autoFollow = focusIdx === queries.length - 1;
+    const curPos = navOrder.indexOf(focusIdx);
+    if (curPos < navOrder.length - 1) {
+      focusIdx = navOrder[curPos + 1];
+      autoFollow = curPos + 1 === navOrder.length - 1;
       if (autoFollow) hasNewQueries = false;
     }
     render(); return;
   }
 
   if (isUp) {
-    if (focusIdx > 0) { focusIdx--; autoFollow = false; }
+    const curPos = navOrder.indexOf(focusIdx);
+    if (curPos > 0) {
+      focusIdx = navOrder[curPos - 1];
+      autoFollow = false;
+    }
     render(); return;
   }
 
@@ -858,10 +883,13 @@ function handleInput(buf) {
     render(); return;
   }
 
-  if (s === "g") { focusIdx = 0; autoFollow = false; render(); return; }
+  if (s === "g") {
+    focusIdx = navOrder.length > 0 ? navOrder[0] : 0;
+    autoFollow = false; render(); return;
+  }
 
   if (s === "G") {
-    focusIdx = queries.length - 1;
+    focusIdx = navOrder.length > 0 ? navOrder[navOrder.length - 1] : queries.length - 1;
     autoFollow = true; hasNewQueries = false;
     render(); return;
   }
