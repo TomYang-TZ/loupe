@@ -1290,7 +1290,8 @@ function handleLine(msg) {
     }
   }
 
-  const streamHidden = streamHiddenCategories.has(entry.category);
+  // user_query goes through grouping (creates Q headers) but doesn't render as a standalone card
+  const streamHidden = streamHiddenCategories.has(entry.category) || entry.category === "user_query";
 
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
