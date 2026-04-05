@@ -90,12 +90,19 @@ function processFile(filePath) {
         // Detect tool rejection — user denied permission
         if (obj.type === "user" && !obj.isMeta) {
           const content = obj.message?.content;
-          let text = typeof content === "string"
-            ? content
-            : Array.isArray(content)
-              ? content.filter(b => typeof b === "string" || b.type === "text").map(b => typeof b === "string" ? b : b.text).join(" ")
-              : "";
-          if (text.includes("[Request interrupted by user for tool use]")) {
+          // Extract text from all block types (text blocks, tool_result content, raw strings)
+          let text = "";
+          if (typeof content === "string") {
+            text = content;
+          } else if (Array.isArray(content)) {
+            for (const b of content) {
+              if (typeof b === "string") text += " " + b;
+              else if (b.type === "text") text += " " + (b.text || "");
+              else if (b.type === "tool_result") text += " " + (typeof b.content === "string" ? b.content : "");
+            }
+          }
+          text = text.trim();
+          if (text.includes("[Request interrupted by user for tool use]") || text.includes("The tool use was rejected")) {
             const sessionId = path.basename(filePath, ".jsonl");
             const entry = {
               _logstream_type: "tool_rejected",

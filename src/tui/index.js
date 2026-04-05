@@ -209,6 +209,9 @@ function handleMessage(data) {
   const cat = categorize(json);
   if (cat === null) return;
 
+  // Hidden categories — tracked for state but not rendered as events
+  const tuiHidden = cat === "permission_request" || cat === "permission_denied" || cat === "unknown";
+
   // Phase tracking
   if (cat === "thinking") { thinkingActive = true; phase = "exploring"; }
   if (cat === "pre_tool" && json?.data) {
@@ -263,6 +266,9 @@ function handleMessage(data) {
       setTimeout(() => { if (agentTree.every(a => a.status === "done")) { agentTreeVisible = false; agentTree.length = 0; render(); } }, 5000);
     }
   }
+
+  // Skip hidden categories from rendering (state tracking above still runs)
+  if (tuiHidden) { render(); return; }
 
   // Build event ANSI line
   const ts = new Date(msg.ts).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -345,6 +351,18 @@ function handleMessage(data) {
     } else {
       hasNewQueries = true;
     }
+  } else if (cat === "tool_rejected") {
+    // Rejection: search ALL queries backwards for the last pre_tool and strikethrough it
+    // Don't add tool_rejected as an event — it's just a signal
+    outer: for (let qi = queries.length - 1; qi >= 0; qi--) {
+      for (let ei = queries[qi].events.length - 1; ei >= 0; ei--) {
+        if (queries[qi].events[ei].cat === "pre_tool") {
+          const orig = queries[qi].events[ei].line;
+          queries[qi].events[ei].line = `${DIM}${FG.red}✗${RESET} ${DIM}${stripAnsi(orig)}${RESET}`;
+          break outer;
+        }
+      }
+    }
   } else {
     if (queries.length === 0) {
       queries.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: false });
@@ -353,17 +371,6 @@ function handleMessage(data) {
     const current = queries[queries.length - 1];
     current.events.push(eventObj);
     current.endTs = msg.ts;
-
-    // Rejection strikethrough
-    if (cat === "tool_rejected") {
-      for (let i = current.events.length - 1; i >= 0; i--) {
-        if (current.events[i].cat === "pre_tool") {
-          const orig = current.events[i].line;
-          current.events[i].line = `${DIM}${FG.red}✗${RESET} ${DIM}${stripAnsi(orig)}${RESET}`;
-          break;
-        }
-      }
-    }
   }
 
   render();
@@ -532,8 +539,8 @@ function render() {
   if (sessions.size > 1) stats += `  ${DIM}sessions:${RESET}${sessions.size}`;
 
   const sep = DIM + "─".repeat(cols) + RESET;
-  const showTabs = sessions.size > 1;
-  const logRows = rows - (showTabs ? 6 : 5);
+  const showTabs = true;
+  const logRows = rows - 6;
 
   let output = `${ESC}[H`;
   output += padLine(header, cols) + "\n";
@@ -694,7 +701,7 @@ function handleInput(buf) {
   if (navLevel === "detail") {
     if (s === "j" || s === "\x1b[B") { detailScroll++; render(); return; }
     if (s === "k" || s === "\x1b[A") { detailScroll = Math.max(0, detailScroll - 1); render(); return; }
-    if (s === "\r" || s === " ") { navLevel = "event"; detailScroll = 0; render(); return; }
+    if (s === "\r" || s === " " || s === "h" || s === "\x1b[D") { navLevel = "event"; detailScroll = 0; render(); return; }
     if (s === "g") { detailScroll = 0; render(); return; }
     if (s === "G") { detailScroll = 99999; render(); return; }
     return;
@@ -704,6 +711,12 @@ function handleInput(buf) {
   if (navLevel === "event") {
     const q = queries[focusIdx];
     if (!q) { navLevel = "query"; render(); return; }
+
+    // h / left arrow — go back to query level
+    if (s === "h" || s === "\x1b[D") {
+      navLevel = "query"; eventFocusIdx = -1;
+      render(); return;
+    }
 
     if (s === "j" || s === "\x1b[B") {
       if (eventFocusIdx < q.events.length - 1) eventFocusIdx++;
@@ -802,8 +815,8 @@ function handleMouse(button, col, row) {
   }
 
   if ((button & 0x03) === 0) {
-    const showTabs = sessions.size > 1;
-    const contentStartRow = showTabs ? 5 : 4;
+    const showTabs = true;
+    const contentStartRow = 5; // header(2) + tabs(1) + sep(1) + 1-indexed
     const contentRow = row - contentStartRow;
     if (contentRow >= 0 && contentRow < rowMap.length) {
       const mapped = rowMap[contentRow];
