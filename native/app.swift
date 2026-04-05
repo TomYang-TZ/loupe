@@ -923,6 +923,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         // Intercept Cmd+/- for zoom, Cmd+Shift+/- for columns, Cmd+Shift+L for toggle
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.modifierFlags.contains(.command) else { return event }
+            if event.keyCode == 13 && !event.modifierFlags.contains(.shift) { // Cmd+W
+                self?.window.orderOut(nil)
+                self?.islandOnlyMode = true
+                return nil
+            }
             if event.modifierFlags.contains(.shift) && event.keyCode == 37 { // Cmd+Shift+L
                 self?.toggleWindow()
                 return nil
