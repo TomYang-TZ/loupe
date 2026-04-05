@@ -678,15 +678,18 @@ function render() {
   }
 
   if (sessionFilter === "all" && sessions.size > 0) {
-    // Group queries by session, each session gets a header
+    // Group queries by session — each query belongs to exactly one session
     const sessionIds = [...sessions.keys()];
-    // Also collect queries with no sessionId
-    const noSession = queries.filter(q => !q.sessionId || !sessions.has(q.sessionId));
+    const claimed = new Set();
 
     for (let si = 0; si < sessionIds.length; si++) {
       const sid = sessionIds[si];
       const sInfo = sessions.get(sid);
-      const sQueries = queries.filter(q => q.sessionId === sid || q.events.some(e => e.sessionId === sid));
+      const sQueries = queries.filter(q => {
+        if (claimed.has(q.id)) return false;
+        if (q.sessionId === sid) { claimed.add(q.id); return true; }
+        return false;
+      });
       if (sQueries.length === 0) continue;
 
       // Session header numbered like tabs (2:xxx, 3:xxx)
@@ -698,7 +701,8 @@ function render() {
       for (const q of sQueries) addQueryRows(q);
     }
 
-    // Queries without session
+    // Queries not claimed by any session
+    const noSession = queries.filter(q => !claimed.has(q.id) && !q._preamble);
     if (noSession.length > 0) {
       rowData.push({ text: `${BOLD}${FG.gray}── unsorted${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
       for (const q of noSession) addQueryRows(q);
