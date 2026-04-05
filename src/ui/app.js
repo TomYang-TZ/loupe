@@ -204,7 +204,7 @@ function getGroupState(sessionId) {
   return sessionGroups.get(sessionId);
 }
 
-const streamHiddenCategories = new Set(["Notification", "Stop", "permission_request", "permission_denied", "tool_rejected"]);
+const streamHiddenCategories = new Set(["Notification", "Stop", "permission_request", "permission_denied", "tool_rejected", "tool_approved_msg"]);
 
 function assignToGroup(entry) {
   // Stream-hidden entries and session boundaries don't go into groups
@@ -223,7 +223,8 @@ function assignToGroup(entry) {
   const insideAgent = gs.agentStack.length > 0;
   const isDuplicate = gs.currentQuery && entry.userQuery &&
     gs.currentQuery.userQuery === entry.userQuery;
-  const isQueryBoundary = !insideAgent && !isDuplicate && (
+  const isSystemPrompt = entry.userQuery && (entry.userQuery.includes("<task-notification>") || entry.userQuery.includes("<system-reminder>"));
+  const isQueryBoundary = !insideAgent && !isDuplicate && !isSystemPrompt && (
     (entry.category === "user_query" && entry.userQuery) ||
     (entry.category === "thinking" && entry.userQuery)
   );
@@ -1018,6 +1019,7 @@ function categorize(msg) {
       if (hook.hookType === "TaskCompleted") return "task_completed";
       // --- Existing categories ---
       if (hook.hookType === "tool_rejected") return "tool_rejected";
+      if (hook.hookType === "tool_approved_with_message") return "tool_approved_msg";
       if (hook.hookType === "thinking") return "thinking";
       if (hook.hookType === "user_query") return "user_query";
       if (hook.hookType === "Notification") return "Notification";
@@ -1302,6 +1304,22 @@ function handleLine(msg) {
           entries[i].el.querySelector(".entry-row")?.appendChild(msgEl);
         }
         break;
+      }
+    }
+  }
+
+  // Approval with message — append to last tool_use entry
+  if (category === "tool_approved_msg") {
+    const approveMsg = entry.json?.data?.message || null;
+    if (approveMsg) {
+      for (let i = entries.length - 1; i >= Math.max(0, entries.length - 20); i--) {
+        if (entries[i].category === "tool_use" && entries[i].el) {
+          const msgEl = document.createElement("span");
+          msgEl.className = "approve-msg";
+          msgEl.textContent = ` "${approveMsg.slice(0, 50)}"`;
+          entries[i].el.querySelector(".entry-row")?.appendChild(msgEl);
+          break;
+        }
       }
     }
   }

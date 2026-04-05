@@ -76,6 +76,8 @@ const TREE_WIDTH = 28;
 let rowMap = [];
 // Navigation order — maps visual position to query index (rebuilt each render)
 let navOrder = [];
+// Stash agent prompt from PreToolUse for SubagentStart
+let pendingAgentPrompt = null;
 
 // ===== Category colors =====
 const catColors = {
@@ -96,7 +98,10 @@ function categorize(json) {
   const type = json._logstream_type;
   const data = json.data || {};
   if (type === "PreToolUse") {
-    if (data.tool_name === "Agent") return null;
+    if (data.tool_name === "Agent") {
+      pendingAgentPrompt = data.tool_input?.prompt || data.tool_input?.description || null;
+      return null;
+    }
     return "pre_tool";
   }
   if (type === "PostToolUse") {
@@ -356,7 +361,14 @@ function handleMessage(data) {
   } else if (cat === "tool_rejected") {
     line += `${FG.red}Tool rejected by user${RESET}`;
   } else if (cat === "sub_agent") {
-    line += `${FG.cyan}${BOLD}▶ ${json?.data?.agent_type || "Agent"}${RESET}`;
+    // Attach stashed prompt from PreToolUse
+    if (pendingAgentPrompt) {
+      json.data._agentPrompt = pendingAgentPrompt;
+      pendingAgentPrompt = null;
+    }
+    const agentPrompt = json?.data?._agentPrompt || "";
+    const promptPreview = agentPrompt ? `${DIM}${agentPrompt.slice(0, 50)}${RESET}` : "";
+    line += `${FG.cyan}${BOLD}▶ ${json?.data?.agent_type || "Agent"}${RESET} ${promptPreview}`;
   } else if (cat === "sub_agent_result") {
     line += `${FG.cyan}◀ ${json?.data?.agent_type || "Agent"}${RESET} ${DIM}${String(json?.data?.last_assistant_message || "").split("\n")[0].slice(0, 40)}${RESET}`;
   } else {
@@ -372,7 +384,9 @@ function handleMessage(data) {
 
   // Query grouping
   const userQuery = extractUserQuery(json);
-  const isQueryBoundary = cat === "user_query" && userQuery;
+  // Skip system/notification prompts from becoming query boundaries
+  const isSystemPrompt = userQuery && (userQuery.includes("<task-notification>") || userQuery.includes("<system-reminder>"));
+  const isQueryBoundary = cat === "user_query" && userQuery && !isSystemPrompt;
   const eventObj = { line, cat, sessionId, ts: msg.ts, json };
 
   if (isQueryBoundary) {
