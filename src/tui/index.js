@@ -435,18 +435,10 @@ function handleMessage(data) {
       }
     }
     if (!target) {
-      // No query for this session yet — buffer in a hidden preamble
-      // that will be absorbed by the first real UserPromptSubmit query
-      if (queries.length === 0 || !queries[queries.length - 1].userQuery) {
-        // Reuse existing preamble or create one
-        if (queries.length === 0) {
-          queries.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _preamble: true });
-          // Don't set focusIdx for preamble — wait for real query
-        }
-        target = queries[queries.length - 1];
-      } else {
-        target = queries[queries.length - 1];
-      }
+      // No query for this session yet — create a preamble for THIS session
+      const preamble = { id: ++queryIdCounter, userQuery: null, sessionId: sessionId || null, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _preamble: true };
+      queries.push(preamble);
+      target = preamble;
     }
     target.events.push(eventObj);
     target.endTs = msg.ts;
