@@ -943,7 +943,13 @@ function handleMouse(button, col, row) {
       const mapped = rowMap[contentRow];
       if (mapped && mapped.type === "header") {
         const q = queries[mapped.queryIdx];
-        if (q) { q.collapsed = !q.collapsed; focusIdx = mapped.queryIdx; }
+        if (q) { q.collapsed = !q.collapsed; focusIdx = mapped.queryIdx; navLevel = "query"; }
+        render();
+      } else if (mapped && mapped.type === "event" && mapped.eventIdx >= 0) {
+        focusIdx = mapped.queryIdx;
+        eventFocusIdx = mapped.eventIdx;
+        navLevel = "detail";
+        detailScroll = 0;
         render();
       }
     }
