@@ -94,8 +94,10 @@ class IslandView: NSView {
     var errorCount: Int = 0
     var thinkingActive: Bool = false
     var waitingForConfirmation: Bool = false
+    var waitingPulsing: Bool = false
     var waitingTool: String? = nil
     var approvedTool: String? = nil
+    var rejectedTool: String? = nil
     var idleSeconds: Int = 0
     var sessionDots: [(status: String, label: String, color: String, id: String)] = []
     var activeSessionColor: NSColor? = nil
@@ -195,10 +197,9 @@ class IslandView: NSView {
         }
 
         // Pulse for stuck/thinking/waiting states
-        if progressSignal == "stuck" || thinkingActive || waitingForConfirmation || currentPhase == "waiting for input" || approvedTool != nil || activeSessionColor != nil {
-            pulsePhase += 0.05
-            needsRedraw = true
-        }
+        // Always animate: pill aura cycles, dot auras pulse
+        pulsePhase += 0.05
+        needsRedraw = true
 
         // Warming timer: after hovering 0.6s, expand
         if status == .warming {
@@ -322,17 +323,33 @@ class IslandView: NSView {
         ctx.setFillColor(NSColor(white: bgBrightness, alpha: 1.0).cgColor)
         ctx.fillPath()
 
-        // Session color aura — slow hue shift around pill, no breathing
-        if let sc = activeSessionColor, t < 0.1 {
-            let baseHue: CGFloat = sc.hueComponent
-            let shiftedHue = fmod(baseHue + CGFloat(pulsePhase) * 0.005, 1.0)
-            let auraColor = NSColor(hue: shiftedHue, saturation: sc.saturationComponent, brightness: sc.brightnessComponent, alpha: 1.0)
+        // Pill aura — aurora cycle through jewel tones (independent of session color)
+        // Palette: indigo → violet → magenta → rose → sapphire → indigo
+        if t < 0.1 {
+            let cycle = CGFloat(pulsePhase) * 0.003  // very slow drift
+            let auraStops: [(h: CGFloat, s: CGFloat, b: CGFloat)] = [
+                (0.72, 0.75, 0.85),   // indigo
+                (0.78, 0.65, 0.90),   // violet
+                (0.85, 0.60, 0.88),   // magenta
+                (0.93, 0.55, 0.85),   // rose
+                (0.62, 0.70, 0.90),   // sapphire
+            ]
+            let count = CGFloat(auraStops.count)
+            let pos = fmod(cycle, 1.0) * count
+            let idx0 = Int(pos) % auraStops.count
+            let idx1 = (idx0 + 1) % auraStops.count
+            let frac = pos - floor(pos)
+            let c0 = auraStops[idx0], c1 = auraStops[idx1]
+            let h = c0.h + (c1.h - c0.h) * frac
+            let s = c0.s + (c1.s - c0.s) * frac
+            let b = c0.b + (c1.b - c0.b) * frac
+            let auraColor = NSColor(hue: fmod(h + 1.0, 1.0), saturation: s, brightness: b, alpha: 1.0)
 
             ctx.saveGState()
-            ctx.setShadow(offset: .zero, blur: 10, color: auraColor.withAlphaComponent(0.4).cgColor)
+            ctx.setShadow(offset: .zero, blur: 10, color: auraColor.withAlphaComponent(0.35).cgColor)
             ctx.addPath(path)
-            ctx.setStrokeColor(auraColor.withAlphaComponent(0.5).cgColor)
-            ctx.setLineWidth(2.0)
+            ctx.setStrokeColor(auraColor.withAlphaComponent(0.45).cgColor)
+            ctx.setLineWidth(1.5)
             ctx.strokePath()
             ctx.restoreGState()
         }
@@ -401,7 +418,7 @@ class IslandView: NSView {
 
         for (i, dot) in dots.enumerated() {
             let dotColor = IslandView.dotStatusColors[dot.status] ?? IslandView.dotStatusColors["working"]!
-            let needsPulse = dot.status == "waiting" || dot.status == "stuck"
+            let needsPulse = (dot.status == "waiting" && waitingPulsing) || dot.status == "stuck"
             let pulse: CGFloat = needsPulse ? (0.6 + 0.4 * CGFloat(sin(Double(pulsePhase) * 2 + Double(i) * 0.5))) : 1.0
 
             // Draw the dot
@@ -420,7 +437,7 @@ class IslandView: NSView {
             }
 
             // Glow ring for waiting only
-            if dot.status == "waiting" {
+            if dot.status == "waiting" && waitingPulsing {
                 let ringR = dotR + 2.5 * pulse
                 ctx.setStrokeColor(dotColor.withAlphaComponent(Double(alpha * pulse * 0.3)).cgColor)
                 ctx.setLineWidth(1.0)
@@ -435,7 +452,11 @@ class IslandView: NSView {
         // Status label
         let label: String
         let labelColor: NSColor
-        if let tool = approvedTool {
+        if let tool = rejectedTool {
+            // Brief flash after rejection
+            label = "rejected \(tool)"
+            labelColor = NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1) // red
+        } else if let tool = approvedTool {
             // Brief strikethrough after approval
             label = tool
             labelColor = NSColor(red: 34/255, green: 197/255, blue: 94/255, alpha: 1) // green
@@ -451,7 +472,7 @@ class IslandView: NSView {
         }
 
         // Pulse the label for approval, waiting for input, and strikethrough states
-        let shouldPulseLabel = waitingForConfirmation || currentPhase == "waiting for input" || approvedTool != nil
+        let shouldPulseLabel = waitingPulsing
         let labelPulse: CGFloat = shouldPulseLabel ? (0.5 + 0.5 * CGFloat(sin(Double(pulsePhase) * 2))) : 1.0
         var labelAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
@@ -538,8 +559,8 @@ class IslandView: NSView {
             let bannerH: CGFloat = 22
             let bannerRect = CGRect(x: rect.minX + pad - 4, y: y - 4, width: rect.width - 2 * pad + 8, height: bannerH)
             let bannerPath = CGPath(roundedRect: bannerRect, cornerWidth: 6, cornerHeight: 6, transform: nil)
-            let pulse = 0.7 + 0.3 * CGFloat(sin(Double(pulsePhase) * 2))
-            ctx.setFillColor(waitingColor.withAlphaComponent(Double(alpha) * 0.15 * Double(pulse)).cgColor)
+            let bannerPulse: CGFloat = waitingPulsing ? (0.7 + 0.3 * CGFloat(sin(Double(pulsePhase) * 2))) : 0.7
+            ctx.setFillColor(waitingColor.withAlphaComponent(Double(alpha) * 0.15 * Double(bannerPulse)).cgColor)
             ctx.addPath(bannerPath)
             ctx.fillPath()
 
@@ -656,6 +677,7 @@ class IslandView: NSView {
         errorCount = errors
         thinkingActive = thinking
         waitingForConfirmation = waiting
+        // waitingPulsing is set separately via the JS payload
         self.waitingTool = waitingTool
         self.approvedTool = approved
         self.idleSeconds = idleSeconds
@@ -805,6 +827,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
                 activeSessionColor: data["activeSessionColor"] as? String,
                 activeSessionId: data["activeSessionId"] as? String
             )
+            island.islandView?.waitingPulsing = data["waitingPulsing"] as? Bool ?? false
+            island.islandView?.rejectedTool = data["rejected"] as? String
         }
     }
 

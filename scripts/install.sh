@@ -60,7 +60,16 @@ const hookCmd = '$HOOK_PATH';
 const settings = JSON.parse(fs.readFileSync(path, 'utf-8'));
 if (!settings.hooks) settings.hooks = {};
 
-const hookTypes = ['PreToolUse', 'PostToolUse', 'Notification', 'Stop'];
+const hookTypes = [
+  'PreToolUse', 'PostToolUse', 'PostToolUseFailure',
+  'Notification', 'Stop', 'StopFailure',
+  'SessionStart', 'SessionEnd',
+  'PreCompact', 'PostCompact',
+  'UserPromptSubmit',
+  'PermissionRequest', 'PermissionDenied',
+  'SubagentStart', 'SubagentStop',
+  'TaskCreated', 'TaskCompleted',
+];
 
 function hasLoupeHook(arr) {
   return (arr || []).some(h =>

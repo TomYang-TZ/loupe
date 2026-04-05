@@ -8,7 +8,7 @@ Switch modes with `scripts/mode.sh [window|ghostty|island]`, then restart with `
 
 ### Window (default)
 
-Native macOS app with compact and full layouts. Shows live event stream, task grouping, replay analysis, and behavioral maps.
+Native macOS app with compact and full layouts. Shows live event stream with status bar, replay analysis, and behavioral maps.
 
 ### Dynamic Island
 
@@ -16,7 +16,8 @@ Notch-anchored floating pill at the top of the screen. Always-visible glanceable
 
 - **Collapsed pill**: phase dot, label, active tool + file detail
 - **Expanded card** (hover): user query, recent tool history, file/token/error counts, elapsed time
-- **Waiting notification**: pulsing amber when agent needs approval
+- **Approval flow**: pulsing amber → strikethrough on approve, "rejected" flash on deny
+- **Agent tracking**: shows running/completed agent count during parallel work
 - Toggle: `Cmd+Shift+I`
 
 ### Ghostty TUI
@@ -54,7 +55,7 @@ Nodes cluster by session + phase. Each session gets an organic background in its
 bash scripts/install.sh
 ```
 
-Installs deps, compiles the native app, and configures Claude Code hooks. Loupe auto-starts on your next session.
+Installs deps, compiles the native app, and configures 17 Claude Code hooks (tool use, permissions, sessions, agents, tasks, errors). Loupe auto-starts on your next session.
 
 ## Keyboard shortcuts
 

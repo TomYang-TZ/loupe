@@ -39,10 +39,8 @@ process.on("exit", () => {
 
 const claudeDir = path.join(process.env.HOME, ".claude", "projects");
 
-// Track file positions, last user query, and images per file
+// Track file positions
 const filePositions = new Map();
-const lastUserQuery = new Map();
-const lastUserImages = new Map();
 
 function findTranscriptFiles() {
   const files = [];
@@ -89,55 +87,33 @@ function processFile(filePath) {
       if (!line.trim()) continue;
       try {
         const obj = JSON.parse(line);
-        // Track the latest user message per file
-        if (obj.type === "user" && obj.isMeta) {
-          // isMeta messages carry image file paths
-          const content = obj.message?.content;
-          if (Array.isArray(content)) {
-            for (const block of content) {
-              const text = typeof block === "string" ? block : block.text || "";
-              const match = text.match(/\[Image: source: ([^\]]+)\]/);
-              if (match) {
-                const images = lastUserImages.get(filePath) || [];
-                images.push(match[1]);
-                lastUserImages.set(filePath, images);
-              }
-            }
-          }
-        }
+        // Detect tool rejection — user denied permission
         if (obj.type === "user" && !obj.isMeta) {
-          // Reset images for new user message
-          lastUserImages.set(filePath, []);
           const content = obj.message?.content;
           let text = typeof content === "string"
             ? content
             : Array.isArray(content)
               ? content.filter(b => typeof b === "string" || b.type === "text").map(b => typeof b === "string" ? b : b.text).join(" ")
               : "";
-          // Strip [Image #N] references from the text
-          text = text.replace(/\s*\[Image #\d+\]\s*/g, " ").trim();
-          if (text) {
-            lastUserQuery.set(filePath, text);
-            // Emit user_query entry so the UI can use it as a query boundary
+          if (text.includes("[Request interrupted by user for tool use]")) {
             const sessionId = path.basename(filePath, ".jsonl");
-            const userImages = (lastUserImages.get(filePath) || []).length > 0 ? lastUserImages.get(filePath) : null;
-            const queryEntry = {
-              _logstream_type: "user_query",
+            const entry = {
+              _logstream_type: "tool_rejected",
               _ts: new Date().toISOString(),
               data: {
                 session_id: sessionId,
-                type: "user_query",
-                user_query: text,
-                user_images: userImages,
+                type: "tool_rejected",
+                message: text.replace(/\[Request interrupted by user for tool use\]\s*/, "").trim() || null,
               },
             };
-            fs.appendFileSync(outputFile, JSON.stringify(queryEntry) + "\n");
+            fs.appendFileSync(outputFile, JSON.stringify(entry) + "\n");
           }
         }
+        // Thinking block extraction
         if (obj.type === "assistant" && obj.message?.content) {
           const sessionId = path.basename(filePath, ".jsonl");
-          const userQuery = lastUserQuery.get(filePath) || null;
-          const userImages = (lastUserImages.get(filePath) || []).length > 0 ? lastUserImages.get(filePath) : null;
+          const userQuery = null;
+          const userImages = null;
           const usage = obj.message?.usage || {};
           const meta = {
             model: obj.message?.model || null,

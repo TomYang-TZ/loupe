@@ -249,6 +249,47 @@ body.minimal .session-tab .tab-dot {
   margin-right: -2px;
 }
 
+/* ===== Status Bar ===== */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 2px 12px;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-light);
+  flex-shrink: 0;
+  height: 24px;
+}
+
+.status-segment {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--text-dim);
+}
+
+.status-dot.green { background: var(--green); }
+.status-dot.amber { background: #f59e0b; }
+.status-dot.red { background: var(--red); }
+
+.status-dot.pulse {
+  animation: breathe-fast 1s ease-in-out infinite;
+}
+
+[data-theme="light"] .status-bar {
+  color: #475569;
+}
+
 /* ===== Toolbar ===== */
 .toolbar {
   display: flex;
@@ -663,6 +704,33 @@ body.minimal .lock-wrapper .lock-body { width: 7px; }
 .log-entry[data-category="sub_agent_result"] { border-left-color: #fbbf24; }
 .log-entry[data-category="text"] { border-left-color: #8b8b96; }
 
+/* New hook categories */
+.log-entry[data-category="session_start"] { border-left-color: #4ade80; background: rgba(74,222,128,0.05); }
+.log-entry[data-category="session_end"] { border-left-color: #94a3b8; }
+.log-entry[data-category="compact"] { border-left-color: #64748b; }
+.log-entry[data-category="permission_request"] { border-left-color: #f59e0b; background: rgba(245,158,11,0.06); }
+.log-entry[data-category="permission_denied"] { border-left-color: #fbbf24; background: rgba(251,191,36,0.06); }
+.log-entry[data-category="tool_failure"] { border-left-color: #f87171; background: rgba(248,113,113,0.06); }
+.log-entry[data-category="stop_failure"] { border-left-color: #ef4444; background: rgba(239,68,68,0.08); }
+.log-entry[data-category="task_created"] { border-left-color: #8b5cf6; }
+.log-entry[data-category="task_completed"] { border-left-color: #4ade80; }
+
+/* Rejected tool entries — strikethrough */
+.log-entry.rejected { opacity: 0.5; }
+.log-entry.rejected .entry-tool,
+.log-entry.rejected .entry-summary { text-decoration: line-through; }
+.log-entry.rejected { border-left-color: var(--red) !important; }
+
+/* Session dividers — full-width markers */
+.log-entry.session-divider {
+  border-left-width: 0;
+  border-top: 1px dashed var(--border-light);
+  border-bottom: 1px dashed var(--border-light);
+  margin: 8px 0;
+  padding: 3px 8px;
+  opacity: 0.7;
+}
+
 /* Compact row */
 .entry-row {
   display: flex;
@@ -700,6 +768,15 @@ body.minimal .lock-wrapper .lock-body { width: 7px; }
   font-size: 7px;
 }
 .entry-badge.cat-text { color: #b4b4be; }
+.entry-badge.cat-session_start { color: #4ade80; }
+.entry-badge.cat-session_end { color: #94a3b8; }
+.entry-badge.cat-compact { color: #64748b; }
+.entry-badge.cat-permission_request { color: #1c1917; background: #f59e0b; padding: 1px 4px; border-radius: 3px; font-size: 6px; width: auto; }
+.entry-badge.cat-permission_denied { color: #1c1917; background: #fbbf24; padding: 1px 4px; border-radius: 3px; font-size: 6px; width: auto; }
+.entry-badge.cat-tool_failure { color: #f87171; }
+.entry-badge.cat-stop_failure { color: #ef4444; font-weight: 800; }
+.entry-badge.cat-task_created { color: #8b5cf6; }
+.entry-badge.cat-task_completed { color: #4ade80; }
 
 .entry-tool {
   font-size: 11px;
@@ -1244,6 +1321,15 @@ mark { background: rgba(250, 204, 21, 0.25); color: var(--text); border-radius: 
 [data-theme="light"] .log-entry[data-category="sub_agent"] { border-left-color: #d97706; background: rgba(217,119,6,0.04); }
 [data-theme="light"] .log-entry[data-category="sub_agent_result"] { border-left-color: #f59e0b; }
 [data-theme="light"] .log-entry[data-category="text"] { border-left-color: #8a8aa0; }
+[data-theme="light"] .log-entry[data-category="session_start"] { border-left-color: #16a34a; background: rgba(22,163,74,0.04); }
+[data-theme="light"] .log-entry[data-category="session_end"] { border-left-color: #64748b; }
+[data-theme="light"] .log-entry[data-category="compact"] { border-left-color: #94a3b8; }
+[data-theme="light"] .log-entry[data-category="permission_request"] { border-left-color: #d97706; background: rgba(217,119,6,0.05); }
+[data-theme="light"] .log-entry[data-category="permission_denied"] { border-left-color: #ca8a04; background: rgba(202,138,4,0.05); }
+[data-theme="light"] .log-entry[data-category="tool_failure"] { border-left-color: #dc2626; background: rgba(220,38,38,0.04); }
+[data-theme="light"] .log-entry[data-category="stop_failure"] { border-left-color: #b91c1c; background: rgba(185,28,28,0.06); }
+[data-theme="light"] .log-entry[data-category="task_created"] { border-left-color: #7c3aed; }
+[data-theme="light"] .log-entry[data-category="task_completed"] { border-left-color: #16a34a; }
 
 /* Light: entry badge text colors */
 [data-theme="light"] .entry-badge.cat-tool_use { color: #0369a1; }
@@ -1254,6 +1340,15 @@ mark { background: rgba(250, 204, 21, 0.25); color: var(--text); border-radius: 
 [data-theme="light"] .entry-badge.cat-sub_agent { color: #1c1917; background: #d97706; }
 [data-theme="light"] .entry-badge.cat-sub_agent_result { color: #1c1917; background: rgba(217, 119, 6, 0.5); }
 [data-theme="light"] .entry-badge.cat-text { color: #55556a; }
+[data-theme="light"] .entry-badge.cat-session_start { color: #16a34a; }
+[data-theme="light"] .entry-badge.cat-session_end { color: #64748b; }
+[data-theme="light"] .entry-badge.cat-compact { color: #94a3b8; }
+[data-theme="light"] .entry-badge.cat-permission_request { color: #1c1917; background: #d97706; }
+[data-theme="light"] .entry-badge.cat-permission_denied { color: #1c1917; background: #ca8a04; }
+[data-theme="light"] .entry-badge.cat-tool_failure { color: #dc2626; }
+[data-theme="light"] .entry-badge.cat-stop_failure { color: #b91c1c; }
+[data-theme="light"] .entry-badge.cat-task_created { color: #7c3aed; }
+[data-theme="light"] .entry-badge.cat-task_completed { color: #16a34a; }
 
 /* Light: modal badge colors */
 [data-theme="light"] .modal-badge.cat-tool_use { color: #0369a1; background: rgba(3, 105, 161, 0.08); }
@@ -1264,6 +1359,15 @@ mark { background: rgba(250, 204, 21, 0.25); color: var(--text); border-radius: 
 [data-theme="light"] .modal-badge.cat-sub_agent { color: #1c1917; background: #d97706; }
 [data-theme="light"] .modal-badge.cat-sub_agent_result { color: #1c1917; background: rgba(217, 119, 6, 0.5); }
 [data-theme="light"] .modal-badge.cat-text { color: #55556a; background: rgba(85, 85, 106, 0.04); }
+[data-theme="light"] .modal-badge.cat-session_start { color: #16a34a; background: rgba(22,163,74,0.08); }
+[data-theme="light"] .modal-badge.cat-session_end { color: #64748b; background: rgba(100,116,139,0.06); }
+[data-theme="light"] .modal-badge.cat-compact { color: #94a3b8; background: rgba(148,163,184,0.06); }
+[data-theme="light"] .modal-badge.cat-permission_request { color: #1c1917; background: #d97706; }
+[data-theme="light"] .modal-badge.cat-permission_denied { color: #1c1917; background: #ca8a04; }
+[data-theme="light"] .modal-badge.cat-tool_failure { color: #dc2626; background: rgba(220,38,38,0.06); }
+[data-theme="light"] .modal-badge.cat-stop_failure { color: #b91c1c; background: rgba(185,28,28,0.06); }
+[data-theme="light"] .modal-badge.cat-task_created { color: #7c3aed; background: rgba(124,58,237,0.06); }
+[data-theme="light"] .modal-badge.cat-task_completed { color: #16a34a; background: rgba(22,163,74,0.06); }
 
 /* Light: JSON syntax colors */
 [data-theme="light"] .modal-code .json-key { color: #2563eb; }

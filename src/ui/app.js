@@ -34,6 +34,150 @@ let firstEventTs = null;
 let lastEventTime = 0;
 const sessions = new Map();
 
+// ===== Status Bar State =====
+const statusBar = {
+  sessionState: "idle",     // "active" | "waiting" | "idle" | "compacting"
+  sessionStartTs: null,
+  waitingTool: null,
+  errors: 0,                // per-turn error count
+  apiError: null,           // from StopFailure
+  agentsRunning: 0,
+  agentsTotal: 0,
+  agentsFadeTimer: null,
+  tasksCreated: 0,
+  tasksCompleted: 0,
+};
+let statusBarTimer = null;
+
+function updateStatusBar() {
+  const sessionSeg = document.getElementById("status-session");
+  const sessionDot = document.getElementById("status-session-dot");
+  const sessionText = document.getElementById("status-session-text");
+  const healthSeg = document.getElementById("status-health");
+  const healthText = document.getElementById("status-health-text");
+  const agentsSeg = document.getElementById("status-agents");
+  const agentsText = document.getElementById("status-agents-text");
+  const tasksSeg = document.getElementById("status-tasks");
+  const tasksText = document.getElementById("status-tasks-text");
+
+  if (!sessionSeg) return;
+
+  // 1. Session state
+  sessionDot.className = "status-dot";
+  if (statusBar.sessionState === "active") {
+    sessionDot.classList.add("green");
+    let label = "Active";
+    if (statusBar.sessionStartTs) {
+      const secs = Math.floor((Date.now() - statusBar.sessionStartTs) / 1000);
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      label += " \u00b7 " + m + "m" + String(s).padStart(2, "0") + "s";
+    }
+    sessionText.textContent = label;
+  } else if (statusBar.sessionState === "waiting") {
+    sessionDot.classList.add("amber", "pulse");
+    sessionText.textContent = "Waiting: " + (statusBar.waitingTool || "approval");
+  } else if (statusBar.sessionState === "compacting") {
+    sessionDot.classList.add("amber", "pulse");
+    sessionText.textContent = "Compacting\u2026";
+  } else {
+    sessionText.textContent = "Idle";
+  }
+
+  // 2. Health
+  if (statusBar.errors > 0 || statusBar.apiError) {
+    healthSeg.style.display = "";
+    healthText.textContent = statusBar.apiError || ("Errors: " + statusBar.errors);
+  } else {
+    healthSeg.style.display = "none";
+  }
+
+  // 3. Agents
+  if (statusBar.agentsRunning > 0 || statusBar.agentsTotal > 0) {
+    agentsSeg.style.display = "";
+    if (statusBar.agentsRunning > 0) {
+      const done = statusBar.agentsTotal - statusBar.agentsRunning;
+      agentsText.textContent = done > 0
+        ? "Agents: " + done + "/" + statusBar.agentsTotal + " done"
+        : "Agents: " + statusBar.agentsRunning + " running";
+    } else {
+      agentsText.textContent = "Agents: " + statusBar.agentsTotal + "/" + statusBar.agentsTotal + " done";
+    }
+  } else {
+    agentsSeg.style.display = "none";
+  }
+
+  // 4. Tasks
+  if (statusBar.tasksCreated > 0) {
+    tasksSeg.style.display = "";
+    const allDone = statusBar.tasksCompleted >= statusBar.tasksCreated;
+    tasksText.textContent = "Tasks: " + statusBar.tasksCompleted + "/" + statusBar.tasksCreated + (allDone ? " \u2713" : "");
+  } else {
+    tasksSeg.style.display = "none";
+  }
+}
+
+function updateStatusBarFromEntry(entry) {
+  const cat = entry.category;
+
+  if (cat === "session_start") {
+    statusBar.sessionState = "active";
+    statusBar.sessionStartTs = entry.ts;
+    if (statusBarTimer) clearInterval(statusBarTimer);
+    statusBarTimer = setInterval(updateStatusBar, 1000);
+  }
+  if (cat === "session_end") {
+    statusBar.sessionState = "idle";
+    if (statusBarTimer) { clearInterval(statusBarTimer); statusBarTimer = null; }
+  }
+  if (cat === "compact") {
+    const hook = unwrapHook(entry.json);
+    if (hook?.hookType === "PreCompact") statusBar.sessionState = "compacting";
+    if (hook?.hookType === "PostCompact") statusBar.sessionState = "active";
+  }
+  if (cat === "permission_request") {
+    statusBar.sessionState = "waiting";
+    statusBar.waitingTool = entry.title || "approval";
+  }
+  if (statusBar.sessionState === "waiting" && (cat === "tool_use" || cat === "post_tool" || cat === "sub_agent" || cat === "thinking" || cat === "user_query" || cat === "tool_rejected")) {
+    statusBar.sessionState = "active";
+    statusBar.waitingTool = null;
+  }
+  if (cat === "user_query") {
+    statusBar.errors = 0;
+    statusBar.apiError = null;
+    if (statusBar.sessionState === "idle") {
+      statusBar.sessionState = "active";
+      statusBar.sessionStartTs = statusBar.sessionStartTs || entry.ts;
+      if (!statusBarTimer) statusBarTimer = setInterval(updateStatusBar, 1000);
+    }
+  }
+  if (cat === "tool_failure") statusBar.errors++;
+  if (cat === "stop_failure") {
+    const hook = unwrapHook(entry.json);
+    const inner = hook?.inner || {};
+    statusBar.apiError = inner.reason || inner.error_type || "API error";
+  }
+  if (cat === "sub_agent") {
+    statusBar.agentsRunning++;
+    statusBar.agentsTotal++;
+    if (statusBar.agentsFadeTimer) { clearTimeout(statusBar.agentsFadeTimer); statusBar.agentsFadeTimer = null; }
+  }
+  if (cat === "sub_agent_result") {
+    statusBar.agentsRunning = Math.max(0, statusBar.agentsRunning - 1);
+    if (statusBar.agentsRunning === 0) {
+      statusBar.agentsFadeTimer = setTimeout(() => {
+        statusBar.agentsTotal = 0;
+        updateStatusBar();
+      }, 5000);
+    }
+  }
+  if (cat === "task_created") statusBar.tasksCreated++;
+  if (cat === "task_completed") statusBar.tasksCompleted++;
+
+  updateStatusBar();
+}
+
 // ===== Sub-agent Session Mapping =====
 // When Agent tool fires, parent session spawns a sub-agent with its own session_id.
 // Map child session_ids back to parent so they nest correctly.
@@ -60,7 +204,15 @@ function getGroupState(sessionId) {
   return sessionGroups.get(sessionId);
 }
 
+const streamHiddenCategories = new Set(["Notification", "Stop", "permission_request", "permission_denied", "tool_rejected"]);
+
 function assignToGroup(entry) {
+  // Stream-hidden entries and session boundaries don't go into groups
+  if (streamHiddenCategories.has(entry.category)) return;
+  if (entry.category === "session_start" || entry.category === "session_end") {
+    return; // don't assign to any group — rendered directly in the pane
+  }
+
   const sid = entry.sessionId || "default";
   const gs = getGroupState(sid);
 
@@ -166,7 +318,8 @@ function assignToGroup(entry) {
   }
 
   // Regular entry: add to top-of-stack agent or current query
-  if (gs.agentStack.length > 0) {
+  // user_query should never nest inside agents — skip it as an agent child
+  if (gs.agentStack.length > 0 && entry.category !== "user_query") {
     gs.agentStack[gs.agentStack.length - 1].children.push(entry);
   } else {
     gs.currentQuery.items.push(entry);
@@ -202,10 +355,18 @@ function getIslandSession(sid) {
       files: 0,
       activeFile: null,
       startTs: null,
+      denied: null,
+      rejected: null,
+      denials: 0,
+      agentsRunning: 0,
+      agentsTotal: 0,
+      apiError: null,
       _fileSet: new Set(),
       _totalTokens: 0,
       _pendingToolTimer: null,
       _idleTimer: null,
+      _stopFailureTs: null,
+      _agentClearTimer: null,
     });
   }
   return islandSessions.get(sid);
@@ -277,24 +438,41 @@ function updateIslandFromEntry(entry) {
     } else if (toolName.includes("Agent")) s.phase = "planning";
   }
 
-  // Approval tracking — strikethrough on completion, no amber waiting state
+  // Approval tracking
   if (cat === "tool_use" || cat === "pre_tool") {
     s._pendingToolName = s.tool;
     s._pendingToolTs = Date.now();
   }
   if (cat === "post_tool" || cat === "tool_result" || cat === "sub_agent_result") {
-    const wasManual = s._pendingToolTs && (Date.now() - s._pendingToolTs > 1500);
-    if (wasManual) {
-      s.approved = s._pendingToolName || s.tool;
+    // Tool completed — if we were waiting, this means approval was granted
+    if (s.waiting || s.phase === "waiting for input") {
+      s.approved = s.waitingTool || s._pendingToolName || s.tool;
+      s.waiting = false;
+      s.waitingPulsing = false;
+      s.waitingTool = null;
+      if (s._waitingPulseTimer) { clearTimeout(s._waitingPulseTimer); s._waitingPulseTimer = null; }
+      s.phase = s.tool ? "implementing" : "exploring";
       sendIslandUpdate();
-      setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1500);
+      setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1000);
     }
     s._pendingToolName = null;
     s._pendingToolTs = null;
-    // Clear "waiting for input" — agent is back to working after approval
-    if (s.phase === "waiting for input") {
-      s.phase = s.tool ? "implementing" : "exploring";
+  }
+
+  // Rejection detection — tool_rejected, user_query, or thinking after waiting = tool was rejected
+  if (cat === "user_query" || cat === "thinking" || cat === "tool_rejected") {
+    for (const [, ss] of islandSessions) {
+      if (ss.waiting) {
+        ss.rejected = ss.waitingTool || "tool";
+        ss.waiting = false;
+        ss.waitingPulsing = false;
+        ss.waitingTool = null;
+        if (ss._waitingPulseTimer) { clearTimeout(ss._waitingPulseTimer); ss._waitingPulseTimer = null; }
+        ss.phase = "exploring";
+        setTimeout(() => { ss.rejected = null; sendIslandUpdate(); }, 1500);
+      }
     }
+    sendIslandUpdate();
   }
 
   // Errors
@@ -314,13 +492,89 @@ function updateIslandFromEntry(entry) {
   if (cat === "Notification") {
     s.phase = "waiting for input";
     s.thinking = false;
-    s.waiting = false;
-    s.waitingTool = null;
+    // Don't clear waiting/waitingTool if PermissionRequest already set them
+    if (!s.waiting) {
+      s.waitingTool = null;
+    }
     if (s._idleTimer) clearTimeout(s._idleTimer);
   }
 
-  // Stop hook = Claude finished → show "done", then idle after 3min
-  if (cat === "Stop") {
+  // PermissionRequest — explicit waiting signal
+  if (cat === "permission_request") {
+    const toolName = entry.json?.data?.tool_name || entry.title || "tool";
+    s.waiting = true;
+    s.waitingPulsing = true;
+    s.waitingTool = toolName;
+    s.phase = "waiting for input";
+    s.thinking = false;
+    if (s._idleTimer) clearTimeout(s._idleTimer);
+    // Pulse for ~10s then hold steady
+    if (s._waitingPulseTimer) clearTimeout(s._waitingPulseTimer);
+    s._waitingPulseTimer = setTimeout(() => {
+      s.waitingPulsing = false;
+      sendIslandUpdate();
+    }, 10000);
+  }
+
+  // PermissionDenied — flash denied, increment friction counter
+  if (cat === "permission_denied") {
+    const toolName = entry.json?.data?.tool_name || entry.title || "tool";
+    s.denied = toolName;
+    s.denials++;
+    if (s.denials >= 3) s.progress = "stuck";
+    sendIslandUpdate();
+    setTimeout(() => { s.denied = null; sendIslandUpdate(); }, 2000);
+  }
+
+  // Reset denials on new turn
+  if (cat === "user_query") {
+    s.denials = 0;
+  }
+
+  // SubagentStart — track running agent count
+  if (cat === "sub_agent") {
+    s.agentsRunning++;
+    s.agentsTotal++;
+    s.toolDetail = s.agentsRunning + " agent" + (s.agentsRunning > 1 ? "s" : "");
+    if (s._agentClearTimer) { clearTimeout(s._agentClearTimer); s._agentClearTimer = null; }
+  }
+
+  // SubagentStop — decrement, show progress
+  if (cat === "sub_agent_result") {
+    s.agentsRunning = Math.max(0, s.agentsRunning - 1);
+    if (s.agentsRunning > 0) {
+      const done = s.agentsTotal - s.agentsRunning;
+      s.toolDetail = done + "/" + s.agentsTotal + " agents";
+    } else {
+      s.toolDetail = s.agentsTotal + "/" + s.agentsTotal + " agents";
+      s._agentClearTimer = setTimeout(() => {
+        s.agentsRunning = 0;
+        s.agentsTotal = 0;
+        s.toolDetail = null;
+        sendIslandUpdate();
+      }, 3000);
+    }
+  }
+
+  // PostToolUseFailure — increment errors, signal stuck
+  if (cat === "tool_failure") {
+    s.errors++;
+    s.progress = "stuck";
+  }
+
+  // stop_failure — API error (rate limit, auth, billing)
+  if (cat === "stop_failure") {
+    s.progress = "stuck";
+    s._stopFailureTs = Date.now();
+    s.phase = "idle";
+    s.thinking = false;
+    s.tool = null;
+    s.toolDetail = null;
+  }
+
+  // Stop hook = Claude finished → "done", then idle after 3min
+  // StopFailure takes precedence — suppress "done" if StopFailure arrived within 500ms
+  if (cat === "Stop" && !(s._stopFailureTs && (Date.now() - s._stopFailureTs < 500))) {
     s.phase = "done";
     s.thinking = false;
     s.tool = null;
@@ -401,8 +655,14 @@ function sendIslandUpdate() {
       errors: active.errors,
       thinking: active.thinking,
       waiting: active.waiting,
+      waitingPulsing: active.waitingPulsing || false,
       waitingTool: active.waitingTool,
       approved: active.approved,
+      denied: active.denied || null,
+      rejected: active.rejected || null,
+      agentsRunning: active.agentsRunning || 0,
+      agentsTotal: active.agentsTotal || 0,
+      apiError: active.apiError || null,
       idleSeconds: active.idleSince ? Math.floor((Date.now() - active.idleSince) / 1000) : 0,
       userQuery: active.userQuery,
       recentTools: active.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
@@ -657,7 +917,21 @@ function connect() {
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === "reset") { resetAll(); return; }
-    if (msg.type === "backlog_done") { scrollToBottom(); return; }
+    if (msg.type === "backlog_done") {
+      scrollToBottom();
+      // Clear stale waiting states from backlog replay
+      for (const [, ss] of islandSessions) {
+        ss.waiting = false;
+        ss.waitingPulsing = false;
+        ss.waitingTool = null;
+        ss.rejected = null;
+      }
+      statusBar.sessionState = statusBar.sessionState === "waiting" ? "active" : statusBar.sessionState;
+      statusBar.waitingTool = null;
+      sendIslandUpdate();
+      updateStatusBar();
+      return;
+    }
     if (msg.type === "sessions") { reconcileSessions(msg.list); return; }
     if (msg.type === "session_remove") { pruneSessionTab(msg.id); return; }
     if (msg.type === "line") handleLine(msg);
@@ -699,16 +973,43 @@ function categorize(msg) {
   if (json) {
     const hook = unwrapHook(json);
     if (hook) {
+      // --- Dedup rule 1: Agent events via dedicated hooks only ---
+      // Stash Agent PreToolUse prompt for the next SubagentStart
       if (hook.hookType === "PreToolUse") {
-        if (hook.inner?.tool_name === "Agent") return "sub_agent";
+        if (hook.inner?.tool_name === "Agent") {
+          window._pendingAgentPrompt = hook.inner?.tool_input?.prompt || hook.inner?.tool_input?.description || null;
+          return null;
+        }
         return "tool_use";
       }
       if (hook.hookType === "PostToolUse") {
-        if (hook.inner?.tool_name === "Agent") return "sub_agent_result";
-        const inner = hook.inner;
-        if (inner && (inner.is_error || inner.error)) return "error";
+        if (hook.inner?.tool_name === "Agent") return null; // filtered out
+        // --- Dedup rule 2: error path handled by PostToolUseFailure ---
+        if (hook.inner?.is_error) return null; // filtered out
         return "post_tool";
       }
+      // --- New hook categories ---
+      if (hook.hookType === "SubagentStart") {
+        if (window._pendingAgentPrompt) {
+          hook.inner._agentPrompt = window._pendingAgentPrompt;
+          window._pendingAgentPrompt = null;
+        }
+        return "sub_agent";
+      }
+      if (hook.hookType === "SubagentStop") return "sub_agent_result";
+      if (hook.hookType === "PostToolUseFailure") return "tool_failure";
+      if (hook.hookType === "StopFailure") return "stop_failure";
+      if (hook.hookType === "SessionStart") return "session_start";
+      if (hook.hookType === "SessionEnd") return "session_end";
+      if (hook.hookType === "PreCompact") return "compact";
+      if (hook.hookType === "PostCompact") return "compact";
+      if (hook.hookType === "UserPromptSubmit") return "user_query";
+      if (hook.hookType === "PermissionRequest") return "permission_request";
+      if (hook.hookType === "PermissionDenied") return "permission_denied";
+      if (hook.hookType === "TaskCreated") return "task_created";
+      if (hook.hookType === "TaskCompleted") return "task_completed";
+      // --- Existing categories ---
+      if (hook.hookType === "tool_rejected") return "tool_rejected";
       if (hook.hookType === "thinking") return "thinking";
       if (hook.hookType === "user_query") return "user_query";
       if (hook.hookType === "Notification") return "Notification";
@@ -733,8 +1034,16 @@ function extractTitle(msg, category) {
   const hook = unwrapHook(json);
   if (hook && hook.inner) {
     if (category === "sub_agent" || category === "sub_agent_result") {
-      const input = hook.inner.tool_input || {};
-      return input.subagent_type || input.description || "Agent";
+      return hook.inner.agent_type || hook.inner.subagent_type || (hook.inner.tool_input || {}).subagent_type || hook.inner.description || "Agent";
+    }
+    if (category === "permission_request" || category === "permission_denied") {
+      return hook.inner.tool_name || null;
+    }
+    if (category === "tool_failure") {
+      return hook.inner.tool_name || null;
+    }
+    if (category === "task_created" || category === "task_completed") {
+      return null; // subject goes in summary
     }
     return hook.inner.tool_name || hook.inner.name || null;
   }
@@ -769,13 +1078,43 @@ function extractSummary(msg, category) {
     return typeof t === "string" ? t : "";
   }
   if (category === "sub_agent") {
-    const input = inner.tool_input || {};
-    return input.description || input.prompt?.slice(0, 100) || "";
+    const prompt = inner._agentPrompt || inner.description || inner.prompt || (inner.tool_input || {}).description || (inner.tool_input || {}).prompt || "";
+    return typeof prompt === "string" ? prompt.slice(0, 100) : "";
   }
   if (category === "sub_agent_result") {
-    const resp = inner.tool_response || {};
-    const text = resp.content?.[0]?.text || resp.status || "";
+    const text = inner.last_assistant_message || inner.tool_response?.content?.[0]?.text || inner.tool_response?.status || "";
     return typeof text === "string" ? text.split("\n")[0] : "";
+  }
+  if (category === "permission_request") {
+    return "Waiting: " + (inner.tool_name || "unknown");
+  }
+  if (category === "permission_denied") {
+    return "Blocked: " + (inner.tool_name || "unknown") + (inner.reason ? " \u2014 " + inner.reason : "");
+  }
+  if (category === "tool_failure") {
+    const errMsg = inner.error || inner.tool_result || "unknown error";
+    const firstLine = typeof errMsg === "string" ? errMsg.split("\n")[0] : String(errMsg);
+    return (inner.tool_name || "") + " failed \u2014 " + firstLine;
+  }
+  if (category === "stop_failure") {
+    const reason = inner.reason || inner.error_type || inner.error || "API error";
+    return typeof reason === "string" ? reason.split("\n")[0] : "API error";
+  }
+  if (category === "session_start") {
+    return inner.source === "resume" ? "Session resumed" : "Session started";
+  }
+  if (category === "session_end") {
+    return "Session ended";
+  }
+  if (category === "compact") {
+    const hookType = hook?.hookType;
+    return hookType === "PreCompact" ? "Context compacting..." : "Compaction complete";
+  }
+  if (category === "task_created") {
+    return inner.task_subject || inner.subject || "New task";
+  }
+  if (category === "task_completed") {
+    return (inner.task_subject || inner.subject || "Task") + " \u2713";
   }
   return "";
 }
@@ -786,8 +1125,8 @@ function extractBody(msg, category) {
   const hook = unwrapHook(json);
   if (hook && hook.inner) {
     const inner = hook.inner;
-    if (category === "sub_agent") return inner.tool_input || inner;
-    if (category === "sub_agent_result") return inner.tool_response || inner;
+    if (category === "sub_agent") return inner._agentPrompt || inner.prompt || inner.tool_input || inner;
+    if (category === "sub_agent_result") return inner.last_assistant_message || inner.tool_response || inner;
     if (category === "tool_use") return inner.tool_input || inner.input || inner;
     if (category === "tool_result" || category === "post_tool") return inner.tool_response || inner.tool_result || inner.output || inner.content || inner;
     if (category === "error") return inner.error || inner.tool_result || inner;
@@ -844,6 +1183,7 @@ function handleLine(msg) {
   signalActivity();
 
   const category = categorize(msg);
+  if (category === null) return; // dedup: filtered out
   const title = extractTitle(msg, category);
   const summary = extractSummary(msg, category);
   const body = extractBody(msg, category);
@@ -933,12 +1273,29 @@ function handleLine(msg) {
   if (momentumInitialized) Momentum.addEntry(entry);
 
   // Update Dynamic Island signals
+  const wasWaiting = statusBar.sessionState === "waiting";
   updateIslandFromEntry(entry);
+  updateStatusBarFromEntry(entry);
+
+  // Strikethrough the last tool_use entry if it was rejected
+  // Only user_query and thinking are reliable rejection signals
+  // (user_query fires as "[Request interrupted by user for tool use]" on reject)
+  if (wasWaiting && (category === "user_query" || category === "thinking" || category === "tool_rejected")) {
+    // Find the most recent tool_use entry and mark it rejected
+    for (let i = entries.length - 1; i >= Math.max(0, entries.length - 20); i--) {
+      if (entries[i].category === "tool_use" && entries[i].el) {
+        entries[i].el.classList.add("rejected");
+        break;
+      }
+    }
+  }
+
+  const streamHidden = streamHiddenCategories.has(entry.category);
 
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
     rebuildAllPaneContents();
-  } else if (matchesAll(entry)) {
+  } else if (!streamHidden && matchesAll(entry)) {
     appendEntryGrouped(entry);
   }
 
@@ -950,7 +1307,16 @@ function formatTime(ts) {
 }
 
 function badgeLabel(cat) {
-  return { tool_use: "USE", tool_result: "RESULT", post_tool: "POST", error: "ERROR", thinking: "THINK", text: "TEXT", sub_agent: "AGENT", sub_agent_result: "AGENT", user_query: "QUERY" }[cat] || cat.toUpperCase();
+  return {
+    tool_use: "USE", tool_result: "RESULT", post_tool: "POST", error: "ERROR",
+    thinking: "THINK", text: "TEXT", sub_agent: "AGENT", sub_agent_result: "AGENT DONE",
+    user_query: "PROMPT",
+    session_start: "SESSION", session_end: "SESSION",
+    compact: "COMPACT",
+    permission_request: "APPROVE", permission_denied: "DENIED",
+    tool_failure: "FAILED", stop_failure: "API ERROR",
+    task_created: "TASK", task_completed: "TASK \u2713",
+  }[cat] || cat.toUpperCase();
 }
 
 function esc(str) { const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
@@ -1173,9 +1539,7 @@ function renderTaskGroup(task, matchFn) {
   const wrap = document.createElement("div");
   wrap.className = "task-group";
 
-  const header = renderTaskHeader(task, task._displayNum);
-  wrap.appendChild(header);
-
+  // No topic header — queries render directly
   const bodyEl = document.createElement("div");
   bodyEl.className = "task-body";
 
@@ -1188,8 +1552,7 @@ function renderTaskGroup(task, matchFn) {
 
   task.el = wrap;
   task.bodyEl = bodyEl;
-  task.headerEl = header;
-  bindTaskHeaderClick(task);
+  task.headerEl = null;
   return wrap;
 }
 
@@ -1226,6 +1589,17 @@ function appendEntryGrouped(entry) {
   const empty = container.querySelector(".empty-state");
   if (empty) empty.remove();
 
+  // Session boundaries are rendered directly, not inside query groups
+  if (entry.category === "session_start" || entry.category === "session_end") {
+    const el = renderEntry(entry);
+    el.classList.add("session-divider");
+    el.classList.add("flash");
+    entry.el = el;
+    container.appendChild(el);
+    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
+    return;
+  }
+
   const sid = entry.sessionId || "default";
   const gs = sessionGroups.get(sid);
   if (!gs) return;
@@ -1250,30 +1624,17 @@ function appendEntryGrouped(entry) {
     task._displayNum = offset + gs.tasks.indexOf(task) + 1;
   }
 
-  // Ensure task DOM exists
+  // Ensure task DOM exists (no topic header — queries render directly)
   if (!task.el) {
     const taskEl = document.createElement("div");
     taskEl.className = "task-group";
-    const header = renderTaskHeader(task, task._displayNum);
-    taskEl.appendChild(header);
     const bodyEl = document.createElement("div");
     bodyEl.className = "task-body";
     taskEl.appendChild(bodyEl);
     task.el = taskEl;
     task.bodyEl = bodyEl;
-    task.headerEl = header;
-    bindTaskHeaderClick(task);
+    task.headerEl = null;
     container.appendChild(taskEl);
-  } else {
-    // Update task header (time range, query count may have changed)
-    const newHeader = renderTaskHeader(task, task._displayNum);
-    if (task.headerEl && task.el.contains(task.headerEl)) {
-      task.el.replaceChild(newHeader, task.headerEl);
-    } else {
-      task.el.insertBefore(newHeader, task.el.firstChild);
-    }
-    task.headerEl = newHeader;
-    bindTaskHeaderClick(task);
   }
 
   // Ensure query DOM exists
