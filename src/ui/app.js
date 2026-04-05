@@ -848,40 +848,34 @@ function rebuildPanes() {
   panes.clear();
   mainContainer = null;
 
-  if (activeSession === "all") {
-    // All mode: single pane with sessions stacked vertically
+  if (activeSession !== "all" || sessions.size <= 1) {
+    // Single session or single-session All: one pane
     paneContainer.classList.remove("multi-pane");
     paneContainer.classList.remove("grid-layout");
     paneContainer.style.removeProperty("grid-template-columns");
     paneContainer.style.removeProperty("grid-template-rows");
     const p = createPane("main", "All", "var(--accent)");
-    paneContainer.appendChild(p.el);
-    panes.set("main", p);
-    mainContainer = p.scrollEl;
-    Tiling.clear();
-  } else if (sessions.size > 1 && activeSession !== "all") {
-    // Individual session selected with multiple sessions: use Tiling for that session
-    paneContainer.classList.remove("multi-pane");
-    paneContainer.classList.remove("grid-layout");
-    paneContainer.style.removeProperty("grid-template-columns");
-    paneContainer.style.removeProperty("grid-template-rows");
-    const sInfo = sessions.get(activeSession);
-    const p = createPane("main", sInfo?.label || activeSession, sInfo?.color || "var(--accent)");
     paneContainer.appendChild(p.el);
     panes.set("main", p);
     mainContainer = p.scrollEl;
     Tiling.clear();
   } else {
-    // Single session
-    paneContainer.classList.remove("multi-pane");
+    // Multi-session All: use Tiling with vertical splits (stacked)
+    syncSessionOrder();
     paneContainer.classList.remove("grid-layout");
-    paneContainer.style.removeProperty("grid-template-columns");
-    paneContainer.style.removeProperty("grid-template-rows");
-    const p = createPane("main", "All", "var(--accent)");
-    paneContainer.appendChild(p.el);
-    panes.set("main", p);
-    mainContainer = p.scrollEl;
-    Tiling.clear();
+
+    const tilingIds = Tiling.getSessionIds();
+    const currentIds = new Set(sessionOrder.filter(id => sessions.has(id)));
+    const tilingSet = new Set(tilingIds);
+
+    for (const id of currentIds) {
+      if (!tilingSet.has(id)) Tiling.addSession(id, false, "v");
+    }
+    for (const id of tilingIds) {
+      if (!currentIds.has(id)) Tiling.removeSession(id, false);
+    }
+
+    Tiling.rebuild();
   }
 
   // Apply saved zoom
@@ -899,7 +893,10 @@ function updateGridControlsVisibility() {
 }
 
 function getContainerFor(entry) {
-  return panes.get("main")?.scrollEl || null;
+  if (activeSession !== "all" || sessions.size <= 1) return panes.get("main")?.scrollEl || null;
+  if (entry.sessionId && panes.has(entry.sessionId)) return panes.get(entry.sessionId).scrollEl;
+  const first = panes.values().next().value;
+  return first?.scrollEl || null;
 }
 
 function shouldAutoScroll(entry) {
@@ -2264,24 +2261,12 @@ function rebuildAllPaneContents() {
       matchCount = r.matchCount;
     }
   } else {
-    // Multi-session "All": render all sessions vertically with dividers
-    const container = panes.get("main")?.scrollEl;
-    if (container) {
-      let topicOffset = 0;
-      let sessionNum = 2;
-      for (const [sid, sInfo] of sessions) {
-        // Check if session has any queries/events before rendering
-        const gs = sessionGroups.get(sid);
-        if (!gs || gs.tasks.length === 0) { sessionNum++; continue; }
-
-        // Session divider header
-        const divider = document.createElement("div");
-        divider.className = "session-section-header";
-        divider.innerHTML = `<span class="session-section-num">${sessionNum}:</span>${esc(sInfo.label || sid.slice(0, 8))}`;
-        container.appendChild(divider);
-        sessionNum++;
-
-        const r = renderGroupedEntries(container, sid, topicOffset);
+    // Multi-session "All": render per pane (Tiling handles layout)
+    let topicOffset = 0;
+    for (const [sid] of sessions) {
+      const pane = panes.get(sid);
+      if (pane) {
+        const r = renderGroupedEntries(pane.scrollEl, sid, topicOffset);
         matchCount += r.matchCount;
         topicOffset += r.topicCount;
       }
