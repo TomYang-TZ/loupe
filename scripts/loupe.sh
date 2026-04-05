@@ -53,12 +53,15 @@ start_server() {
 }
 
 start_viewer() {
-    # Default: open TUI in Ghostty split (primary view)
-    # Run in foreground — must complete before opening app (which steals focus)
-    if osascript -e 'tell application "System Events" to (name of processes) contains "ghostty"' 2>/dev/null | grep -q "true"; then
-        "$LOUPE_DIR/scripts/ghostty-split.sh" "$PORT"
-        echo "  Opened Ghostty TUI (press 'w' for window mode)"
-    fi
+    # Open TUI in a terminal split (detects tmux, Ghostty, iTerm2, Kitty)
+    TUI_RESULT=$("$LOUPE_DIR/scripts/open-tui.sh" "$PORT" 2>/dev/null) || true
+    case "$TUI_RESULT" in
+        tui:tmux)    echo "  Opened TUI in tmux split" ;;
+        tui:ghostty) echo "  Opened TUI in Ghostty split" ;;
+        tui:iterm2)  echo "  Opened TUI in iTerm2 split" ;;
+        tui:kitty)   echo "  Opened TUI in Kitty split" ;;
+        tui:window)  echo "  Opened TUI in new window" ;;
+    esac
 
     # Always open native app (for dynamic island)
     open_app
