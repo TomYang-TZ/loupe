@@ -53,34 +53,22 @@ start_server() {
 }
 
 start_viewer() {
-    case "$LOUPE_MODE" in
-        ghostty)
-            if pgrep -x "ghostty" > /dev/null 2>&1; then
-                "$LOUPE_DIR/scripts/ghostty-split.sh" "$PORT" &
-                echo "  Opened Ghostty TUI"
-            else
-                open_app
-            fi
-            ;;
-        island)
-            open_app
-            ;;
-        *)
-            open_app
-            # Also open TUI in Ghostty if running
-            if pgrep -x "ghostty" > /dev/null 2>&1; then
-                "$LOUPE_DIR/scripts/ghostty-split.sh" "$PORT" &
-                echo "  Opened Ghostty TUI"
-            fi
-            ;;
-    esac
+    # Default: open TUI in Ghostty split (primary view)
+    # Run in foreground — must complete before opening app (which steals focus)
+    if osascript -e 'tell application "System Events" to (name of processes) contains "ghostty"' 2>/dev/null | grep -q "true"; then
+        "$LOUPE_DIR/scripts/ghostty-split.sh" "$PORT"
+        echo "  Opened Ghostty TUI (press 'w' for window mode)"
+    fi
+
+    # Always open native app (for dynamic island)
+    open_app
 }
 
 open_app() {
     APP_BUNDLE="$LOUPE_DIR/Loupe.app"
     if [ -d "$APP_BUNDLE" ] && ! pgrep -f "Loupe.app/Contents/MacOS/loupe" > /dev/null 2>&1; then
-        LOUPE_PORT="$PORT" open "$APP_BUNDLE"
-        echo "  Opened Loupe.app (mode: $LOUPE_MODE)"
+        open "$APP_BUNDLE" --args --island-only
+        echo "  Opened dynamic island"
     fi
 }
 

@@ -4,9 +4,12 @@
 // Query-grouped event stream with keyboard/mouse navigation
 
 const WebSocket = require("ws");
+const { execSync } = require("child_process");
+const path = require("path");
 
 const PORT = process.env.LOUPE_PORT || 8390;
 const WS_URL = `ws://localhost:${PORT}`;
+const LOUPE_DIR = path.resolve(__dirname, "../..");
 
 // ===== ANSI helpers =====
 const ESC = "\x1b";
@@ -77,10 +80,24 @@ const TREE_WIDTH = 28;
 
 // Mouse click mapping
 let rowMap = [];
+let windowBtnCol = -1; // column where "w:⧉ Window" starts in status line
 // Navigation order — maps visual position to query index (rebuilt each render)
 let navOrder = [];
 // Stash agent prompt from PreToolUse for SubagentStart
 let pendingAgentPrompt = null;
+let allCollapsed = false;
+
+// ===== Actions =====
+function openWindow() {
+  try {
+    // Write signal file, then activate app — it checks for the file on reopen
+    const fs = require("fs");
+    const signalPath = path.join(process.env.HOME, ".claude/logs/loupe-show-window");
+    fs.writeFileSync(signalPath, "1");
+    const appBundle = path.join(LOUPE_DIR, "Loupe.app");
+    execSync(`open "${appBundle}"`, { stdio: "ignore" });
+  } catch (e) { /* ignore */ }
+}
 
 // ===== Category colors =====
 const catColors = {
@@ -470,7 +487,14 @@ function renderStatusLine(cols) {
     const allDone = statusLine.tasksCompleted >= statusLine.tasksCreated;
     parts.push(`${FG.magenta}Tasks: ${statusLine.tasksCompleted}/${statusLine.tasksCreated}${allDone ? " ✓" : ""}${RESET}`);
   }
-  return padLine(parts.join(`${DIM}  │  ${RESET}`), cols);
+  parts.push(`${FG.gray}c${RESET}${DIM}:${RESET}${FG.cyan}${allCollapsed ? "▶ Expand" : "▼ Collapse"}${RESET}`);
+  // Calculate visible length before adding window button
+  const sep = `${DIM}  │  ${RESET}`;
+  const beforeBtn = parts.join(sep);
+  const visLen = beforeBtn.replace(/\x1b\[[0-9;]*m/g, "").length;
+  windowBtnCol = visLen + 5 + 1; // +5 for " │ " separator, +1 for 1-based
+  parts.push(`${FG.gray}w${RESET}${DIM}:${RESET}${FG.cyan}⧉ Window${RESET}`);
+  return padLine(parts.join(sep), cols);
 }
 
 function renderAgentTree(rows) {
@@ -902,6 +926,18 @@ function handleInput(buf) {
     render(); return;
   }
 
+  // c = toggle collapse/expand all
+  if (s === "c") {
+    allCollapsed = !allCollapsed;
+    for (const [, sq] of sessionQueries) {
+      for (const q of sq) q.collapsed = allCollapsed;
+    }
+    render(); return;
+  }
+
+  // w = open native window mode
+  if (s === "w") { openWindow(); render(); return; }
+
   if (s === "1") { sessionFilter = "all"; render(); return; }
 
   if (s >= "2" && s <= "9") {
@@ -926,6 +962,13 @@ function handleMouse(button, col, row) {
   }
 
   if ((button & 0x03) === 0) {
+    const rows = process.stdout.rows || 24;
+    // Click on "w:⧉ Window" in status line (last row)
+    if (row === rows && windowBtnCol > 0 && col >= windowBtnCol) {
+      openWindow();
+      return;
+    }
+
     const showTabs = true;
     const contentStartRow = 5; // header(2) + tabs(1) + sep(1) + 1-indexed
     const contentRow = row - contentStartRow;

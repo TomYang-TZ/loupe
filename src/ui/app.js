@@ -946,6 +946,12 @@ function connect() {
       updateStatusBar();
       return;
     }
+    if (msg.type === "show_window") {
+      if (window.webkit?.messageHandlers?.showWindow) {
+        window.webkit.messageHandlers.showWindow.postMessage(true);
+      }
+      return;
+    }
     if (msg.type === "sessions") { reconcileSessions(msg.list); return; }
     if (msg.type === "session_remove") { pruneSessionTab(msg.id); return; }
     if (msg.type === "line") handleLine(msg);
@@ -1447,7 +1453,8 @@ function renderQueryHeader(query) {
   div.className = "query-header";
   const actionCount = countItemActions(query.items);
   const qText = query.userQuery ? esc(query.userQuery) : "No user query found";
-  div.innerHTML = `<span class="query-chevron">\u25B6</span><span class="query-badge">Q</span><span class="query-text-wrap"><span class="query-text">${qText}</span>${query.userQuery ? `<span class="query-tooltip">${esc(query.userQuery)}</span>` : ""}<span class="query-copied">Copied!</span></span><span class="query-count">${actionCount}</span><span class="query-time">${formatTimeRange(query.startTs, query.endTs)}</span>`;
+  const chevron = query.collapsed === false ? "\u25BC" : "\u25B6";
+  div.innerHTML = `<span class="query-chevron">${chevron}</span><span class="query-badge">Q</span><span class="query-text-wrap"><span class="query-text">${qText}</span>${query.userQuery ? `<span class="query-tooltip">${esc(query.userQuery)}</span>` : ""}<span class="query-copied">Copied!</span></span><span class="query-count">${actionCount}</span><span class="query-time">${formatTimeRange(query.startTs, query.endTs)}</span>`;
 
   // Click on query text copies the full query
   if (query.userQuery) {
@@ -1537,7 +1544,7 @@ function renderQueryGroup(query, matchFn) {
   wrap.appendChild(header);
 
   const actionsEl = document.createElement("div");
-  actionsEl.className = "query-actions collapsed";
+  actionsEl.className = query.collapsed === false ? "query-actions" : "query-actions collapsed";
 
   for (const item of query.items) {
     if (item.agentEntry) {
@@ -2473,7 +2480,7 @@ window.toggleExpandAll = () => {
     el.textContent = allExpanded ? "\u25BC" : "\u25B6";
   });
 
-  // Update collapsed state in data model
+  // Update collapsed state in data model and rebuild to ensure DOM is consistent
   for (const gs of sessionGroups.values()) {
     for (const task of gs.tasks) {
       task.collapsed = !allExpanded;
@@ -2482,6 +2489,7 @@ window.toggleExpandAll = () => {
       }
     }
   }
+  rebuildAllPaneContents();
 };
 
 // ===== Replay Analysis =====

@@ -760,6 +760,20 @@ wss.on("connection", (ws) => {
     }
   });
 
+  ws.on("message", (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === "show_window") {
+        // Relay to all other clients (the window app will handle it)
+        for (const client of wss.clients) {
+          if (client !== ws && client.readyState === 1) {
+            client.send(JSON.stringify({ type: "show_window" }));
+          }
+        }
+      }
+    } catch (e) { /* ignore non-JSON */ }
+  });
+
   ws.on("close", () => {
     console.log(`Client disconnected (total: ${wss.clients.size})`);
   });

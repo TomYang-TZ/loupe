@@ -798,6 +798,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     // Island
     let island = IslandController()
     var islandEnabled = true
+    var islandOnlyMode = false
 
     // Saved frames for switching between compact/full
     let compactSize = NSSize(width: 420, height: 600)
@@ -838,6 +839,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
             } else {
                 switchToCompact()
             }
+        }
+
+        if message.name == "showWindow" {
+            islandOnlyMode = false
+            showWindow()
         }
 
         // Island signal updates from web UI
@@ -964,11 +970,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         let currentOrigin = window.frame.origin
         window.setFrame(NSRect(origin: currentOrigin, size: compactSize), display: false)
 
-        // Load page in compact (minimal) mode and show
+        // Load page in compact (minimal) mode
         loadPage()
         positionWindow()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+
+        // Only show window if not island-only mode
+        islandOnlyMode = ProcessInfo.processInfo.environment["LOUPE_ISLAND_ONLY"] == "1"
+            || CommandLine.arguments.contains("--island-only")
+        if !islandOnlyMode {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
 
         // Launch island
         if islandEnabled, let screen = NSScreen.main {
@@ -1006,6 +1018,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         config.userContentController.add(self, name: "switchMode")
         config.userContentController.add(self, name: "autoHide")
         config.userContentController.add(self, name: "islandUpdate")
+        config.userContentController.add(self, name: "showWindow")
         config.websiteDataStore = WKWebsiteDataStore.default()
 
         let wv = WKWebView(frame: .zero, configuration: config)
@@ -1124,15 +1137,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag || !window.isVisible {
+        // Check for signal file from TUI "w" key
+        let signalPath = NSHomeDirectory() + "/.claude/logs/loupe-show-window"
+        if FileManager.default.fileExists(atPath: signalPath) {
+            try? FileManager.default.removeItem(atPath: signalPath)
+            islandOnlyMode = false
             showWindow()
+            return false
+        }
+        if !flag || !window.isVisible {
+            if !islandOnlyMode {
+                showWindow()
+            }
         }
         return false
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        // Dock click when window is hidden — bring it back
-        if !window.isVisible {
+        // Dock click when window is hidden — bring it back (but not in island-only mode)
+        if !window.isVisible && !islandOnlyMode {
             showWindow()
         }
     }
