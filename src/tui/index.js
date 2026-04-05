@@ -689,41 +689,29 @@ function render() {
   }
 
   if (sessionFilter === "all" && sessions.size > 0) {
-    // Group queries by session — each query belongs to exactly one session
+    // Iterate per-session query lists directly (no filtering needed)
     const sessionIds = [...sessions.keys()];
-    const claimed = new Set();
-
     for (let si = 0; si < sessionIds.length; si++) {
       const sid = sessionIds[si];
       const sInfo = sessions.get(sid);
-      const sQueries = queries.filter(q => {
-        if (claimed.has(q.id)) return false;
-        if (q.sessionId === sid) { claimed.add(q.id); return true; }
-        return false;
-      });
-      if (sQueries.length === 0) continue;
+      const sq = sessionQueries.get(sid) || [];
+      const visible = sq.filter(q => !q._preamble);
+      if (visible.length === 0) continue;
 
-      // Session header numbered like tabs (2:xxx, 3:xxx)
       const sLabel = sInfo.label || sid.slice(0, 8);
       const sCount = sInfo.eventCount || 0;
-      const sNum = si + 2; // 1=All, 2+=sessions
+      const sNum = si + 2;
       rowData.push({ text: `${BOLD}${FG.cyan}── ${sNum}:${sLabel}${RESET} ${DIM}(${sCount} events)${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
 
-      for (const q of sQueries) addQueryRows(q);
+      for (const q of visible) addQueryRows(q);
     }
-
-    // Queries not claimed by any session
-    const noSession = queries.filter(q => !claimed.has(q.id) && !q._preamble);
-    if (noSession.length > 0) {
-      rowData.push({ text: `${BOLD}${FG.gray}── unsorted${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
-      for (const q of noSession) addQueryRows(q);
-    }
+  } else if (sessionFilter !== "all") {
+    // Single session filter
+    const sq = sessionQueries.get(sessionFilter) || [];
+    for (const q of sq) { if (!q._preamble) addQueryRows(q); }
   } else {
-    // Single session filter — flat list
-    const filteredQueries = sessionFilter === "all"
-      ? queries
-      : queries.filter(q => q.sessionId === sessionFilter);
-    for (const q of filteredQueries) addQueryRows(q);
+    // No sessions yet — show all queries
+    for (const q of queries) { if (!q._preamble) addQueryRows(q); }
   }
 
   // Empty state
