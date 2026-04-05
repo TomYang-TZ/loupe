@@ -35,6 +35,11 @@ mkdir -p "$APP_DIR/MacOS" "$APP_DIR/Resources"
 cp "$PROJECT_DIR/native/loupe" "$APP_DIR/MacOS/loupe"
 cp "$PROJECT_DIR/native/Info.plist" "$APP_DIR/Info.plist"
 
+# Copy icon if it exists
+if [ -f "$PROJECT_DIR/native/Loupe.icns" ]; then
+    cp "$PROJECT_DIR/native/Loupe.icns" "$APP_DIR/Resources/Loupe.icns"
+fi
+
 codesign --force --deep --sign - "$PROJECT_DIR/Loupe.app" 2>&1
 echo "      Signed: Loupe.app"
 
