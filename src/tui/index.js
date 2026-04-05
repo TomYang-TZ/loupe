@@ -118,6 +118,7 @@ function categorize(json) {
   if (type === "TaskCreated") return "task_created";
   if (type === "TaskCompleted") return "task_completed";
   if (type === "tool_rejected") return "tool_rejected";
+  if (type === "tool_approved_with_message") return "tool_approved_msg";
   if (type === "Notification") return null;
   if (type === "Stop") return null;
   return type || "unknown";
@@ -208,6 +209,24 @@ function handleMessage(data) {
   const json = msg.json;
   const cat = categorize(json);
   if (cat === null) return;
+
+  // Approval with message — append to last completed USE line
+  if (cat === "tool_approved_msg") {
+    const approveMsg = json?.data?.message || "";
+    const approveSid = extractSessionId(json);
+    if (approveMsg) {
+      for (let qi = queries.length - 1; qi >= 0; qi--) {
+        if (approveSid && queries[qi].sessionId !== approveSid) continue;
+        for (let ei = queries[qi].events.length - 1; ei >= 0; ei--) {
+          if (queries[qi].events[ei].cat === "pre_tool" && queries[qi].events[ei]._completed) {
+            queries[qi].events[ei].line += `  ${FG.yellow}"${approveMsg.slice(0, 40)}"${RESET}`;
+            render(); return;
+          }
+        }
+      }
+    }
+    render(); return;
+  }
 
   // Hidden categories — tracked for state but not rendered as events
   const tuiHidden = cat === "permission_request" || cat === "permission_denied" || cat === "unknown";
@@ -368,10 +387,12 @@ function handleMessage(data) {
       hasNewQueries = true;
     }
   } else if (cat === "tool_rejected") {
-    // Rejection: search ALL queries backwards for the last pre_tool and strikethrough it
+    // Rejection: search queries backwards (same session) for the last pre_tool
     const rejectMsg = json?.data?.message || null;
+    const rejectSid = extractSessionId(json);
     const msgSuffix = rejectMsg ? `  ${FG.red}"${rejectMsg.slice(0, 40)}"${RESET}` : "";
     outer: for (let qi = queries.length - 1; qi >= 0; qi--) {
+      if (rejectSid && queries[qi].sessionId !== rejectSid) continue;
       for (let ei = queries[qi].events.length - 1; ei >= 0; ei--) {
         if (queries[qi].events[ei].cat === "pre_tool") {
           const orig = queries[qi].events[ei].line;
@@ -618,11 +639,12 @@ function render() {
     const realIdx = queries.indexOf(q);
     const isFocused = realIdx === focusIdx;
     const chevron = q.collapsed ? "▶" : "▼";
-    const fc = isFocused && navLevel === "query" ? FG.cyan : (isFocused ? FG.white : DIM);
+    const fc = isFocused && navLevel === "query" ? `${BOLD}${FG.cyan}` : (isFocused ? `${BOLD}${FG.white}` : DIM);
     const queryText = q.userQuery ? q.userQuery.slice(0, 40) : "(preamble)";
     const count = q.events.length;
     const time = new Date(q.startTs).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" });
-    const headerLine = `${fc}${chevron}${RESET} ${fc}${queryText}${RESET}  ${DIM}${count}${RESET}  ${DIM}${time}${RESET}`;
+    const cursor = isFocused && navLevel === "query" ? `${FG.cyan}▸${RESET}` : " ";
+    const headerLine = `${cursor}${fc}${chevron}${RESET} ${fc}${queryText}${RESET}  ${DIM}${count}${RESET}  ${DIM}${time}${RESET}`;
     rowData.push({ text: headerLine, isHeader: true, queryIdx: realIdx, eventIdx: -1 });
 
     if (!q.collapsed) {
