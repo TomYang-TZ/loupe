@@ -65,10 +65,7 @@ const LoupeParse = (() => {
       if (t === "error" || json.error) return "error";
       if (t === "text" || t === "content_block_delta" || t === "assistant") return "text";
     }
-    // Skip lines that look like hook JSON but failed to parse (e.g. truncated backlog)
-    const raw = msg.data || "";
-    if (raw.includes("_logstream_type")) return null;
-    const lower = raw.toLowerCase();
+    const lower = (msg.data || "").toLowerCase();
     if (lower.includes("error") || lower.includes("fatal")) return "error";
     return "text";
   }

@@ -57,7 +57,8 @@ async function sendBacklog(ws, filePath, opts) {
     for (const line of backlog) {
       const truncated = truncateForBacklog(line);
       const msg = buildMessage(truncated);
-      if (msg.json && isReplayAnalysisLine(msg.json)) continue;
+      if (!msg.json) continue; // skip broken/split lines
+      if (isReplayAnalysisLine(msg.json)) continue;
       ws.send(JSON.stringify(msg));
 
       // Yield to event loop between messages to prevent buffer overflow
