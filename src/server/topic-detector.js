@@ -36,10 +36,11 @@ Here are ${queries.length} user messages (oldest first):
 ${numbered}
 
 Group these messages into broad topics. A topic is a coherent unit of work — a feature, bug fix, investigation, or discussion. Rules:
-- Each topic MUST contain at least 2-3 messages. Never create a single-message topic.
+- CRITICAL: Every topic MUST contain at least 2 messages. A topic with only 1 message is NEVER allowed. If a message doesn't fit with neighbors, merge it into the closest topic rather than creating a single-message topic.
 - Minor follow-ups ("yes", "do it", "looks good", short replies) belong to the preceding topic.
 - Prefer fewer, broader topics. If in doubt, merge adjacent topics.
 - Aim for 2-4 topics total, not one per message.
+- Verify your answer: count the messages in each topic. If any topic has fewer than 2, merge it.
 
 Identify where each topic starts (1-indexed message number) and give each a concise title (max 8 words).`;
 

@@ -1312,10 +1312,14 @@ window.setMapMode = (mode) => {
     gravityCanvas.style.display = "";
     momentumCanvas.style.display = "none";
     // Show gravity-specific UI
-    document.getElementById("universe-filter-bar").style.display = "";
-    document.querySelector(".recency-filter-bar").style.display = "";
-    document.getElementById("gravity-sliders").style.display = "";
-    document.getElementById("momentum-sliders").style.display = "none";
+    const filterBar = document.getElementById("universe-filter-bar");
+    const recencyBar = document.querySelector(".recency-filter-bar");
+    const gravSliders = document.getElementById("gravity-sliders");
+    const momSliders = document.getElementById("momentum-sliders");
+    if (filterBar) filterBar.style.display = "";
+    if (recencyBar) recencyBar.style.display = "";
+    if (gravSliders) gravSliders.style.display = "";
+    if (momSliders) momSliders.style.display = "none";
   } else {
     // Initialize momentum on first use
     if (!momentumInitialized) {
@@ -1334,10 +1338,14 @@ window.setMapMode = (mode) => {
     gravityCanvas.style.display = "none";
     momentumCanvas.style.display = "";
     // Hide gravity-specific UI, show momentum UI
-    document.getElementById("universe-filter-bar").style.display = "none";
-    document.querySelector(".recency-filter-bar").style.display = "none";
-    document.getElementById("gravity-sliders").style.display = "none";
-    document.getElementById("momentum-sliders").style.display = "";
+    const filterBar2 = document.getElementById("universe-filter-bar");
+    const recencyBar2 = document.querySelector(".recency-filter-bar");
+    const gravSliders2 = document.getElementById("gravity-sliders");
+    const momSliders2 = document.getElementById("momentum-sliders");
+    if (filterBar2) filterBar2.style.display = "none";
+    if (recencyBar2) recencyBar2.style.display = "none";
+    if (gravSliders2) gravSliders2.style.display = "none";
+    if (momSliders2) momSliders2.style.display = "";
   }
 };
 

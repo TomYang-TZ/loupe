@@ -9,6 +9,8 @@ const fs = require("fs");
 const src = fs.readFileSync(require("path").resolve(__dirname, "../src/ui/app-grouping.js"), "utf8");
 const mod = eval(src.replace(/^"use strict";\s*/, "") + "\nLoupeGrouping;");
 
+function runTests() {
+
 let passed = 0, failed = 0;
 function assert(cond, msg) {
   if (cond) { passed++; console.log(`  \x1b[32m✓\x1b[0m ${msg}`); }
@@ -139,4 +141,8 @@ assert(gs4.tasks[0].queries[1].items.length === 1, `new query has 1 tool item (g
 
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed\n`);
-process.exit(failed > 0 ? 1 : 0);
+if (failed > 0) throw new Error(`${failed} test(s) failed`);
+
+} // end runTests
+
+if (typeof test === "function") { test("grouping", runTests); } else { runTests(); }

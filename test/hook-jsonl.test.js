@@ -12,6 +12,8 @@ const os = require("os");
 const HOOK = path.resolve(__dirname, "../scripts/hook.sh");
 const { truncateForBacklog, looksLikeJson } = require("../src/server/backlog");
 
+function runTests() {
+
 let passed = 0;
 let failed = 0;
 
@@ -143,4 +145,8 @@ function buildMessage(line) {
 
 // --- Summary ---
 console.log(`\n${passed} passed, ${failed} failed\n`);
-process.exit(failed > 0 ? 1 : 0);
+if (failed > 0) throw new Error(`${failed} test(s) failed`);
+
+} // end runTests
+
+if (typeof test === "function") { test("hook-jsonl", runTests); } else { runTests(); }

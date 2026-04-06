@@ -85,6 +85,8 @@ let agentFocusIdx = -1;    // which agent is focused
 let agentDeletePending = false;
 let agentDeleteTimer = null;
 let topicStatus = null; // null | "classifying..." | "N topics found" | error
+let topicAllPending = false; // double-press confirmation for classifying all sessions
+let topicAllTimer = null;
 
 // Mouse click mapping
 let rowMap = [];
@@ -99,6 +101,7 @@ let clearPending = false;
 let clearTimer = null;
 let deletePending = false;
 let deleteTimer = null;
+let deleteTargetSession = null; // which session 'd' was armed for
 const deletedSessionIds = new Set(); // persist across backlog replays
 let stopPending = false;
 let stopTimer = null;
@@ -470,8 +473,12 @@ function handleMessage(data) {
   }
   if (cat === "topic_shift") {
     const sq2 = getSessionQueries(sessionId);
+    // Skip topics for sessions with no actual queries (e.g., outside backlog window)
+    const hasQueries = sq2.some(q => q.userQuery && !q._preamble && !q._separator);
+    if (!hasQueries) { render(); return; }
     const title = json?.data?.title || "New topic";
-    const sep = { id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _separator: true, _separatorLabel: title, _separatorCat: "topic_shift" };
+    const lastQueryTs = json?.data?.last_query_ts || 0;
+    const sep = { id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _separator: true, _separatorLabel: title, _separatorCat: "topic_shift", _lastQueryTs: lastQueryTs };
     // Insert at correct position based on timestamp
     let insertIdx = sq2.length;
     for (let i = 0; i < sq2.length; i++) {
@@ -569,7 +576,7 @@ function renderStatusLine(cols) {
   if (agentTreeVisible && agentTree.length > 0) {
     parts.push(`${FG.gray}tab${RESET}${DIM}:${RESET}${FG.cyan}Agents${RESET}`);
   }
-  const topicLabel = topicStatus ? `${FG.yellow}${topicStatus}${RESET}` : `${FG.cyan}Topics${RESET}`;
+  const topicLabel = topicStatus ? `${FG.yellow}${topicStatus}${RESET}` : topicAllPending ? `${FG.red}t again for all${RESET}` : `${FG.cyan}Topics${RESET}`;
   parts.push(`${FG.gray}t${RESET}${DIM}:${RESET}${topicLabel}`);
   parts.push(`${FG.gray}i${RESET}${DIM}:${RESET}${FG.cyan}Island${RESET}`);
   parts.push(`${FG.gray}w${RESET}${DIM}:${RESET}${FG.cyan}Window${RESET}`);
@@ -841,8 +848,8 @@ function render() {
       topicQueries = [];
     }
 
-    // Find the timestamp of the last topic separator to know where topics end
-    const lastTopicTs = visible.filter(q => q._separator && q._separatorCat === "topic_shift").reduce((max, q) => Math.max(max, q.startTs), 0);
+    // Find the last_query_ts across all topic separators — queries after this are truly new (post-classification)
+    const classifiedUpTo = visible.filter(q => q._separator && q._separatorCat === "topic_shift" && q._lastQueryTs).reduce((max, q) => Math.max(max, q._lastQueryTs), 0);
 
     for (const q of visible) {
       if (q._separator && q._separatorCat === "topic_shift") {
@@ -855,8 +862,8 @@ function render() {
         const color = q._separatorCat === "session_start" ? FG.green : FG.gray;
         const ts = new Date(q.startTs).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" });
         rowData.push({ text: `  ${color}${BOLD}SESSION${RESET} ${color}${q._separatorLabel}${RESET}  ${DIM}${ts}${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1 });
-      } else if (currentTopic && q.startTs > lastTopicTs) {
-        // Query arrived after all topics — render flat, not inside last topic
+      } else if (currentTopic && classifiedUpTo && q.startTs > classifiedUpTo) {
+        // Query arrived after classification — render flat, not inside last topic
         flushTopic();
         currentTopic = null;
         addQueryRow(q, false);
@@ -972,8 +979,9 @@ function handleInput(buf) {
     return;
   }
 
-  // Esc — go back one level
+  // Esc — exit agent panel first, then go back one nav level
   if (s === "\x1b" && buf.length === 1) {
+    if (agentFocus) { agentFocus = false; agentFocusIdx = -1; agentDeletePending = false; render(); return; }
     if (navLevel === "detail") { navLevel = "event"; detailScroll = 0; }
     else if (navLevel === "event") { navLevel = "query"; eventFocusIdx = -1; }
     render(); return;
@@ -1005,15 +1013,30 @@ function handleInput(buf) {
   if (s === "w") { openWindow(); render(); return; }
   if (s === "i") { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "toggle_island" })); return; }
   if (s === "t") {
-    // Collect user queries from current session and send for classification
-    const targetFilter = sessionFilter !== "all" ? sessionFilter : [...sessions.keys()][0];
-    if (!targetFilter) { render(); return; }
-    const sq = sessionQueries.get(targetFilter) || [];
-    const queryData = sq.filter(q => q.userQuery && !q._preamble && !q._separator).map(q => ({ userQuery: q.userQuery, ts: q.startTs }));
-    if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: "classify_topics", sessionId: targetFilter, queries: queryData }));
+    if (sessionFilter !== "all") {
+      // Single session — classify immediately
+      const sq = sessionQueries.get(sessionFilter) || [];
+      const queryData = sq.filter(q => q.userQuery && !q._preamble && !q._separator).map(q => ({ userQuery: q.userQuery, ts: q.startTs }));
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: "classify_topics", sessionId: sessionFilter, queries: queryData }));
+      }
+    } else if (topicAllPending) {
+      // Second press on "All" — classify all sessions
+      topicAllPending = false;
+      if (topicAllTimer) { clearTimeout(topicAllTimer); topicAllTimer = null; }
+      for (const sid of sessions.keys()) {
+        const sq = sessionQueries.get(sid) || [];
+        const queryData = sq.filter(q => q.userQuery && !q._preamble && !q._separator).map(q => ({ userQuery: q.userQuery, ts: q.startTs }));
+        if (queryData.length >= 3 && ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: "classify_topics", sessionId: sid, queries: queryData }));
+        }
+      }
+    } else {
+      // First press on "All" — arm confirmation
+      topicAllPending = true;
+      topicAllTimer = setTimeout(() => { topicAllPending = false; render(); }, 2000);
     }
-    return;
+    render(); return;
   }
   if (s === "x" && sessionFilter === "all") {
     if (clearPending) {
@@ -1035,10 +1058,10 @@ function handleInput(buf) {
     }
     render(); return;
   }
-  if (s === "d" && sessionFilter !== "all") {
-    if (deletePending) {
-      // Second press — delete this session
-      deletePending = false;
+  if (s === "d" && sessionFilter !== "all" && !agentFocus) {
+    if (deletePending && deleteTargetSession === sessionFilter) {
+      // Second press — delete this session (only if still on the same session)
+      deletePending = false; deleteTargetSession = null;
       if (deleteTimer) { clearTimeout(deleteTimer); deleteTimer = null; }
       const sid = sessionFilter;
       deletedSessionIds.add(sid);
@@ -1048,7 +1071,8 @@ function handleInput(buf) {
       focusIdx = -1; autoFollow = true; scrollOffset = 0;
     } else {
       deletePending = true;
-      deleteTimer = setTimeout(() => { deletePending = false; render(); }, 2000);
+      deleteTargetSession = sessionFilter;
+      deleteTimer = setTimeout(() => { deletePending = false; deleteTargetSession = null; render(); }, 2000);
     }
     render(); return;
   }
@@ -1071,12 +1095,6 @@ function handleInput(buf) {
     else { agentFocusIdx = -1; agentDeletePending = false; }
     render(); return;
   }
-  // Esc from agent panel — return to query list
-  if (agentFocus && s === "\x1b" && buf.length === 1) {
-    agentFocus = false; agentFocusIdx = -1; agentDeletePending = false;
-    render(); return;
-  }
-
   // Agent panel navigation
   if (agentFocus) {
     const isAgentDown = s === "j" || s === "\x1b[B";
@@ -1216,10 +1234,12 @@ function handleMouse(button, col, row) {
 
   if (isScroll) {
     const scrollUp = (button & 0x01) === 0;
+    let curPos = navOrder.indexOf(focusIdx);
+    if (curPos < 0 && navOrder.length > 0) curPos = 0;
     if (scrollUp) {
-      if (focusIdx > 0) { focusIdx--; autoFollow = false; }
+      if (curPos > 0) { focusIdx = navOrder[curPos - 1]; autoFollow = false; }
     } else {
-      if (focusIdx < queries.length - 1) { focusIdx++; autoFollow = focusIdx === queries.length - 1; if (autoFollow) hasNewQueries = false; }
+      if (curPos < navOrder.length - 1) { focusIdx = navOrder[curPos + 1]; autoFollow = curPos + 1 === navOrder.length - 1; if (autoFollow) hasNewQueries = false; }
     }
     render(); return;
   }

@@ -58,39 +58,52 @@ const LoupeGrouping = (() => {
     if (entry.category === "topic_shift") {
       const sid = entry.sessionId || "default";
       const gs = getGroupState(sid);
+      // Skip topics for sessions with no queries (e.g., outside backlog window)
+      const hasQueries = gs.tasks.some(t => t.queries.length > 0);
+      if (!hasQueries) return;
       const title = entry.summary || entry.title || null;
       const splitTs = entry.ts;
-      // Find the task containing this timestamp and split it
+      let handled = false;
       for (let ti = 0; ti < gs.tasks.length; ti++) {
         const task = gs.tasks[ti];
-        // Find the first query at or after the split timestamp
         const splitIdx = task.queries.findIndex(q => q.startTs >= splitTs);
         if (splitIdx > 0) {
           // Split: queries before splitIdx stay, queries from splitIdx go to new task
           const newQueries = task.queries.splice(splitIdx);
           task.endTs = task.queries.length > 0 ? task.queries[task.queries.length - 1].endTs : task.startTs;
-          // Invalidate DOM elements for re-render
           task.el = null; task.bodyEl = null; task.headerEl = null;
           gs.topicCounter++;
           const newTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: splitTs, endTs: newQueries.length > 0 ? newQueries[newQueries.length - 1].endTs : splitTs, queries: newQueries, el: null, bodyEl: null, headerEl: null, topicTitle: title };
-          // Invalidate new queries' DOM elements
           for (const q of newQueries) { q.el = null; q.actionsEl = null; q.headerEl = null; }
           gs.tasks.splice(ti + 1, 0, newTask);
           if (gs.currentTask === task && newQueries.includes(gs.currentQuery)) {
             gs.currentTask = newTask;
           }
+          handled = true;
           break;
-        } else if (splitIdx === 0 && ti > 0) {
-          // The split is at the very start of this task — just set the title
-          task.topicTitle = title;
-          task.el = null; task.bodyEl = null; task.headerEl = null;
+        } else if (splitIdx === 0) {
+          // Topic starts at or before this task's first query
+          if (task.topicTitle) {
+            // Previous topic already claimed this task — push it to an empty task, reassign title
+            gs.topicCounter++;
+            const emptyTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: task.topicTitle === title ? splitTs : (task.startTs || splitTs), endTs: task.startTs || splitTs, queries: [], el: null, bodyEl: null, headerEl: null, topicTitle: task.topicTitle };
+            task.topicTitle = title;
+            task.el = null; task.bodyEl = null; task.headerEl = null;
+            gs.tasks.splice(ti, 0, emptyTask);
+          } else {
+            task.topicTitle = title;
+            task.el = null; task.bodyEl = null; task.headerEl = null;
+          }
+          handled = true;
           break;
         }
+        // splitIdx === -1: all queries in this task are before splitTs, continue to next task
       }
-      // If no split happened (first topic or before all queries), set title on first task
-      if (gs.tasks.length > 0 && !gs.tasks.some(t => t.topicTitle)) {
-        gs.tasks[0].topicTitle = title;
-        gs.tasks[0].el = null; gs.tasks[0].bodyEl = null; gs.tasks[0].headerEl = null;
+      if (!handled && gs.tasks.length > 0) {
+        // Topic starts after all existing queries — append empty task
+        gs.topicCounter++;
+        const emptyTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: splitTs, endTs: splitTs, queries: [], el: null, bodyEl: null, headerEl: null, topicTitle: title };
+        gs.tasks.push(emptyTask);
       }
 
       // Track the last_query_ts so we can split out post-topic queries later

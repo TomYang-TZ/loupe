@@ -38,8 +38,7 @@ const Gravity = (() => {
   const GLOW_DURATION = 3 * 60000;
   const WARM_DURATION = 7 * 60000;
   const STALE_CUTOFF = 60 * 60 * 1000;
-  const NODE_MIN_R = 3;
-  const NODE_MAX_R = 20;
+  const NODE_FIXED_R = 5;
 
   // Lane mode: "action" (read/edit/exec), "phase" (exploring/implementing/testing/debugging)
   // Both are always rendered stacked; laneMode controls which one the camera focuses on
@@ -324,12 +323,16 @@ const Gravity = (() => {
     const laneCounts = new Array(lanes.length).fill(0);
     for (const n of nodeArray) laneCounts[assignFn(n)]++;
 
-    const emptyLaneH = 20;
-    const populated = laneCounts.filter(c => c > 0).length;
-    const distributable = Math.max(60, sectionH - (lanes.length - populated) * emptyLaneH);
+    const emptyLaneH = 12;
+    const minPopH = 24;
+    const emptyCount = laneCounts.filter(c => c === 0).length;
+    const distributable = Math.max(60, sectionH - emptyCount * emptyLaneH);
     const totalPop = Math.max(1, laneCounts.reduce((a, b) => a + b, 0));
 
-    const heights = laneCounts.map(c => c === 0 ? emptyLaneH : Math.max(35, (c / totalPop) * distributable));
+    // Proportional with pow(0.7) dampening — more aggressive than sqrt, preserves dominance
+    const weights = laneCounts.map(c => c === 0 ? 0 : Math.max(1, Math.pow(c, 0.7)));
+    const totalWeight = Math.max(1, weights.reduce((a, b) => a + b, 0));
+    const heights = laneCounts.map((c, i) => c === 0 ? emptyLaneH : Math.max(minPopH, (weights[i] / totalWeight) * distributable));
     const totalH = heights.reduce((a, b) => a + b, 0);
     const scale = sectionH / totalH;
     for (let i = 0; i < heights.length; i++) heights[i] *= scale;
@@ -472,22 +475,39 @@ const Gravity = (() => {
     // Compute Y targets based on lane mode (visible nodes only)
     computeLanes(visibleForLayout, dirGroups, usableH, padTop);
 
-    // Stagger Y within lanes so edges aren't collinear.
+    // Stagger Y within lanes so nodes aren't collinear.
     // Deterministic jitter based on node key hash — consistent across rebuilds.
     for (const n of visibleForLayout) {
+      const aLane = actionLanes[n._actionLaneIdx];
+      const pLane = phaseLanes[n._phaseLaneIdx];
+      // Hash the node key to get a stable pseudo-random value
+      let h = 0;
+      const nk = n.id || "";
+      for (let i = 0; i < nk.length; i++) h = ((h << 5) - h + nk.charCodeAt(i)) | 0;
+      const jNorm = (h & 0xffff) / 0xffff - 0.5; // -0.5 to 0.5
+      const r = nodeRadius(n);
+
+      // Apply jitter to action lane Y
+      if (aLane && aLane.h > 30) {
+        const jitter = jNorm * aLane.h * 0.6;
+        n._actionTargetY += jitter;
+        const lo = aLane.y + r + 4;
+        const hi = aLane.y + aLane.h - r - 4;
+        if (lo < hi) n._actionTargetY = Math.max(lo, Math.min(hi, n._actionTargetY));
+      }
+      // Apply jitter to phase lane Y (use different hash bits)
+      if (pLane && pLane.h > 30) {
+        const jNorm2 = ((h >>> 16) & 0xffff) / 0xffff - 0.5;
+        const jitter = jNorm2 * pLane.h * 0.6;
+        n._phaseTargetY += jitter;
+        const lo = pLane.y + r + 4;
+        const hi = pLane.y + pLane.h - r - 4;
+        if (lo < hi) n._phaseTargetY = Math.max(lo, Math.min(hi, n._phaseTargetY));
+      }
+      // Update simulation target to match
       const laneH = (n._laneYMax || 0) - (n._laneYMin || 0);
       if (laneH > 30) {
-        // Hash the node key to get a stable pseudo-random value
-        let h = 0;
-        const nk = n.id || "";
-        for (let i = 0; i < nk.length; i++) h = ((h << 5) - h + nk.charCodeAt(i)) | 0;
-        const jitter = ((h & 0xffff) / 0xffff - 0.5) * laneH * 0.25;
-        n._targetY += jitter;
-        // Clamp within lane bounds
-        const r = nodeRadius(n);
-        const lo = (n._laneYMin || 0) + r + 4;
-        const hi = (n._laneYMax || 0) - r - 4;
-        if (lo < hi) n._targetY = Math.max(lo, Math.min(hi, n._targetY));
+        n._targetY = laneMode === "phase" ? n._phaseTargetY : n._actionTargetY;
       }
     }
 
@@ -608,7 +628,7 @@ const Gravity = (() => {
   }
 
   function nodeRadius(node) {
-    return Math.min(NODE_MAX_R, NODE_MIN_R + Math.sqrt(nodeImportance(node)) * 2.2) * nodeSizeScale * mapScale;
+    return NODE_FIXED_R * nodeSizeScale * mapScale;
   }
 
   // --- Camera ---
@@ -670,10 +690,12 @@ const Gravity = (() => {
 
   function shouldShowLabel(node, r, isGlowing, isWarm, isHovered, isSelected) {
     if (isHovered || isSelected) return true;
+    // Progressively hide labels as we zoom out
+    if (camZoom < 0.3) return false;
+    if (camZoom < 0.5) return (isGlowing || isWarm) && node.accessCount >= 6;
+    if (camZoom < 0.7) return (isGlowing && node.accessCount >= 3) || node.accessCount >= 8;
     if (isGlowing || isWarm) return node.accessCount >= 2;
-    if (camZoom < 0.5) return node.accessCount >= 8 && r > 5;
-    if (camZoom < 0.8) return node.accessCount >= LABEL_MIN_ACCESS;
-    return node.accessCount >= LABEL_MIN_ACCESS || r > 7;
+    return node.accessCount >= LABEL_MIN_ACCESS;
   }
 
   // --- Background ---
@@ -1224,7 +1246,7 @@ const Gravity = (() => {
     }
     if (spreadCount > 0) { spreadCX /= spreadCount; spreadCY /= spreadCount; }
 
-    function sp(node) { return { x: spX(node), y: spY(node) }; }
+    function sp(node) { return { x: spX(node), y: node._actionTargetY != null ? node._actionTargetY : spY(node) }; }
 
     // --- Edges: consolidate per node-pair, use most recent direction ---
     // Group edges by unordered node pair, pick the most recent for arrow direction
@@ -1272,20 +1294,40 @@ const Gravity = (() => {
 
       ctx.globalAlpha = opacity;
       const sSrc = sp(srcN), sDst = sp(dstN);
+
+      // Arc edges when nodes are nearly colinear (same lane) to avoid striking through intermediate nodes
+      const dx = sDst.x - sSrc.x;
+      const dy = sDst.y - sSrc.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const sameRow = Math.abs(dy) < 15 * mapScale && dist > 30 * mapScale;
+      // Arc height proportional to distance, alternating up/down by pair hash
+      const pairHash = (srcN.id + dstN.id).split("").reduce((h, c) => h + c.charCodeAt(0), 0);
+      const arcSign = pairHash % 2 === 0 ? -1 : 1;
+      const arcH = sameRow ? arcSign * Math.min(40, dist * 0.15) * mapScale : 0;
+      const cpx = (sSrc.x + sDst.x) / 2;
+      const cpy = (sSrc.y + sDst.y) / 2 + arcH;
+
       ctx.beginPath();
       ctx.moveTo(sSrc.x, sSrc.y);
-      ctx.lineTo(sDst.x, sDst.y);
+      if (sameRow) {
+        ctx.quadraticCurveTo(cpx, cpy, sDst.x, sDst.y);
+      } else {
+        ctx.lineTo(sDst.x, sDst.y);
+      }
 
       ctx.strokeStyle = connected ? getEdgeColor(newest, dark, true) : getEdgeColor(newest, dark, false);
       ctx.lineWidth = connected ? lw * 1.5 : lw;
       ctx.lineCap = "round";
       ctx.stroke();
 
-      // Single direction arrow from most recent edge
+      // Single direction arrow at midpoint of curve/line
       if (connected || (!hasFocus && opacity > 0.2)) {
-        const mx = (sSrc.x + sDst.x) / 2;
-        const my = (sSrc.y + sDst.y) / 2;
-        const angle = Math.atan2(sDst.y - sSrc.y, sDst.x - sSrc.x);
+        // For curves, tangent at t=0.5 of quadratic bezier
+        const mx = cpx;
+        const my = sameRow ? (sSrc.y + 2 * cpy + sDst.y) / 4 : (sSrc.y + sDst.y) / 2;
+        const tx = sameRow ? sDst.x - sSrc.x : dx;
+        const ty = sameRow ? sDst.y - sSrc.y : dy;
+        const angle = Math.atan2(ty, tx);
         ctx.save();
         ctx.translate(mx, my);
         ctx.rotate(angle);
@@ -1347,10 +1389,9 @@ const Gravity = (() => {
       ctx.globalAlpha = alpha;
 
       if (dark) {
-        // === OBSERVATORY: bright core + soft halo ===
-        // New nodes get a boosted core size that settles down
-        const introBoost = isNewNode ? introGlow * 4 : 0;
-        const coreR = (2.5 + impNorm * 3 + introBoost) * mapScale;
+        // === OBSERVATORY: fixed-size core, importance via color depth + halo ===
+        const introBoost = isNewNode ? introGlow * 3 : 0;
+        const coreR = (baseR + introBoost) * mapScale;
         const laneKey = node._laneKey;
         const introLc = (laneKey && LANE_SEMANTIC_COLORS[laneKey]) ? LANE_SEMANTIC_COLORS[laneKey].dark : { r: 200, g: 220, b: 255 };
         const color = isNewNode
@@ -1358,10 +1399,10 @@ const Gravity = (() => {
           : getNodeColor(node, true);
         const rgb = parseRgb(color);
 
-        // Soft halo (importance glow) — boosted for new nodes
+        // Soft halo — size and intensity driven by importance (color depth shows importance)
         if (!dimmed && rgb) {
-          const haloR = coreR + (3 + impNorm * 8 + introBoost * 2) * mapScale;
-          const haloAlpha = isNewNode ? (0.15 + introGlow * 0.3) : (isHovered ? 0.12 : (0.03 + impNorm * 0.06));
+          const haloR = coreR + (3 + impNorm * 6 + introBoost * 2) * mapScale;
+          const haloAlpha = isNewNode ? (0.15 + introGlow * 0.3) : (isHovered ? 0.12 : (0.03 + impNorm * 0.08));
           const grad = ctx.createRadialGradient(x, y, coreR, x, y, haloR);
           grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${haloAlpha})`);
           grad.addColorStop(1, "rgba(0,0,0,0)");
@@ -1371,7 +1412,7 @@ const Gravity = (() => {
           ctx.fill();
         }
 
-        // Core dot
+        // Core dot — fixed size, color encodes importance
         ctx.beginPath();
         ctx.arc(x, y, coreR, 0, Math.PI * 2);
         ctx.fillStyle = color;
@@ -1434,10 +1475,10 @@ const Gravity = (() => {
         }
 
       } else {
-        // === BLUEPRINT: hollow circles, stroke weight = importance, semantic lane color ===
-        const introBoostL = isNewNode ? introGlow * 4 : 0;
-        const r = (5 + impNorm * 5 + introBoostL) * mapScale;
-        const strokeW = (1 + impNorm * 1.5 + (isNewNode ? introGlow * 2 : 0)) * mapScale;
+        // === BLUEPRINT: fixed-size hollow circles, importance via color depth ===
+        const introBoostL = isNewNode ? introGlow * 3 : 0;
+        const r = (baseR + introBoostL) * mapScale;
+        const strokeW = (1.2 + (isNewNode ? introGlow * 2 : 0)) * mapScale;
         const isActive = claudeCurrentFiles.has(node.id);
 
         // Get lane-aware color for light mode
@@ -1447,15 +1488,17 @@ const Gravity = (() => {
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
 
-        // Active = filled, otherwise hollow
+        // Importance via fill opacity — deeper color = more important
+        const fillA = dimmed ? 0.02 + impNorm * 0.06 : 0.05 + impNorm * 0.25;
+        const strokeA = dimmed ? 0.12 + impNorm * 0.08 : 0.3 + impNorm * 0.5;
         if (isActive || isGlowing) {
-          ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},${dimmed ? 0.08 : 0.15})`;
+          ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},${Math.min(0.6, fillA + 0.1)})`;
           ctx.fill();
-          ctx.strokeStyle = dimmed ? `rgba(${lc.r},${lc.g},${lc.b},0.2)` : `rgba(${lc.r},${lc.g},${lc.b},0.7)`;
+          ctx.strokeStyle = dimmed ? `rgba(${lc.r},${lc.g},${lc.b},0.2)` : `rgba(${lc.r},${lc.g},${lc.b},0.8)`;
         } else {
-          ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},${dimmed ? 0.02 : 0.05})`;
+          ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},${fillA})`;
           ctx.fill();
-          ctx.strokeStyle = dimmed ? `rgba(${lc.r},${lc.g},${lc.b},0.12)` : `rgba(${lc.r},${lc.g},${lc.b},${0.25 + impNorm * 0.45})`;
+          ctx.strokeStyle = `rgba(${lc.r},${lc.g},${lc.b},${strokeA})`;
         }
         ctx.lineWidth = strokeW;
         ctx.stroke();
@@ -1542,12 +1585,12 @@ const Gravity = (() => {
       ctx.globalAlpha = 1;
 
       // --- Labels ---
-      const effectiveR = dark ? (2.5 + impNorm * 3) : (5 + impNorm * 5);
+      const effectiveR = NODE_FIXED_R;
       if (shouldShowLabel(node, effectiveR, isGlowing, isWarm, isHovered, isSelected)) {
         const dl = disambiguatedLabel(node);
         // Match Y-axis label size (screen-space → world-space conversion)
         const screenFsz = isHovered || isSelected ? 11 : 8;
-        const fsz = Math.max(4, screenFsz / Math.max(0.2, camZoom));
+        const fsz = Math.min(18, Math.max(4, screenFsz / Math.max(0.3, camZoom)));
         ctx.font = `${isHovered || isSelected ? "600" : "400"} ${fsz}px "SF Mono","JetBrains Mono",Menlo,monospace`;
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
