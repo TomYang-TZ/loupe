@@ -89,6 +89,8 @@ let navOrder = [];
 // Queue of agent prompts from PreToolUse, consumed by SubagentStart in order
 const pendingAgentPrompts = [];
 let allCollapsed = false;
+let clearPending = false;
+let clearTimer = null;
 
 // ===== Actions =====
 function openWindow() {
@@ -498,6 +500,7 @@ function renderStatusLine(cols) {
     parts.push(`${FG.magenta}Tasks: ${statusLine.tasksCompleted}/${statusLine.tasksCreated}${allDone ? " ✓" : ""}${RESET}`);
   }
   parts.push(`${FG.gray}c${RESET}${DIM}:${RESET}${FG.cyan}${allCollapsed ? "▶ Expand" : "▼ Collapse"}${RESET}`);
+  parts.push(clearPending ? `${FG.red}x${RESET}${DIM}:${RESET}${FG.red}Press x again to clear${RESET}` : `${FG.gray}x${RESET}${DIM}:${RESET}${FG.cyan}Clear${RESET}`);
   // Calculate visible length before adding window button
   const sep = `${DIM}  │  ${RESET}`;
   const beforeBtn = parts.join(sep);
@@ -857,6 +860,26 @@ function handleInput(buf) {
     render(); return;
   }
   if (s === "w") { openWindow(); render(); return; }
+  if (s === "x") {
+    if (clearPending) {
+      // Second press — clear all
+      clearPending = false;
+      if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
+      eventCount = 0; errorCount = 0; tokenTotal = 0;
+      fileSet.clear();
+      sessionQueries.clear(); queries = []; queryIdCounter = 0;
+      focusIdx = -1; autoFollow = true; hasNewQueries = false; scrollOffset = 0;
+      sessions.clear(); sessionFilter = "all";
+      phase = "idle"; currentTool = null; thinkingActive = false;
+      Object.assign(statusLine, { sessionState: "idle", waitingTool: null, errors: 0, apiError: null, agentsRunning: 0, agentsTotal: 0, tasksCreated: 0, tasksCompleted: 0, sessionStartTs: null });
+      agentTree.length = 0; agentTreeVisible = false;
+    } else {
+      // First press — arm confirmation
+      clearPending = true;
+      clearTimer = setTimeout(() => { clearPending = false; render(); }, 2000);
+    }
+    render(); return;
+  }
 
   // ← / h = back one level
   const isLeft = s === "h" || s === "\x1b[D";
