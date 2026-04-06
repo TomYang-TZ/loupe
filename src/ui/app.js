@@ -435,6 +435,9 @@ function connect() {
     if (msg.type === "reset") { resetAll(); return; }
     if (msg.type === "backlog_done") {
       isBacklog = false;
+      // Finalize topic splits and rebuild panes
+      LoupeGrouping.finalizeTopics();
+      rebuildAllPaneContents();
       scrollToBottom();
       // Clear stale states from backlog replay
       LoupeIsland.normalizeBacklogState();
@@ -631,6 +634,12 @@ function handleLine(msg) {
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
     rebuildAllPaneContents();
+  } else if (entry.category === "topic_clear" || entry.category === "topic_shift") {
+    // Topic events retroactively modify task groups — rebuild all panes
+    if (!isBacklog) {
+      LoupeGrouping.finalizeTopics();
+      rebuildAllPaneContents();
+    }
   } else if (!streamHidden && matchesAll(entry)) {
     LoupeRender.appendEntryGrouped(entry);
   }

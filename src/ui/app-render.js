@@ -88,7 +88,8 @@ const LoupeRender = (() => {
     const qCount = task.queries.length;
     const chevron = task.collapsed ? "\u25B6" : "\u25BC";
     const num = displayNum || task.seqNum;
-    div.innerHTML = `<span class="task-chevron">${chevron}</span><span class="task-label">Topic ${num}</span><span class="task-time">${formatTimeRange(task.startTs, task.endTs)}</span><span class="task-qcount">${qCount} ${qCount === 1 ? "query" : "queries"}</span>`;
+    const label = task.topicTitle ? esc(task.topicTitle) : `Topic ${num}`;
+    div.innerHTML = `<span class="task-chevron">${chevron}</span><span class="task-label">${label}</span><span class="task-time">${formatTimeRange(task.startTs, task.endTs)}</span><span class="task-qcount">${qCount} ${qCount === 1 ? "query" : "queries"}</span>`;
     return div;
   }
 
@@ -233,11 +234,31 @@ const LoupeRender = (() => {
     return wrap;
   }
 
-  function renderTaskGroup(task, matchFn) {
+  function renderTaskGroup(task, matchFn, prevTask) {
     const wrap = document.createElement("div");
     wrap.className = "task-group";
+    // Add separator when untitled task follows a titled one
+    if (!task.topicTitle && prevTask?.topicTitle) {
+      wrap.style.marginTop = "12px";
+      wrap.style.borderTop = "1px solid rgba(128,128,128,0.15)";
+      wrap.style.paddingTop = "8px";
+    }
 
-    // No topic header — queries render directly
+    // Render topic header if this task has a topic title
+    if (task.topicTitle) {
+      const headerEl = renderTaskHeader(task, task._displayNum);
+      wrap.appendChild(headerEl);
+      task.headerEl = headerEl;
+
+      // Click header to toggle collapse
+      headerEl.addEventListener("click", () => {
+        task.collapsed = !task.collapsed;
+        const chevron = headerEl.querySelector(".task-chevron");
+        if (chevron) chevron.textContent = task.collapsed ? "\u25B6" : "\u25BC";
+        bodyEl.style.display = task.collapsed ? "none" : "";
+      });
+    }
+
     const bodyEl = document.createElement("div");
     bodyEl.className = "task-body";
 
@@ -250,7 +271,6 @@ const LoupeRender = (() => {
 
     task.el = wrap;
     task.bodyEl = bodyEl;
-    task.headerEl = null;
     return wrap;
   }
 
@@ -267,7 +287,8 @@ const LoupeRender = (() => {
     for (let i = 0; i < gs.tasks.length; i++) {
       const task = gs.tasks[i];
       task._displayNum = base + i + 1; // sequential display number
-      const taskEl = renderTaskGroup(task, matchFn);
+      const prevTask = i > 0 ? gs.tasks[i - 1] : null;
+      const taskEl = renderTaskGroup(task, matchFn, prevTask);
       container.appendChild(taskEl);
       taskEl.querySelectorAll(".log-entry").forEach(() => matchCount++);
     }

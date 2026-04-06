@@ -71,7 +71,12 @@ function extractUserMessage(text) {
     .trim() || null;
 }
 
+const LOCK_FILE = path.join(process.env.HOME, ".claude", "logs", ".loupe-skip-hooks");
+
 function processFile(filePath) {
+  // Skip processing while topic detection is running (lock file present)
+  try { if (fs.existsSync(LOCK_FILE)) { return; } } catch {}
+
   let pos = filePositions.get(filePath) || 0;
   let stat;
   try {

@@ -25,6 +25,8 @@ const HOOK_CATEGORIES = {
   TaskCompleted: "task_completed",
   tool_rejected: "tool_rejected",
   tool_approved_with_message: "tool_approved_msg",
+  topic_shift: "topic_shift",
+  topic_clear: "topic_clear",
   Notification: "Notification",
   Stop: "Stop",
 };

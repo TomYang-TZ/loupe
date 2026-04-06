@@ -4,6 +4,9 @@
 
 set -e
 
+# Skip logging for internal loupe tool sessions (e.g., topic detection via claude -p)
+if [ -f "$HOME/.claude/logs/.loupe-skip-hooks" ]; then exit 0; fi
+
 LOG_DIR="$HOME/.claude/logs"
 LOG_FILE="$LOG_DIR/loupe.jsonl"
 

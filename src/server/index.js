@@ -138,15 +138,17 @@ function readNewBytes() {
   }
   if (stat.size === fileSize) return;
 
+  const readStart = fileSize;
+  fileSize = stat.size; // claim range immediately to prevent overlapping reads
+
   const stream = fs.createReadStream(filePath, {
-    start: fileSize,
+    start: readStart,
     encoding: "utf-8",
   });
 
   let chunk = "";
   stream.on("data", (data) => (chunk += data));
   stream.on("end", () => {
-    fileSize = stat.size;
     buffer += chunk;
 
     const lines = buffer.split("\n");
@@ -204,6 +206,22 @@ wss.on("connection", (ws) => {
           if (client !== ws && client.readyState === 1) {
             client.send(JSON.stringify({ type: msg.type }));
           }
+        }
+      }
+      if (msg.type === "classify_topics") {
+        // On-demand topic classification for a session
+        const topicDetector = require("./topic-detector");
+        const queries = msg.queries || []; // [{userQuery, ts}]
+        const sessionId = msg.sessionId || "";
+        if (queries.length < 3) {
+          ws.send(JSON.stringify({ type: "classify_topics_result", error: "Need at least 3 queries", count: 0 }));
+        } else {
+          ws.send(JSON.stringify({ type: "classify_topics_result", status: "running" }));
+          topicDetector.classifyAndEmit(filePath, sessionId, queries).then((result) => {
+            ws.send(JSON.stringify({ type: "classify_topics_result", count: result.count, status: "done" }));
+          }).catch((e) => {
+            ws.send(JSON.stringify({ type: "classify_topics_result", error: e.message, count: 0 }));
+          });
         }
       }
       // Dynamic history: client requests older events

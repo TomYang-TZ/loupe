@@ -38,7 +38,6 @@ const LoupeIsland = (() => {
         apiError: null,
         _fileSet: new Set(),
         _totalTokens: 0,
-        _pendingToolTimer: null,
         _idleTimer: null,
         _stopFailureTs: null,
         _agentClearTimer: null,
@@ -315,7 +314,6 @@ const LoupeIsland = (() => {
       const lastEvent = ss.recentTools.length > 0 ? ss.recentTools[ss.recentTools.length - 1].ts : (ss.startTs || 0);
       if (now - lastEvent > 5 * 60 * 1000) {
         if (ss._idleTimer) clearTimeout(ss._idleTimer);
-        if (ss._pendingToolTimer) clearTimeout(ss._pendingToolTimer);
         islandSessions.delete(id);
       }
     }
@@ -352,6 +350,7 @@ const LoupeIsland = (() => {
       }
 
       const elapsed = active.startTs ? Math.floor((Date.now() - active.startTs) / 1000) : 0;
+      if (!window.webkit?.messageHandlers?.islandUpdate) return;
       window.webkit.messageHandlers.islandUpdate.postMessage({
         phase: active.phase,
         progress: active.progress,

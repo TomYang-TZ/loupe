@@ -119,6 +119,24 @@ const nonAgents3 = items3.filter(i => !i.agentEntry);
 assert(agents3.length === 2, `2 agents (got ${agents3.length})`);
 assert(nonAgents3.length === 1, `1 thinking entry between agents at query level (got ${nonAgents3.length})`);
 
+// ── Test 4: user_query breaks out of unfinished agent ──
+console.log("\nAgent grouping — user_query creates new Q even with unfinished agent");
+
+seedQuery();
+
+mod.assignToGroup(makeEntry("sub_agent", 2000));
+mod.assignToGroup(makeEntry("pre_tool", 2100));
+// Agent never finishes — no sub_agent_result
+// User sends a new prompt
+mod.assignToGroup(makeEntry("user_query", 5000, { userQuery: "new question" }));
+mod.assignToGroup(makeEntry("pre_tool", 5100));
+
+const gs4 = mod.getGroupState("s1");
+assert(gs4.tasks[0].queries.length === 2, `2 queries created (got ${gs4.tasks[0].queries.length})`);
+assert(gs4.tasks[0].queries[1].userQuery === "new question", "second query has correct userQuery");
+// The tool after the new query should NOT be inside the agent
+assert(gs4.tasks[0].queries[1].items.length === 1, `new query has 1 tool item (got ${gs4.tasks[0].queries[1].items.length})`);
+
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed > 0 ? 1 : 0);

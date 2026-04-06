@@ -34,21 +34,84 @@ const LoupeGrouping = (() => {
     if (entry.category === "session_start" || entry.category === "session_end") {
       return; // don't assign to any group — rendered directly in the pane
     }
+    // Topic clear — reset all topic state, merge tasks back into one
+    if (entry.category === "topic_clear") {
+      const sid = entry.sessionId || "default";
+      const gs = getGroupState(sid);
+      if (gs.tasks.length > 1) {
+        // Merge all tasks into one
+        const allQueries = [];
+        for (const task of gs.tasks) {
+          for (const q of task.queries) allQueries.push(q);
+        }
+        gs.topicCounter++;
+        gs.currentTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: allQueries[0]?.startTs || 0, endTs: allQueries[allQueries.length - 1]?.endTs || 0, queries: allQueries, el: null, bodyEl: null, headerEl: null };
+        gs.tasks = [gs.currentTask];
+      } else if (gs.tasks.length === 1) {
+        gs.tasks[0].topicTitle = null;
+        gs.tasks[0].el = null; gs.tasks[0].bodyEl = null; gs.tasks[0].headerEl = null;
+      }
+      delete gs._lastTopicQueryTs;
+      return;
+    }
+    // Topic shift — retroactively split tasks at the topic boundary
+    if (entry.category === "topic_shift") {
+      const sid = entry.sessionId || "default";
+      const gs = getGroupState(sid);
+      const title = entry.summary || entry.title || null;
+      const splitTs = entry.ts;
+      // Find the task containing this timestamp and split it
+      for (let ti = 0; ti < gs.tasks.length; ti++) {
+        const task = gs.tasks[ti];
+        // Find the first query at or after the split timestamp
+        const splitIdx = task.queries.findIndex(q => q.startTs >= splitTs);
+        if (splitIdx > 0) {
+          // Split: queries before splitIdx stay, queries from splitIdx go to new task
+          const newQueries = task.queries.splice(splitIdx);
+          task.endTs = task.queries.length > 0 ? task.queries[task.queries.length - 1].endTs : task.startTs;
+          // Invalidate DOM elements for re-render
+          task.el = null; task.bodyEl = null; task.headerEl = null;
+          gs.topicCounter++;
+          const newTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: splitTs, endTs: newQueries.length > 0 ? newQueries[newQueries.length - 1].endTs : splitTs, queries: newQueries, el: null, bodyEl: null, headerEl: null, topicTitle: title };
+          // Invalidate new queries' DOM elements
+          for (const q of newQueries) { q.el = null; q.actionsEl = null; q.headerEl = null; }
+          gs.tasks.splice(ti + 1, 0, newTask);
+          if (gs.currentTask === task && newQueries.includes(gs.currentQuery)) {
+            gs.currentTask = newTask;
+          }
+          break;
+        } else if (splitIdx === 0 && ti > 0) {
+          // The split is at the very start of this task — just set the title
+          task.topicTitle = title;
+          task.el = null; task.bodyEl = null; task.headerEl = null;
+          break;
+        }
+      }
+      // If no split happened (first topic or before all queries), set title on first task
+      if (gs.tasks.length > 0 && !gs.tasks.some(t => t.topicTitle)) {
+        gs.tasks[0].topicTitle = title;
+        gs.tasks[0].el = null; gs.tasks[0].bodyEl = null; gs.tasks[0].headerEl = null;
+      }
+
+      // Track the last_query_ts so we can split out post-topic queries later
+      const inner = (entry.json?._logstream_type && entry.json?.data) ? entry.json.data : entry.json;
+      if (inner?.last_query_ts) gs._lastTopicQueryTs = inner.last_query_ts;
+      return;
+    }
 
     const sid = entry.sessionId || "default";
     const gs = getGroupState(sid);
 
     // user_query or thinking with userQuery = new query boundary
-    // But skip if the current query already has the same userQuery (dedup)
-    // Also skip if we're inside an agent stack — sub-agent thinking/queries
-    // should nest as agent children, not create new top-level queries
+    // user_query always creates a boundary (new user prompt = previous turn done)
+    // thinking only creates a boundary when NOT inside an agent (subagents think too)
     const insideAgent = gs.agentStack.length > 0;
     const isDuplicate = gs.currentQuery && entry.userQuery &&
       gs.currentQuery.userQuery === entry.userQuery;
     const isSystemPrompt = entry.userQuery && (entry.userQuery.includes("<task-notification>") || entry.userQuery.includes("<system-reminder>"));
-    const isQueryBoundary = !insideAgent && !isDuplicate && !isSystemPrompt && (
+    const isQueryBoundary = !isDuplicate && !isSystemPrompt && (
       (entry.category === "user_query" && entry.userQuery) ||
-      (entry.category === "thinking" && entry.userQuery)
+      (!insideAgent && entry.category === "thinking" && entry.userQuery)
     );
     if (isQueryBoundary) {
       // Close current agent stack (shouldn't happen, but defensive)
@@ -79,8 +142,9 @@ const LoupeGrouping = (() => {
       const prevEndTs = gs.currentQuery ? gs.currentQuery.endTs : 0;
       const gap = entry.ts - prevEndTs;
 
-      // New topic if first query or gap > 5 min
-      if (!gs.currentTask || (gs.currentTask.queries.length === 0 && gs.tasks.length === 0) || gap > TASK_GAP_MS) {
+      // New task if: first query, gap > 5 min, or current task is a titled topic and query is after the topic boundary
+      const afterTopicBoundary = gs.currentTask?.topicTitle && gs._lastTopicQueryTs && entry.ts > gs._lastTopicQueryTs;
+      if (!gs.currentTask || (gs.currentTask.queries.length === 0 && gs.tasks.length === 0) || gap > TASK_GAP_MS || afterTopicBoundary) {
         if (!gs.currentTask || gs.currentTask.queries.length > 0) {
           gs.topicCounter++;
           gs.currentTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
@@ -163,6 +227,30 @@ const LoupeGrouping = (() => {
     gs.currentTask.endTs = entry.ts;
   }
 
+  // Split post-topic queries into a standalone untitled task.
+  // Called after backlog replay or after live topic_shift events.
+  function finalizeTopics() {
+    for (const [, gs] of sessionGroups) {
+      if (!gs._lastTopicQueryTs) continue;
+      const lastTask = gs.tasks[gs.tasks.length - 1];
+      if (!lastTask || !lastTask.topicTitle) continue;
+      const postIdx = lastTask.queries.findIndex(q => q.startTs > gs._lastTopicQueryTs);
+      if (postIdx > 0) {
+        const postQueries = lastTask.queries.splice(postIdx);
+        lastTask.endTs = lastTask.queries.length > 0 ? lastTask.queries[lastTask.queries.length - 1].endTs : lastTask.startTs;
+        lastTask.el = null; lastTask.bodyEl = null; lastTask.headerEl = null;
+        gs.topicCounter++;
+        const postTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: postQueries[0].startTs, endTs: postQueries[postQueries.length - 1].endTs, queries: postQueries, el: null, bodyEl: null, headerEl: null };
+        for (const q of postQueries) { q.el = null; q.actionsEl = null; q.headerEl = null; }
+        gs.tasks.push(postTask);
+        if (gs.currentTask === lastTask && postQueries.includes(gs.currentQuery)) {
+          gs.currentTask = postTask;
+        }
+      }
+      // Keep _lastTopicQueryTs for afterTopicBoundary check on live queries
+    }
+  }
+
   function reset() {
     sessionGroups.clear();
     queryIdCounter = 0;
@@ -175,6 +263,7 @@ const LoupeGrouping = (() => {
     streamNoRenderCategories,
     getGroupState,
     assignToGroup,
+    finalizeTopics,
     reset,
   };
 })();

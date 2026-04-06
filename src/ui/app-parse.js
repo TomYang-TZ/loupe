@@ -52,6 +52,8 @@ const LoupeParse = (() => {
         // --- Existing categories ---
         if (hook.hookType === "tool_rejected") return "tool_rejected";
         if (hook.hookType === "tool_approved_with_message") return "tool_approved_msg";
+        if (hook.hookType === "topic_shift") return "topic_shift";
+        if (hook.hookType === "topic_clear") return "topic_clear";
         if (hook.hookType === "thinking") return "thinking";
         if (hook.hookType === "user_query") return "user_query";
         if (hook.hookType === "Notification") return "Notification";
@@ -69,6 +71,8 @@ const LoupeParse = (() => {
         if (lt === "PreCompact" || lt === "PostCompact") return "compact";
         if (lt === "Stop") return "Stop";
         if (lt === "Notification") return "Notification";
+        if (lt === "topic_shift") return "topic_shift";
+        if (lt === "topic_clear") return "topic_clear";
         return null; // skip unrecognized hook types
       }
       const t = json.type;
@@ -167,6 +171,9 @@ const LoupeParse = (() => {
     if (category === "compact") {
       const hookType = hook?.hookType;
       return hookType === "PreCompact" ? "Context compacting..." : "Compaction complete";
+    }
+    if (category === "topic_shift") {
+      return inner.title || "Topic shift";
     }
     if (category === "task_created") {
       return inner.task_subject || inner.subject || "New task";

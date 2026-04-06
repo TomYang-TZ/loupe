@@ -80,6 +80,11 @@ const statusLine = {
 const agentTree = [];
 let agentTreeVisible = false;
 const TREE_WIDTH = 28;
+let agentFocus = false;    // true = cursor is in agent panel
+let agentFocusIdx = -1;    // which agent is focused
+let agentDeletePending = false;
+let agentDeleteTimer = null;
+let topicStatus = null; // null | "classifying..." | "N topics found" | error
 
 // Mouse click mapping
 let rowMap = [];
@@ -94,6 +99,7 @@ let clearPending = false;
 let clearTimer = null;
 let deletePending = false;
 let deleteTimer = null;
+const deletedSessionIds = new Set(); // persist across backlog replays
 let stopPending = false;
 let stopTimer = null;
 
@@ -128,6 +134,7 @@ const catColors = {
   tool_failure: FG.red, stop_failure: FG.red,
   task_created: FG.magenta, task_completed: FG.green,
   tool_rejected: FG.red,
+  topic_shift: FG.magenta,
 };
 
 // ===== Categorize =====
@@ -162,6 +169,8 @@ function categorize(json) {
   if (type === "PermissionDenied") return "permission_denied";
   if (type === "TaskCreated") return "task_created";
   if (type === "TaskCompleted") return "task_completed";
+  if (type === "topic_shift") return "topic_shift";
+  if (type === "topic_clear") return "topic_clear";
   if (type === "tool_rejected") return "tool_rejected";
   if (type === "tool_approved_with_message") return "tool_approved_msg";
   if (type === "Notification") return "Notification";
@@ -244,9 +253,15 @@ function handleMessage(data) {
       sessions.clear(); sessionFilter = "all";
       phase = "idle"; currentTool = null;
       Object.assign(statusLine, { sessionState: "idle", waitingTool: null, errors: 0, apiError: null, agentsRunning: 0, agentsTotal: 0, tasksCreated: 0, tasksCompleted: 0, sessionStartTs: null });
-      agentTree.length = 0; agentTreeVisible = false;
+      agentTree.length = 0; agentTreeVisible = false; agentFocus = false; agentFocusIdx = -1;
     }
     return;
+  }
+  if (msg.type === "classify_topics_result") {
+    if (msg.status === "running") { topicStatus = "classifying..."; }
+    else if (msg.status === "done") { topicStatus = `${msg.count} topic${msg.count !== 1 ? "s" : ""} found`; setTimeout(() => { topicStatus = null; render(); }, 3000); }
+    else if (msg.error) { topicStatus = msg.error; setTimeout(() => { topicStatus = null; render(); }, 3000); }
+    render(); return;
   }
   if (msg.type !== "line") return;
 
@@ -316,13 +331,6 @@ function handleMessage(data) {
     if (cat === "Stop") {
       statusLine.sessionState = "done"; statusLine.waitingTool = null;
       phase = "idle"; currentTool = null; thinkingActive = false;
-      // Mark any still-running agents as done (SubagentStop may never arrive)
-      for (const agent of agentTree) {
-        if (agent.status === "running") { agent.status = "done"; agent.endTs = Date.now(); statusLine.agentsRunning = Math.max(0, statusLine.agentsRunning - 1); }
-      }
-      if (agentTree.length > 0 && agentTree.every(a => a.status === "done")) {
-        setTimeout(() => { if (agentTree.every(a => a.status === "done")) { agentTreeVisible = false; agentTree.length = 0; render(); } }, 5000);
-      }
       setTimeout(() => { if (statusLine.sessionState === "done") { statusLine.sessionState = "idle"; render(); } }, 10000);
     }
     if (cat === "Notification") { phase = "idle"; currentTool = null; thinkingActive = false; }
@@ -340,7 +348,7 @@ function handleMessage(data) {
       const agent = (id && agentTree.find(a => a.id === id && a.status === "running")) || agentTree.find(a => a.status === "running");
       if (agent) { agent.status = "done"; agent.endTs = Date.now(); }
       if (agentTree.length > 0 && agentTree.every(a => a.status === "done")) {
-        setTimeout(() => { if (agentTree.every(a => a.status === "done")) { agentTreeVisible = false; agentTree.length = 0; render(); } }, 5000);
+        setTimeout(() => { if (agentTree.every(a => a.status === "done")) { agentTreeVisible = false; agentTree.length = 0; agentFocus = false; agentFocusIdx = -1; render(); } }, 5000);
       }
     }
   }
@@ -428,6 +436,7 @@ function handleMessage(data) {
 
   // Session tracking
   const sessionId = extractSessionId(json);
+  if (sessionId && deletedSessionIds.has(sessionId)) { render(); return; }
   if (sessionId && !sessions.has(sessionId)) {
     sessions.set(sessionId, { id: sessionId, label: json?.data?.cwd?.split("/").pop() || sessionId.slice(0, 8), eventCount: 0, active: true });
   }
@@ -440,6 +449,37 @@ function handleMessage(data) {
 
   // Status-only events — don't add to query groups
   if (cat === "Stop" || cat === "Notification") { render(); return; }
+
+  // Session start/end — render as separator between queries, not inside them
+  if (cat === "session_start" || cat === "session_end") {
+    const sq2 = getSessionQueries(sessionId);
+    if (sq2.length > 0) sq2[sq2.length - 1].collapsed = true;
+    const label = cat === "session_start" ? `Session ${json?.data?.source || "started"}` : "Session ended";
+    sq2.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _separator: true, _separatorLabel: label, _separatorCat: cat });
+    render(); return;
+  }
+
+  // Topic shift — render as separator
+  if (cat === "topic_clear") {
+    // Remove all topic separators from this session
+    const sq2 = getSessionQueries(sessionId);
+    for (let i = sq2.length - 1; i >= 0; i--) {
+      if (sq2[i]._separator && sq2[i]._separatorCat === "topic_shift") sq2.splice(i, 1);
+    }
+    render(); return;
+  }
+  if (cat === "topic_shift") {
+    const sq2 = getSessionQueries(sessionId);
+    const title = json?.data?.title || "New topic";
+    const sep = { id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _separator: true, _separatorLabel: title, _separatorCat: "topic_shift" };
+    // Insert at correct position based on timestamp
+    let insertIdx = sq2.length;
+    for (let i = 0; i < sq2.length; i++) {
+      if (sq2[i].startTs >= msg.ts) { insertIdx = i; break; }
+    }
+    sq2.splice(insertIdx, 0, sep);
+    render(); return;
+  }
 
   // Per-session query grouping (same architecture as window mode)
   const userQuery = extractUserQuery(json);
@@ -526,6 +566,11 @@ function renderStatusLine(cols) {
   const beforeBtn = parts.join(sep);
   const visLen = beforeBtn.replace(/\x1b\[[0-9;]*m/g, "").length;
   windowBtnCol = visLen + 5 + 1; // +5 for " │ " separator, +1 for 1-based
+  if (agentTreeVisible && agentTree.length > 0) {
+    parts.push(`${FG.gray}tab${RESET}${DIM}:${RESET}${FG.cyan}Agents${RESET}`);
+  }
+  const topicLabel = topicStatus ? `${FG.yellow}${topicStatus}${RESET}` : `${FG.cyan}Topics${RESET}`;
+  parts.push(`${FG.gray}t${RESET}${DIM}:${RESET}${topicLabel}`);
   parts.push(`${FG.gray}i${RESET}${DIM}:${RESET}${FG.cyan}Island${RESET}`);
   parts.push(`${FG.gray}w${RESET}${DIM}:${RESET}${FG.cyan}Window${RESET}`);
   parts.push(stopPending ? `${FG.red}S${RESET}${DIM}:${RESET}${FG.red}Press S again to stop${RESET}` : `${FG.gray}S${RESET}${DIM}:${RESET}${FG.cyan}Stop${RESET}`);
@@ -534,16 +579,22 @@ function renderStatusLine(cols) {
 
 function renderAgentTree(rows) {
   const lines = [];
-  lines.push(`${BOLD}${FG.cyan} AGENTS${RESET}`);
+  const hint = agentDeletePending ? ` ${FG.red}d again${RESET}` : (agentFocus ? ` ${DIM}d:dismiss${RESET}` : "");
+  lines.push(`${BOLD}${FG.cyan} AGENTS${RESET}${hint}`);
   lines.push(`${DIM}${"─".repeat(TREE_WIDTH - 1)}${RESET}`);
   const running = agentTree.filter(a => a.status === "running").length;
   lines.push(` ${FG.cyan}${agentTree.length - running}/${agentTree.length} done${RESET}`);
   lines.push("");
-  for (const agent of agentTree) {
+  for (let ai = 0; ai < agentTree.length; ai++) {
+    const agent = agentTree[ai];
+    const isFocused = agentFocus && ai === agentFocusIdx;
     const icon = agent.status === "done" ? `${FG.green}✓${RESET}` : `${FG.yellow}●${RESET}`;
     const secs = Math.floor(((agent.endTs || Date.now()) - agent.startTs) / 1000);
     const elapsed = secs >= 60 ? `${Math.floor(secs / 60)}m${secs % 60}s` : `${secs}s`;
-    lines.push(` ${icon} ${agent.type}`);
+    const cursor = isFocused ? `${FG.cyan}▸${RESET}` : " ";
+    const fc = isFocused ? `${BOLD}${FG.white}` : "";
+    const fcEnd = isFocused ? RESET : "";
+    lines.push(`${cursor}${icon} ${fc}${agent.type}${fcEnd}`);
     lines.push(`   ${DIM}${elapsed}${RESET}`);
   }
   while (lines.length < rows) lines.push("");
@@ -734,33 +785,89 @@ function render() {
 
   navOrder = []; // rebuild navigation order
 
-  function addQueryRows(q) {
-    if (q._preamble) return; // skip preamble queries
+  function addQueryRow(q, indent) {
+    const pfx = indent ? "  " : "";
     const realIdx = queries.indexOf(q);
     navOrder.push(realIdx);
     const isFocused = realIdx === focusIdx;
     const chevron = q.collapsed ? "▶" : "▼";
     const fc = isFocused && navLevel === "query" ? `${BOLD}${FG.cyan}` : (isFocused ? `${BOLD}${FG.white}` : DIM);
-    const queryText = q.userQuery ? q.userQuery.slice(0, 40) : "(preamble)";
+    const queryText = q.userQuery ? q.userQuery.replace(/\n/g, " ").slice(0, 40 - pfx.length) : "(preamble)";
     const count = q.events.length;
     const time = new Date(q.startTs).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" });
     const cursor = isFocused && navLevel === "query" ? `${FG.cyan}▸${RESET}` : " ";
-    const headerLine = `${cursor}${fc}${chevron}${RESET} ${fc}${queryText}${RESET}  ${DIM}${count}${RESET}  ${DIM}${time}${RESET}`;
+    const headerLine = `${pfx}${cursor} ${fc}${chevron}${RESET} ${fc}${queryText}${RESET}  ${DIM}${count}${RESET}  ${DIM}${time}${RESET}`;
     rowData.push({ text: headerLine, isHeader: true, queryIdx: realIdx, eventIdx: -1 });
 
     if (!q.collapsed) {
       let evIdx = 0;
       for (const ev of q.events) {
         const isEventFocused = navLevel === "event" && realIdx === focusIdx && evIdx === eventFocusIdx;
-        const prefix = isEventFocused ? `${FG.cyan}▸${RESET} ` : "  ";
+        const prefix = isEventFocused ? `${pfx}${FG.cyan}▸${RESET} ` : `${pfx}  `;
         rowData.push({ text: `${prefix}${ev.line}`, isHeader: false, queryIdx: realIdx, eventIdx: evIdx });
         evIdx++;
       }
     }
   }
 
+  function addSessionQueries(sqList) {
+    const visible = sqList.filter(q => !q._preamble);
+    // Group queries between topic separators
+    let currentTopic = null;
+    let topicQueries = [];
+
+    function flushTopic() {
+      if (!currentTopic) {
+        // No topic — render queries flat
+        for (const q of topicQueries) addQueryRow(q, false);
+      } else {
+        // Render topic header, then indented queries
+        const realIdx = queries.indexOf(currentTopic);
+        navOrder.push(realIdx);
+        const isFocused = realIdx === focusIdx;
+        const chevron = currentTopic.collapsed ? "▶" : "▼";
+        const qCount = topicQueries.length;
+        const fc = isFocused && navLevel === "query" ? `${BOLD}${FG.cyan}` : (isFocused ? `${BOLD}${FG.magenta}` : "");
+        const fcEnd = fc ? RESET : "";
+        const cursor = isFocused && navLevel === "query" ? `${FG.cyan}▸${RESET}` : " ";
+        const ts = new Date(currentTopic.startTs).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" });
+        const headerLine = `${cursor} ${fc}${chevron} ${FG.magenta}TOP:${RESET} ${fc}${ESC}[4m${currentTopic._separatorLabel}${ESC}[24m${fcEnd}  ${DIM}${qCount} queries  ${ts}${RESET}`;
+        rowData.push({ text: headerLine, isHeader: true, queryIdx: realIdx, eventIdx: -1 });
+
+        if (!currentTopic.collapsed) {
+          for (const q of topicQueries) addQueryRow(q, true);
+        }
+      }
+      topicQueries = [];
+    }
+
+    // Find the timestamp of the last topic separator to know where topics end
+    const lastTopicTs = visible.filter(q => q._separator && q._separatorCat === "topic_shift").reduce((max, q) => Math.max(max, q.startTs), 0);
+
+    for (const q of visible) {
+      if (q._separator && q._separatorCat === "topic_shift") {
+        flushTopic();
+        currentTopic = q;
+      } else if (q._separator) {
+        // Session separators rendered inline
+        flushTopic();
+        currentTopic = null;
+        const color = q._separatorCat === "session_start" ? FG.green : FG.gray;
+        const ts = new Date(q.startTs).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" });
+        rowData.push({ text: `  ${color}${BOLD}SESSION${RESET} ${color}${q._separatorLabel}${RESET}  ${DIM}${ts}${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1 });
+      } else if (currentTopic && q.startTs > lastTopicTs) {
+        // Query arrived after all topics — render flat, not inside last topic
+        flushTopic();
+        currentTopic = null;
+        addQueryRow(q, false);
+      } else {
+        topicQueries.push(q);
+      }
+    }
+    flushTopic();
+  }
+
   if (sessionFilter === "all" && sessions.size > 0) {
-    // Iterate per-session query lists directly (no filtering needed)
     const sessionIds = [...sessions.keys()];
     for (let si = 0; si < sessionIds.length; si++) {
       const sid = sessionIds[si];
@@ -774,15 +881,12 @@ function render() {
       const sNum = si + 2;
       rowData.push({ text: `${sNum}:${sLabel}`, meta: `${sCount} events`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
 
-      for (const q of visible) addQueryRows(q);
+      addSessionQueries(sq);
     }
   } else if (sessionFilter !== "all") {
-    // Single session filter
-    const sq = sessionQueries.get(sessionFilter) || [];
-    for (const q of sq) { if (!q._preamble) addQueryRows(q); }
+    addSessionQueries(sessionQueries.get(sessionFilter) || []);
   } else {
-    // No sessions yet — show all queries
-    for (const q of queries) { if (!q._preamble) addQueryRows(q); }
+    addSessionQueries(queries);
   }
 
   // Empty state
@@ -900,6 +1004,17 @@ function handleInput(buf) {
   }
   if (s === "w") { openWindow(); render(); return; }
   if (s === "i") { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "toggle_island" })); return; }
+  if (s === "t") {
+    // Collect user queries from current session and send for classification
+    const targetFilter = sessionFilter !== "all" ? sessionFilter : [...sessions.keys()][0];
+    if (!targetFilter) { render(); return; }
+    const sq = sessionQueries.get(targetFilter) || [];
+    const queryData = sq.filter(q => q.userQuery && !q._preamble && !q._separator).map(q => ({ userQuery: q.userQuery, ts: q.startTs }));
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: "classify_topics", sessionId: targetFilter, queries: queryData }));
+    }
+    return;
+  }
   if (s === "x" && sessionFilter === "all") {
     if (clearPending) {
       // Second press — clear all
@@ -912,7 +1027,7 @@ function handleInput(buf) {
       sessions.clear(); sessionFilter = "all";
       phase = "idle"; currentTool = null; thinkingActive = false;
       Object.assign(statusLine, { sessionState: "idle", waitingTool: null, errors: 0, apiError: null, agentsRunning: 0, agentsTotal: 0, tasksCreated: 0, tasksCompleted: 0, sessionStartTs: null });
-      agentTree.length = 0; agentTreeVisible = false;
+      agentTree.length = 0; agentTreeVisible = false; agentFocus = false; agentFocusIdx = -1;
     } else {
       // First press — arm confirmation
       clearPending = true;
@@ -926,6 +1041,7 @@ function handleInput(buf) {
       deletePending = false;
       if (deleteTimer) { clearTimeout(deleteTimer); deleteTimer = null; }
       const sid = sessionFilter;
+      deletedSessionIds.add(sid);
       sessionQueries.delete(sid);
       sessions.delete(sid);
       sessionFilter = "all";
@@ -944,6 +1060,43 @@ function handleInput(buf) {
     } else {
       stopPending = true;
       stopTimer = setTimeout(() => { stopPending = false; render(); }, 2000);
+    }
+    render(); return;
+  }
+
+  // Tab — toggle focus between query list and agent panel
+  if (s === "\t" && agentTreeVisible && agentTree.length > 0) {
+    agentFocus = !agentFocus;
+    if (agentFocus) { agentFocusIdx = Math.max(0, agentFocusIdx); }
+    else { agentFocusIdx = -1; agentDeletePending = false; }
+    render(); return;
+  }
+  // Esc from agent panel — return to query list
+  if (agentFocus && s === "\x1b" && buf.length === 1) {
+    agentFocus = false; agentFocusIdx = -1; agentDeletePending = false;
+    render(); return;
+  }
+
+  // Agent panel navigation
+  if (agentFocus) {
+    const isAgentDown = s === "j" || s === "\x1b[B";
+    const isAgentUp = s === "k" || s === "\x1b[A";
+    if (isAgentDown) { agentFocusIdx = Math.min(agentTree.length - 1, agentFocusIdx + 1); render(); return; }
+    if (isAgentUp) { agentFocusIdx = Math.max(0, agentFocusIdx - 1); render(); return; }
+    if (s === "d" && agentFocusIdx >= 0 && agentFocusIdx < agentTree.length) {
+      if (agentDeletePending) {
+        agentDeletePending = false;
+        if (agentDeleteTimer) { clearTimeout(agentDeleteTimer); agentDeleteTimer = null; }
+        const removed = agentTree.splice(agentFocusIdx, 1)[0];
+        if (removed.status === "running") statusLine.agentsRunning = Math.max(0, statusLine.agentsRunning - 1);
+        statusLine.agentsTotal = Math.max(0, statusLine.agentsTotal - 1);
+        if (agentTree.length === 0) { agentFocus = false; agentFocusIdx = -1; agentTreeVisible = false; }
+        else { agentFocusIdx = Math.min(agentFocusIdx, agentTree.length - 1); }
+      } else {
+        agentDeletePending = true;
+        agentDeleteTimer = setTimeout(() => { agentDeletePending = false; render(); }, 2000);
+      }
+      render(); return;
     }
     render(); return;
   }
@@ -990,7 +1143,12 @@ function handleInput(buf) {
   // === Query level ===
   // Navigate using visual order (navOrder), not raw query index
   if (isDown) {
-    const curPos = navOrder.indexOf(focusIdx);
+    let curPos = navOrder.indexOf(focusIdx);
+    if (curPos < 0 && navOrder.length > 0) {
+      // focusIdx not in navOrder (e.g., hidden by collapsed topic) — find nearest
+      curPos = navOrder.findIndex(i => i > focusIdx) - 1;
+      if (curPos < 0) curPos = 0;
+    }
     if (curPos < navOrder.length - 1) {
       focusIdx = navOrder[curPos + 1];
       autoFollow = curPos + 1 === navOrder.length - 1;
@@ -1000,7 +1158,11 @@ function handleInput(buf) {
   }
 
   if (isUp) {
-    const curPos = navOrder.indexOf(focusIdx);
+    let curPos = navOrder.indexOf(focusIdx);
+    if (curPos < 0 && navOrder.length > 0) {
+      curPos = navOrder.findIndex(i => i >= focusIdx);
+      if (curPos < 0) curPos = navOrder.length - 1;
+    }
     if (curPos > 0) {
       focusIdx = navOrder[curPos - 1];
       autoFollow = false;

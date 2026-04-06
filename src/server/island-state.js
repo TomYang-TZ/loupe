@@ -236,7 +236,7 @@ function processEvent(json, ts) {
   }
 
   // Fallback idle timer
-  if (cat !== "thinking" && cat !== "Notification" && cat !== "Stop" && cat !== "stop_failure") {
+  if (cat !== "Notification" && cat !== "Stop" && cat !== "stop_failure") {
     s.idleSince = null;
     if (s._idleTimer) clearTimeout(s._idleTimer);
     s._idleTimer = setTimeout(() => {

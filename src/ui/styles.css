@@ -2236,27 +2236,29 @@ body.minimal .minimal-topbar { display: flex; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
-  font-size: 10px;
-  color: rgba(255, 248, 240, 0.4);
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
+  padding: 6px 10px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(180, 140, 255, 0.8);
+  letter-spacing: 0.3px;
   user-select: none;
   cursor: pointer;
   position: sticky;
   top: 0;
   z-index: 2;
   background: var(--bg, #0c0c0e);
+  border-top: 1px solid rgba(180, 140, 255, 0.15);
 }
 .task-header:hover {
-  color: rgba(255, 248, 240, 0.6);
+  color: rgba(180, 140, 255, 1);
 }
 [data-theme="light"] .task-header {
-  color: rgba(0, 0, 0, 0.35);
+  color: rgba(120, 80, 200, 0.7);
   background: var(--bg, #f8f8f8);
+  border-top: 1px solid rgba(120, 80, 200, 0.15);
 }
 [data-theme="light"] .task-header:hover {
-  color: rgba(0, 0, 0, 0.5);
+  color: rgba(120, 80, 200, 1);
 }
 
 .task-chevron {
