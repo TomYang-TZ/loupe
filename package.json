@@ -7,8 +7,7 @@
   "scripts": {
     "start": "bash scripts/loupe.sh start",
     "restart": "bash scripts/loupe.sh restart",
-    "stop": "bash scripts/loupe.sh stop",
-    "install-hooks": "bash scripts/install.sh"
+    "stop": "bash scripts/loupe.sh stop"
   },
   "dependencies": {
     "ws": "^8.18.0"
