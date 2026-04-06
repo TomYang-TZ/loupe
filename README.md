@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/logo.png" alt="Loupe" width="128">
+  <img src="docs/images/social-preview.png" alt="Loupe banner" width="100%">
 </p>
 
 # Loupe_
