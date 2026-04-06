@@ -403,7 +403,22 @@ const LoupeReplay = (() => {
   };
 
   window.openInsightsInBrowser = function() {
-    window.open("/api/insights/report", "_blank");
+    // Fetch the report and open it as a data URL in a new window,
+    // or fall back to copying the URL
+    const url = window.location.origin + "/api/insights/report";
+    // Try window.open first (works in regular browser, may fail in WKWebView)
+    const w = window.open(url, "_blank");
+    if (!w) {
+      // WKWebView blocks window.open — copy URL to clipboard instead
+      navigator.clipboard.writeText(url).then(() => {
+        const status = document.getElementById("insights-status");
+        status.textContent = "URL copied — paste in browser";
+        setTimeout(() => { status.textContent = ""; }, 3000);
+      }).catch(() => {
+        // Last resort: prompt
+        prompt("Open this URL in your browser:", url);
+      });
+    }
   };
 
   function init({ sessions, getActiveSession }) {
