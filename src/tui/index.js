@@ -316,6 +316,13 @@ function handleMessage(data) {
     if (cat === "Stop") {
       statusLine.sessionState = "done"; statusLine.waitingTool = null;
       phase = "idle"; currentTool = null; thinkingActive = false;
+      // Mark any still-running agents as done (SubagentStop may never arrive)
+      for (const agent of agentTree) {
+        if (agent.status === "running") { agent.status = "done"; agent.endTs = Date.now(); statusLine.agentsRunning = Math.max(0, statusLine.agentsRunning - 1); }
+      }
+      if (agentTree.length > 0 && agentTree.every(a => a.status === "done")) {
+        setTimeout(() => { if (agentTree.every(a => a.status === "done")) { agentTreeVisible = false; agentTree.length = 0; render(); } }, 5000);
+      }
       setTimeout(() => { if (statusLine.sessionState === "done") { statusLine.sessionState = "idle"; render(); } }, 10000);
     }
     if (cat === "Notification") { phase = "idle"; currentTool = null; thinkingActive = false; }

@@ -225,6 +225,9 @@ function processEvent(json, ts) {
   // Stop — done
   if (cat === "Stop" && !(s._stopFailureTs && (Date.now() - s._stopFailureTs < 500))) {
     s.phase = "done"; s.thinking = false; s.tool = null; s.toolDetail = null;
+    // Clean up any orphaned running agents
+    if (s.agentsRunning > 0) { s.agentsRunning = 0; s.toolDetail = null; }
+    if (s._agentClearTimer) { clearTimeout(s._agentClearTimer); s._agentClearTimer = null; }
     s.pulsing = true;
     if (s._pulseTimer) clearTimeout(s._pulseTimer);
     s._pulseTimer = setTimeout(() => { s.pulsing = false; emit(); }, 5000);

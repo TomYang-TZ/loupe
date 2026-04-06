@@ -280,6 +280,9 @@ const LoupeIsland = (() => {
       s.thinking = false;
       s.tool = null;
       s.toolDetail = null;
+      // Clean up any orphaned running agents
+      if (s.agentsRunning > 0) { s.agentsRunning = 0; s.toolDetail = null; }
+      if (s._agentClearTimer) { clearTimeout(s._agentClearTimer); s._agentClearTimer = null; }
       // Pulse for done
       s.pulsing = true;
       if (s._pulseTimer) clearTimeout(s._pulseTimer);

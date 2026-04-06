@@ -112,27 +112,12 @@ const LoupeGrouping = (() => {
       gs.currentTask.queries.push(gs.currentQuery);
     }
 
-    // Sub-agent spawn: push onto stack
-    // Bug B fix: parallel agents should be siblings, not nested
+    // Sub-agent spawn: always add as top-level sibling under the query.
+    // Subagents cannot spawn subagents, so nesting is never correct.
     if (entry.category === "sub_agent") {
       const ag = { agentEntry: entry, children: [], resultEntry: null, el: null, childrenEl: null };
-      // If top-of-stack agent has no tool-use children (only other agents or empty),
-      // pop it so parallel agents become siblings instead of nesting
-      while (gs.agentStack.length > 0) {
-        const top = gs.agentStack[gs.agentStack.length - 1];
-        const hasToolChildren = top.children.some(c => !c.agentEntry);
-        if (!hasToolChildren) {
-          gs.agentStack.pop();
-        } else {
-          break;
-        }
-      }
-      if (gs.agentStack.length > 0) {
-        gs.agentStack[gs.agentStack.length - 1].children.push(ag);
-      } else {
-        gs.currentQuery.items.push(ag);
-      }
-      gs.agentStack.push(ag);
+      gs.agentStack = [ag]; // replace stack — only one active agent at a time
+      gs.currentQuery.items.push(ag);
       gs.currentQuery.endTs = entry.ts;
       gs.currentTask.endTs = entry.ts;
       return;
