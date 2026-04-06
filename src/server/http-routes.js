@@ -214,7 +214,7 @@ function createRouter(filePath, uiDir, wss, opts) {
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
         try {
-          const { sessionId } = JSON.parse(body);
+          const { sessionId, behavioral } = JSON.parse(body);
           if (!sessionId) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "sessionId required" }));
@@ -270,7 +270,48 @@ function createRouter(filePath, uiDir, wss, opts) {
             condensedLog = condensed.join("\n");
           }
 
+          // Build context from behavioral signatures + /insights facets
+          let contextBlock = "";
+
+          // Behavioral context from momentum.js (sent by browser)
+          if (behavioral) {
+            const b = behavioral;
+            const phases = b.phaseDist || {};
+            const phaseStr = Object.entries(phases).filter(([,v]) => v > 0).map(([k,v]) => `${k} ${Math.round(v * 100)}%`).join(", ");
+            const peaks = b.patternPeaks || {};
+            const peakStr = Object.entries(peaks).filter(([,v]) => v > 0.1).map(([k,v]) => `${k} ${v.toFixed(2)}`).join(", ");
+            const risk = b.riskHistory || [];
+            const riskStr = risk.length > 0 ? risk.slice(-5).map(r => r.toFixed(2)).join(" → ") : "n/a";
+            contextBlock += `\n## Pre-computed Behavioral Analysis (from real-time tool-action pattern tracking)
+- Archetype: ${b.archetype || "unknown"} (confidence: ${(b.archetypeConfidence || 0).toFixed(2)})
+- Risk trajectory: ${riskStr} (trend: ${b.riskTrend || "neutral"})
+- Phase distribution: ${phaseStr || "n/a"}
+- Pattern peaks: ${peakStr || "none significant"}
+- Unique files: ${b.fileDiversity || 0}, Error count: ${Math.round((b.errorRate || 0) * (b.totalSpans || 0))}, Action entropy: ${(b.actionEntropy || 0).toFixed(2)}
+- Total spans: ${b.totalSpans || 0}, Duration: ${Math.round((b.totalDuration || 0) / 1000)}s\n`;
+          }
+
+          // /insights facets (cached on disk)
+          const facetPath = path.join(process.env.HOME, ".claude", "usage-data", "facets", `${sessionId}.json`);
+          try {
+            if (fs.existsSync(facetPath)) {
+              const facet = JSON.parse(fs.readFileSync(facetPath, "utf-8"));
+              const frictions = facet.friction_counts || {};
+              const frictionStr = Object.entries(frictions).filter(([,v]) => v > 0).map(([k,v]) => `${k.replace(/_/g, " ")} (${v})`).join(", ");
+              contextBlock += `\n## Insights Facets (from Claude Code /insights — AI-extracted session summary)
+- Goal: "${facet.underlying_goal || "unknown"}"
+- Outcome: ${facet.outcome || "unknown"}
+- Session type: ${facet.session_type || "unknown"}
+- Helpfulness: ${facet.claude_helpfulness || "unknown"}
+- Friction: ${frictionStr || "none"}
+- Summary: ${facet.brief_summary || "n/a"}\n`;
+            }
+          } catch {}
+
+          const contextInstructions = contextBlock ? `\nIMPORTANT: Use the pre-computed data above to ground your analysis. Cite the archetype, risk trajectory, and pattern peaks in your Session Profile and Anomalies sections. If /insights facets are provided, compare your findings against the stated goal and outcome.\n` : "";
+
           const prompt = `You are analyzing a Claude Code agent session transcript. Produce a structured analysis in the EXACT format below. Be specific — cite tool names, file names, and entry numbers. Be concise but insightful.
+${contextBlock}${contextInstructions}
 
 ## Session Profile
 - **Task**: [1-sentence: what was the agent trying to do?]
@@ -348,6 +389,43 @@ ${condensedLog}`;
         } catch (err) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // --- Claude Insights integration ---
+
+    // Serve the pre-generated /insights HTML report
+    if (url === "/api/insights/report") {
+      const reportPath = path.join(process.env.HOME, ".claude", "usage-data", "report.html");
+      if (fs.existsSync(reportPath)) {
+        const content = fs.readFileSync(reportPath);
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(content);
+      } else {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "No insights report found. Run /insights in Claude Code first." }));
+      }
+      return;
+    }
+
+    // Run `claude /insights` to generate/refresh the report
+    if (url === "/api/insights/run" && req.method === "POST") {
+      res.writeHead(200, { "Content-Type": "application/json", "Transfer-Encoding": "chunked" });
+      res.write(JSON.stringify({ status: "running" }) + "\n");
+
+      const child = execFile("claude", ["-p", "/insights"], {
+        timeout: 300000, // 5 min timeout — insights can be slow
+        encoding: "utf-8",
+        maxBuffer: 5 * 1024 * 1024,
+      }, (err, stdout, stderr) => {
+        if (err) {
+          res.end(JSON.stringify({ status: "error", error: stderr ? stderr.slice(0, 500) : err.message }));
+        } else {
+          const reportPath = path.join(process.env.HOME, ".claude", "usage-data", "report.html");
+          const exists = fs.existsSync(reportPath);
+          res.end(JSON.stringify({ status: "done", reportExists: exists }));
         }
       });
       return;

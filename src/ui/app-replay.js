@@ -45,10 +45,24 @@ const LoupeReplay = (() => {
     const scroll = document.getElementById("replay-analysis-scroll");
     scroll.innerHTML = '<div class="replay-loading">Analyzing session...</div>';
 
+    // Gather behavioral signature from Momentum (if available)
+    const behavioral = (typeof Momentum !== "undefined" && Momentum.getSessionVector)
+      ? Momentum.getSessionVector(sid)
+      : null;
+    // Also include risk history from signature
+    if (behavioral) {
+      const sig = Momentum.getSignature ? Momentum.getSignature(sid) : null;
+      if (sig) {
+        behavioral.riskHistory = sig.riskHistory || [];
+        behavioral.riskTrend = sig.riskTrend || "neutral";
+        behavioral.fileDiversity = sig.uniqueFiles ? sig.uniqueFiles.size : 0;
+      }
+    }
+
     const data = await fetch("/api/replay-analysis", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: sid }),
+      body: JSON.stringify({ sessionId: sid, behavioral }),
       signal: replayAbort.signal,
     }).then(r => r.json()).catch(err => {
       if (err.name === "AbortError") return { cancelled: true };
@@ -281,6 +295,63 @@ const LoupeReplay = (() => {
     html = html.replace(/\n(\d+)\. /g, "<br>$1. ");
     return html;
   }
+
+  // --- Claude Insights launcher ---
+
+  let insightsRunning = false;
+
+  window.openInsightsPopover = function() {
+    const overlay = document.getElementById("insights-popover-overlay");
+    const iframe = document.getElementById("insights-iframe");
+    const status = document.getElementById("insights-status");
+    overlay.style.display = "";
+    status.textContent = "Loading report...";
+    // Try to load existing report
+    iframe.src = "/api/insights/report";
+    iframe.onload = () => { status.textContent = ""; };
+    iframe.onerror = () => { status.textContent = "No report found — click Refresh"; };
+    // Also handle 404 inside iframe
+    fetch("/api/insights/report", { method: "HEAD" }).then(r => {
+      if (!r.ok) status.textContent = "No report yet — click Refresh to generate";
+    }).catch(() => {});
+  };
+
+  window.closeInsightsPopover = function() {
+    document.getElementById("insights-popover-overlay").style.display = "none";
+  };
+
+  window.runInsights = async function() {
+    if (insightsRunning) return;
+    insightsRunning = true;
+    const status = document.getElementById("insights-status");
+    const btn = document.getElementById("insights-refresh-btn");
+    btn.textContent = "Running...";
+    btn.disabled = true;
+    status.textContent = "Generating insights (this may take a few minutes)...";
+
+    try {
+      const resp = await fetch("/api/insights/run", { method: "POST" });
+      const text = await resp.text();
+      // Response is chunked — parse the last JSON line
+      const lines = text.trim().split("\n");
+      const result = JSON.parse(lines[lines.length - 1]);
+      if (result.status === "done" && result.reportExists) {
+        status.textContent = "Report ready";
+        document.getElementById("insights-iframe").src = "/api/insights/report?" + Date.now();
+      } else {
+        status.textContent = result.error || "Failed to generate report";
+      }
+    } catch (err) {
+      status.textContent = "Error: " + err.message;
+    }
+    insightsRunning = false;
+    btn.textContent = "Refresh";
+    btn.disabled = false;
+  };
+
+  window.openInsightsInBrowser = function() {
+    window.open("/api/insights/report", "_blank");
+  };
 
   function init({ sessions, getActiveSession }) {
     _sessions = sessions;

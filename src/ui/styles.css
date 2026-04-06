@@ -2775,6 +2775,11 @@ body.minimal .minimal-topbar { display: flex; }
   overflow: hidden;
 }
 
+/* Insights popover */
+.insights-popover { max-width: 90vw; width: 900px; }
+.insights-body { flex: 1; overflow: hidden; padding: 8px; }
+.insights-status { font-size: 11px; color: var(--text-muted); margin-left: 8px; }
+
 /* Timeline panel (left) */
 .replay-timeline-panel {
   width: 240px;
