@@ -18,7 +18,8 @@ fi
 
 if [ -n "$INPUT" ]; then
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
-    echo "{\"_logstream_type\":\"$EVENT_TYPE\",\"_ts\":\"$TIMESTAMP\",\"data\":$INPUT}" >> "$LOG_FILE"
+    # Collapse literal newlines to spaces — JSONL requires one JSON object per line
+    printf '%s\n' "{\"_logstream_type\":\"$EVENT_TYPE\",\"_ts\":\"$TIMESTAMP\",\"data\":$(printf '%s' "$INPUT" | tr '\n' ' ')}" >> "$LOG_FILE"
 fi
 
 exit 0

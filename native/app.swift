@@ -133,7 +133,7 @@ class IslandView: NSView {
     private var pillTargetWidth: CGFloat = 160
     private var pillCurrentWidth: CGFloat = 160
     let expandedWidth: CGFloat = 380
-    let expandedHeight: CGFloat = 220
+    let expandedHeight: CGFloat = 250
 
     // Colors
     static let phaseColors: [String: NSColor] = [
@@ -152,6 +152,42 @@ class IslandView: NSView {
         "drifting":     NSColor(red: 234/255, green: 179/255, blue: 8/255, alpha: 1),
         "stuck":        NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1),
         "breakthrough": NSColor(red: 59/255, green: 130/255, blue: 246/255, alpha: 1),
+    ]
+
+    // ASCII art glyphs: 2 rows per letter using half-block characters (▀▄█)
+    static let asciiGlyphs: [Character: [String]] = [
+        "A": ["▄▀▄", "█▀█"],
+        "B": ["██▀", "██▄"],
+        "D": ["█▀▄", "█▄▀"],
+        "E": ["██▀", "█▄▄"],
+        "G": ["█▀▀", "█▄█"],
+        "H": ["█▄█", "█ █"],
+        "I": ["█", "█"],
+        "K": ["█▄▀", "█▀▄"],
+        "L": ["█  ", "█▄▄"],
+        "M": ["█▄▄█", "█  █"],
+        "N": ["█▄ █", "█ ▀█"],
+        "O": ["▄▀▄", "▀▄▀"],
+        "P": ["█▀▄", "█▀ "],
+        "R": ["█▀▄", "█ ▀"],
+        "S": ["▄▀▀", "▄▄▀"],
+        "T": ["▀█▀", " ▀ "],
+        "U": ["█ █", "▀▄▀"],
+        "W": ["█ █ █", "▀▄█▄▀"],
+        "X": ["▀▄▀", "▄▀▄"],
+    ]
+
+    static let phaseDisplayNames: [String: String] = [
+        "idle": "IDLE",
+        "exploring": "EXPLORING",
+        "implementing": "IMPLEMENT",
+        "debugging": "DEBUGGING",
+        "testing": "TESTING",
+        "planning": "PLANNING",
+        "thinking": "THINKING",
+        "done": "DONE",
+        "starting": "STARTING",
+        "waiting for input": "WAITING",
     ]
 
     init(geo: NotchGeometry) {
@@ -431,6 +467,21 @@ class IslandView: NSView {
         return IslandView.phaseColors[currentPhase] ?? IslandView.phaseColors["idle"]!
     }
 
+    private func asciiArtForPhase() -> [String] {
+        let phase = thinkingActive ? "thinking" : currentPhase
+        let word = IslandView.phaseDisplayNames[phase] ?? phase.uppercased()
+        var row0 = ""
+        var row1 = ""
+        for (i, ch) in word.enumerated() {
+            if i > 0 { row0 += " "; row1 += " " }
+            if let glyph = IslandView.asciiGlyphs[ch] {
+                row0 += glyph[0]
+                row1 += glyph[1]
+            }
+        }
+        return [row0, row1]
+    }
+
     private let waitingColor = NSColor(red: 251/255, green: 191/255, blue: 36/255, alpha: 1)  // amber
 
     static let dotStatusColors: [String: NSColor] = [
@@ -570,16 +621,21 @@ class IslandView: NSView {
         let pad: CGFloat = 20
         var y = rect.maxY - 28
 
-        // --- Header row: phase + elapsed time ---
-        let phaseLabel = thinkingActive ? "thinking" : currentPhase
-        let headerAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .semibold),
-            .foregroundColor: phaseColor().withAlphaComponent(Double(alpha))
-        ]
-        NSAttributedString(string: phaseLabel, attributes: headerAttrs)
-            .draw(at: NSPoint(x: rect.minX + pad, y: y))
+        // --- ASCII art phase + elapsed time ---
+        let artLines = asciiArtForPhase()
+        let artFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .medium)
+        let artColor = phaseColor().withAlphaComponent(Double(alpha))
+        let artLineH: CGFloat = 9
+        for (i, line) in artLines.enumerated() {
+            let artAttrs: [NSAttributedString.Key: Any] = [
+                .font: artFont,
+                .foregroundColor: artColor
+            ]
+            NSAttributedString(string: line, attributes: artAttrs)
+                .draw(at: NSPoint(x: rect.minX + pad, y: y - CGFloat(i) * artLineH))
+        }
 
-        // Elapsed time (right-aligned)
+        // Elapsed time (right-aligned, top row)
         if elapsedSeconds > 0 {
             let mins = elapsedSeconds / 60
             let secs = elapsedSeconds % 60
@@ -592,19 +648,19 @@ class IslandView: NSView {
             ts.draw(at: NSPoint(x: rect.maxX - pad - ts.size().width, y: y + 2))
         }
 
-        // Signal badge (if stuck/drifting)
+        // Signal badge (after art top row)
         if let signal = progressSignal {
             let sigColor = IslandView.signalColors[signal] ?? textColor
             let sigAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .bold),
+                .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .bold),
                 .foregroundColor: sigColor.withAlphaComponent(Double(alpha))
             ]
-            let sigStr = NSAttributedString(string: " · \(signal.uppercased())", attributes: sigAttrs)
-            let phaseStr = NSAttributedString(string: phaseLabel, attributes: headerAttrs)
-            sigStr.draw(at: NSPoint(x: rect.minX + pad + phaseStr.size().width, y: y + 1))
+            let topLineWidth = NSAttributedString(string: artLines[0], attributes: [.font: artFont]).size().width
+            NSAttributedString(string: " · \(signal.uppercased())", attributes: sigAttrs)
+                .draw(at: NSPoint(x: rect.minX + pad + topLineWidth + 4, y: y))
         }
 
-        y -= 22
+        y -= (artLineH * CGFloat(artLines.count) + 10)
 
         // --- Waiting banner ---
         if waitingForConfirmation {
@@ -695,7 +751,7 @@ class IslandView: NSView {
             .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular),
             .foregroundColor: NSColor(white: 0.25, alpha: Double(alpha))
         ]
-        NSAttributedString(string: "⌘⇧I toggle  ·  ⌘⇧L window", attributes: hintAttrs)
+        NSAttributedString(string: "i:toggle  ·  w:window", attributes: hintAttrs)
             .draw(at: NSPoint(x: rect.minX + pad, y: hintY))
     }
 
@@ -894,7 +950,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
     func applicationDidFinishLaunching(_ notification: Notification) {
         port = ProcessInfo.processInfo.environment["LOUPE_PORT"] ?? "8390"
 
-        // Global hotkeys
+        // Global hotkeys (requires Accessibility permissions — best-effort)
         NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.modifierFlags.contains([.command, .shift]) else { return }
             if event.keyCode == 37 { self?.toggleWindow() }       // Cmd+Shift+L
@@ -1202,10 +1258,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
                 if case .string(let text) = message,
                    let data = text.data(using: .utf8),
                    let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let type = json["type"] as? String, type == "island_state",
-                   let stateData = json["data"] as? [String: Any] {
+                   let type = json["type"] as? String {
                     DispatchQueue.main.async {
-                        self.applyIslandState(stateData)
+                        if type == "island_state", let stateData = json["data"] as? [String: Any] {
+                            self.applyIslandState(stateData)
+                        } else if type == "toggle_island" {
+                            self.toggleIsland()
+                        } else if type == "toggle_window" || type == "show_window" {
+                            self.toggleWindow()
+                        }
                     }
                 }
                 self.receiveIslandMessage()

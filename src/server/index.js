@@ -199,10 +199,10 @@ wss.on("connection", (ws) => {
   ws.on("message", (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      if (msg.type === "show_window") {
+      if (msg.type === "show_window" || msg.type === "toggle_island" || msg.type === "toggle_window") {
         for (const client of wss.clients) {
           if (client !== ws && client.readyState === 1) {
-            client.send(JSON.stringify({ type: "show_window" }));
+            client.send(JSON.stringify({ type: msg.type }));
           }
         }
       }

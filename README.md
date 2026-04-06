@@ -4,7 +4,7 @@
 
 <h1 align="center">Loupe_</h1>
 
-Real-time observer for Claude Code sessions. Streams tool calls, thinking blocks, approvals, errors, and agent activity into three display modes. TUI is the default view; press `w` for window mode.
+Real-time observer for Claude Code sessions. Streams tool calls, thinking blocks, approvals, errors, and agent activity into three display modes.
 
 ## Install
 
@@ -22,27 +22,22 @@ npm stop             # stop everything
 
 ## Display Modes
 
-### Window (default)
+### TUI (default)
 
-Native macOS app. Live event stream grouped by query, status bar (session state, errors, agents, tasks), multi-session vertical stacking with draggable panes.
-
-### Dynamic Island
-
-Notch-anchored pill. Adapts width to content. Pulses on approval/done, shows agent count, strikethrough on approve, red flash on reject.
-
-Toggle: `Cmd+Shift+I`
-
-### TUI
-
-Interactive terminal dashboard. Auto-opens in Ghostty splits alongside the window.
+Interactive terminal dashboard. Runs in the foreground on `npm start`.
 
 - Queries grouped by session, collapsible
 - `↑`/`↓` navigate, `→` drill in, `←` back out, `Enter` expand/collapse
 - Detail view for full thinking text, prompts, tool I/O
 - Agent tree pane, status line, session tabs (`1`-`9`)
-```bash
-LOUPE_PORT=8390 node src/tui/index.js
-```
+
+### Dynamic Island
+
+Notch-anchored pill with ASCII art phase display. Adapts width to content. Pulses on approval/done. Auto-opens alongside TUI.
+
+### Window
+
+Native macOS app. Press `w` in TUI or `Cmd+Shift+L`. Live event stream grouped by query, multi-session stacking.
 
 ## Keyboard Shortcuts
 

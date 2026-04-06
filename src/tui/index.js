@@ -422,9 +422,14 @@ function handleMessage(data) {
   // Session tracking
   const sessionId = extractSessionId(json);
   if (sessionId && !sessions.has(sessionId)) {
-    sessions.set(sessionId, { id: sessionId, label: json?.data?.cwd?.split("/").pop() || sessionId.slice(0, 8), eventCount: 0 });
+    sessions.set(sessionId, { id: sessionId, label: json?.data?.cwd?.split("/").pop() || sessionId.slice(0, 8), eventCount: 0, active: true });
   }
-  if (sessionId && sessions.has(sessionId)) sessions.get(sessionId).eventCount++;
+  if (sessionId && sessions.has(sessionId)) {
+    const sInfo = sessions.get(sessionId);
+    sInfo.eventCount++;
+    if (cat === "session_end") sInfo.active = false;
+    else if (cat !== "sub_agent_result") sInfo.active = true;
+  }
 
   // Status-only events — don't add to query groups
   if (cat === "Stop" || cat === "Notification") { render(); return; }
@@ -514,7 +519,8 @@ function renderStatusLine(cols) {
   const beforeBtn = parts.join(sep);
   const visLen = beforeBtn.replace(/\x1b\[[0-9;]*m/g, "").length;
   windowBtnCol = visLen + 5 + 1; // +5 for " │ " separator, +1 for 1-based
-  parts.push(`${FG.gray}w${RESET}${DIM}:${RESET}${FG.cyan}⧉ Window${RESET}`);
+  parts.push(`${FG.gray}i${RESET}${DIM}:${RESET}${FG.cyan}Island${RESET}`);
+  parts.push(`${FG.gray}w${RESET}${DIM}:${RESET}${FG.cyan}Window${RESET}`);
   parts.push(stopPending ? `${FG.red}S${RESET}${DIM}:${RESET}${FG.red}Press S again to stop${RESET}` : `${FG.gray}S${RESET}${DIM}:${RESET}${FG.cyan}Stop${RESET}`);
   return padLine(parts.join(sep), cols);
 }
@@ -683,9 +689,10 @@ function render() {
     tabLine += sessionFilter === "all" ? `${BOLD}${FG.cyan}[1:All]${RESET}` : `${DIM}[1:All]${RESET}`;
     let idx = 2;
     for (const [sid, sInfo] of sessions) {
-      const active = sessionFilter === sid;
+      const selected = sessionFilter === sid;
+      const dot = sInfo.active ? `${FG.green}●${RESET} ` : "";
       const label = `${idx}:${sInfo.label}`;
-      tabLine += active ? ` ${BOLD}${FG.cyan}[${label}]${RESET}` : ` ${DIM}[${label}]${RESET}`;
+      tabLine += selected ? ` ${BOLD}${FG.cyan}[${dot}${label}]${RESET}` : ` ${DIM}[${dot}${label}]${RESET}`;
       idx++;
       if (idx > 9) break;
     }
@@ -758,7 +765,7 @@ function render() {
       const sLabel = sInfo.label || sid.slice(0, 8);
       const sCount = sInfo.eventCount || 0;
       const sNum = si + 2;
-      rowData.push({ text: `${BOLD}${FG.cyan}── ${sNum}:${sLabel}${RESET} ${DIM}(${sCount} events)${RESET}`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
+      rowData.push({ text: `${sNum}:${sLabel}`, meta: `${sCount} events`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
 
       for (const q of visible) addQueryRows(q);
     }
@@ -809,7 +816,19 @@ function render() {
   for (let i = 0; i < logRows; i++) {
     const row = visibleRows[i];
     const rowText = row ? row.text : "";
-    const truncated = padLine(rowText, logWidth);
+    let truncated;
+    if (row && row.isSessionHeader) {
+      // ── 2:loupe (85 events) ──────────────────
+      const label = stripAnsi(rowText);
+      const meta = row.meta || "";
+      const prefix = `── `;
+      const suffix = ` (${meta}) `;
+      const contentLen = prefix.length + label.length + suffix.length;
+      const fillLen = Math.max(4, logWidth - contentLen);
+      truncated = `${DIM}${prefix}${RESET}${ESC}[4m${FG.yellow}${BOLD}${rowText}${RESET}${DIM}${suffix}${"─".repeat(fillLen)}${RESET}`;
+    } else {
+      truncated = padLine(rowText, logWidth);
+    }
 
     if (showTree && treeLines) {
       output += truncated + `${DIM}│${RESET}` + treeLines[i] + "\n";
@@ -873,6 +892,7 @@ function handleInput(buf) {
     render(); return;
   }
   if (s === "w") { openWindow(); render(); return; }
+  if (s === "i") { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "toggle_island" })); return; }
   if (s === "x" && sessionFilter === "all") {
     if (clearPending) {
       // Second press — clear all

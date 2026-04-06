@@ -57,6 +57,20 @@ const LoupeParse = (() => {
         if (hook.hookType === "Notification") return "Notification";
         if (hook.hookType === "Stop") return "Stop";
       }
+      // Fallback: check _logstream_type directly when hook unwrap fails (data missing)
+      if (json._logstream_type) {
+        const lt = json._logstream_type;
+        if (lt === "SubagentStop") return "sub_agent_result";
+        if (lt === "SubagentStart") return "sub_agent";
+        if (lt === "PostToolUseFailure") return "tool_failure";
+        if (lt === "StopFailure") return "stop_failure";
+        if (lt === "SessionStart") return "session_start";
+        if (lt === "SessionEnd") return "session_end";
+        if (lt === "PreCompact" || lt === "PostCompact") return "compact";
+        if (lt === "Stop") return "Stop";
+        if (lt === "Notification") return "Notification";
+        return null; // skip unrecognized hook types
+      }
       const t = json.type;
       if (t === "user_query") return "user_query";
       if (t === "thinking" || json.thinking) return "thinking";
@@ -66,6 +80,8 @@ const LoupeParse = (() => {
       if (t === "text" || t === "content_block_delta" || t === "assistant") return "text";
     }
     const lower = (msg.data || "").toLowerCase();
+    // Skip broken JSON lines that are clearly hook events
+    if (lower.includes('"_logstream_type"')) return null;
     if (lower.includes("error") || lower.includes("fatal")) return "error";
     return "text";
   }
