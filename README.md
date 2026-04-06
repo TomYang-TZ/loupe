@@ -16,8 +16,8 @@ Configures 17 Claude Code hooks and compiles the native app. Loupe auto-starts o
 
 ```bash
 npm start            # start (if not running)
-npm run restart      # kill and restart
-npm run stop         # stop everything
+npm restart          # kill and restart
+npm stop             # stop everything
 ```
 
 ## Display Modes
