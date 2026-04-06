@@ -188,12 +188,13 @@
       <span class="replay-popover-title">Claude Insights</span>
       <span class="insights-status" id="insights-status"></span>
       <div style="flex:1"></div>
-      <button class="replay-action-btn" id="insights-refresh-btn" onclick="runInsights()" title="Generate fresh report">Refresh</button>
-      <button class="replay-action-btn" id="insights-open-btn" onclick="openInsightsInBrowser()" title="Open in browser">Open in Browser</button>
+      <button class="replay-action-btn replay-action-start" id="insights-action-btn" onclick="startInsights()">Start</button>
+      <button class="replay-action-btn replay-action-export" id="insights-open-btn" onclick="openInsightsInBrowser()" title="Open in browser" style="display:none">Open in Browser</button>
       <button class="replay-popover-close" onclick="closeInsightsPopover()">&times;</button>
     </div>
     <div class="insights-body" id="insights-body">
-      <iframe id="insights-iframe" style="width:100%;height:100%;border:none;background:#fff;border-radius:6px"></iframe>
+      <div class="replay-idle" id="insights-idle">Press <strong>Start</strong> to generate insights report</div>
+      <iframe id="insights-iframe" style="width:100%;height:100%;border:none;background:#fff;border-radius:6px;display:none"></iframe>
     </div>
   </div>
 </div>

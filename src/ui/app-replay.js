@@ -299,54 +299,107 @@ const LoupeReplay = (() => {
   // --- Claude Insights launcher ---
 
   let insightsRunning = false;
+  let insightsAbort = null;
+  let insightsHasReport = false;
+
+  function updateInsightsActionBtn() {
+    const btn = document.getElementById("insights-action-btn");
+    const openBtn = document.getElementById("insights-open-btn");
+    if (!btn) return;
+    if (insightsRunning) {
+      btn.textContent = "Cancel";
+      btn.title = "Cancel insights generation";
+      btn.onclick = cancelInsights;
+      btn.className = "replay-action-btn replay-action-cancel";
+    } else if (insightsHasReport) {
+      btn.textContent = "Restart";
+      btn.title = "Re-generate insights report";
+      btn.onclick = startInsights;
+      btn.className = "replay-action-btn replay-action-restart";
+      if (openBtn) openBtn.style.display = "";
+    } else {
+      btn.textContent = "Start";
+      btn.title = "Generate insights report";
+      btn.onclick = startInsights;
+      btn.className = "replay-action-btn replay-action-start";
+      if (openBtn) openBtn.style.display = "none";
+    }
+  }
 
   window.openInsightsPopover = function() {
     const overlay = document.getElementById("insights-popover-overlay");
     const iframe = document.getElementById("insights-iframe");
+    const idle = document.getElementById("insights-idle");
     const status = document.getElementById("insights-status");
     overlay.style.display = "";
-    status.textContent = "Loading report...";
-    // Try to load existing report
-    iframe.src = "/api/insights/report";
-    iframe.onload = () => { status.textContent = ""; };
-    iframe.onerror = () => { status.textContent = "No report found — click Refresh"; };
-    // Also handle 404 inside iframe
+
+    // Check if a report already exists
     fetch("/api/insights/report", { method: "HEAD" }).then(r => {
-      if (!r.ok) status.textContent = "No report yet — click Refresh to generate";
-    }).catch(() => {});
+      if (r.ok) {
+        // Show existing report immediately
+        insightsHasReport = true;
+        idle.style.display = "none";
+        iframe.style.display = "";
+        iframe.src = "/api/insights/report?" + Date.now();
+        status.textContent = "";
+      } else {
+        insightsHasReport = false;
+        idle.style.display = "";
+        iframe.style.display = "none";
+        status.textContent = "";
+      }
+      updateInsightsActionBtn();
+    }).catch(() => {
+      insightsHasReport = false;
+      updateInsightsActionBtn();
+    });
   };
 
   window.closeInsightsPopover = function() {
     document.getElementById("insights-popover-overlay").style.display = "none";
+    if (insightsAbort) { insightsAbort.abort(); insightsAbort = null; insightsRunning = false; }
   };
 
-  window.runInsights = async function() {
+  window.startInsights = async function() {
     if (insightsRunning) return;
     insightsRunning = true;
+    insightsAbort = new AbortController();
+    updateInsightsActionBtn();
+
     const status = document.getElementById("insights-status");
-    const btn = document.getElementById("insights-refresh-btn");
-    btn.textContent = "Running...";
-    btn.disabled = true;
+    const idle = document.getElementById("insights-idle");
+    const iframe = document.getElementById("insights-iframe");
+    idle.style.display = "none";
+    iframe.style.display = "none";
     status.textContent = "Generating insights (this may take a few minutes)...";
 
     try {
-      const resp = await fetch("/api/insights/run", { method: "POST" });
+      const resp = await fetch("/api/insights/run", { method: "POST", signal: insightsAbort.signal });
       const text = await resp.text();
-      // Response is chunked — parse the last JSON line
       const lines = text.trim().split("\n");
       const result = JSON.parse(lines[lines.length - 1]);
       if (result.status === "done" && result.reportExists) {
-        status.textContent = "Report ready";
-        document.getElementById("insights-iframe").src = "/api/insights/report?" + Date.now();
+        insightsHasReport = true;
+        status.textContent = "";
+        iframe.style.display = "";
+        iframe.src = "/api/insights/report?" + Date.now();
       } else {
         status.textContent = result.error || "Failed to generate report";
       }
     } catch (err) {
-      status.textContent = "Error: " + err.message;
+      if (err.name === "AbortError") {
+        status.textContent = "Cancelled";
+      } else {
+        status.textContent = "Error: " + err.message;
+      }
     }
     insightsRunning = false;
-    btn.textContent = "Refresh";
-    btn.disabled = false;
+    insightsAbort = null;
+    updateInsightsActionBtn();
+  };
+
+  window.cancelInsights = function() {
+    if (insightsAbort) { insightsAbort.abort(); insightsAbort = null; }
   };
 
   window.openInsightsInBrowser = function() {
