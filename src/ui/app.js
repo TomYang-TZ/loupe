@@ -463,8 +463,14 @@ function connect() {
 }
 
 function setConnState(state) {
-  connDot.className = `conn-dot ${state}`;
-  connStatus.textContent = state;
+  const wrap = document.getElementById("conn-status-wrap");
+  if (state === "connected") {
+    if (wrap) wrap.style.display = "none";
+  } else {
+    if (wrap) wrap.style.display = "";
+    connDot.className = `conn-dot ${state}`;
+    connStatus.textContent = state;
+  }
 }
 
 function resetAll() {
@@ -1054,6 +1060,29 @@ window.clearLogs = () => {
 };
 
 function scrollToBottom() { scrollAllToBottom(); }
+
+window.stopServer = (() => {
+  let armed = false;
+  let timer = null;
+  return () => {
+    const btn = document.getElementById("stop-btn");
+    if (armed) {
+      armed = false;
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (btn) { btn.textContent = "⏻"; btn.style.background = ""; }
+      const host = window.__LOGSTREAM_HOST || location.host;
+      fetch(`http://${host}/stop`).catch(() => {});
+    } else {
+      armed = true;
+      if (btn) { btn.textContent = "Stop?"; btn.style.background = "#e55"; btn.style.color = "#fff"; }
+      timer = setTimeout(() => {
+        armed = false;
+        if (btn) { btn.textContent = "⏻"; btn.style.background = ""; btn.style.color = "#e55"; }
+      }, 2000);
+    }
+  };
+})();
+
 
 window.jumpToBottom = () => {
   autoScroll = true;

@@ -94,8 +94,18 @@ let clearPending = false;
 let clearTimer = null;
 let deletePending = false;
 let deleteTimer = null;
+let stopPending = false;
+let stopTimer = null;
 
 // ===== Actions =====
+function stopServer() {
+  // Hit /stop which kills app, TUI, and server
+  const http = require("http");
+  http.get(`http://localhost:${PORT}/stop`, () => {}).on("error", () => {});
+  // Fallback: exit after 1s if server doesn't kill us
+  setTimeout(() => { cleanup(); process.exit(0); }, 1000);
+}
+
 function openWindow() {
   try {
     // Write signal file, then activate app — it checks for the file on reopen
@@ -505,6 +515,7 @@ function renderStatusLine(cols) {
   const visLen = beforeBtn.replace(/\x1b\[[0-9;]*m/g, "").length;
   windowBtnCol = visLen + 5 + 1; // +5 for " │ " separator, +1 for 1-based
   parts.push(`${FG.gray}w${RESET}${DIM}:${RESET}${FG.cyan}⧉ Window${RESET}`);
+  parts.push(stopPending ? `${FG.red}S${RESET}${DIM}:${RESET}${FG.red}Press S again to stop${RESET}` : `${FG.gray}S${RESET}${DIM}:${RESET}${FG.cyan}Stop${RESET}`);
   return padLine(parts.join(sep), cols);
 }
 
@@ -898,6 +909,17 @@ function handleInput(buf) {
     }
     render(); return;
   }
+  if (s === "S") {
+    if (stopPending) {
+      stopPending = false;
+      if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
+      stopServer();
+    } else {
+      stopPending = true;
+      stopTimer = setTimeout(() => { stopPending = false; render(); }, 2000);
+    }
+    render(); return;
+  }
 
   // ← / h = back one level
   const isLeft = s === "h" || s === "\x1b[D";
@@ -1059,6 +1081,9 @@ function scheduleReconnect() {
 }
 
 // ===== Startup =====
+const fs = require("fs");
+const TUI_PID_FILE = path.join(process.env.HOME, ".claude/logs/loupe-tui.pid");
+fs.writeFileSync(TUI_PID_FILE, String(process.pid));
 process.stdout.write(HIDE_CURSOR + CLEAR_SCREEN + ENABLE_MOUSE);
 
 if (process.stdin.isTTY) {
@@ -1070,6 +1095,7 @@ if (process.stdin.isTTY) {
 function cleanup() {
   process.stdout.write(DISABLE_MOUSE + SHOW_CURSOR);
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
+  try { fs.unlinkSync(TUI_PID_FILE); } catch {}
 }
 
 process.on("exit", cleanup);

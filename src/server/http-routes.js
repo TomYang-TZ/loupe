@@ -35,6 +35,29 @@ function createRouter(filePath, uiDir, wss, opts) {
       return;
     }
 
+    if (url === "/stop") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, stopping: true }));
+      const _fs = require("fs");
+      const _home = require("os").homedir();
+      const serverPid = path.join(_home, ".claude/logs/loupe.pid");
+      const tuiPid = path.join(_home, ".claude/logs/loupe-tui.pid");
+      setTimeout(() => {
+        // Kill native app
+        try { require("child_process").execSync('pkill -f "Loupe.app/Contents/MacOS/loupe"', { stdio: "ignore" }); } catch {}
+        // Kill TUI by PID
+        try {
+          const pid = _fs.readFileSync(tuiPid, "utf8").trim();
+          process.kill(parseInt(pid));
+          _fs.unlinkSync(tuiPid);
+        } catch {}
+        // Clean up server PID and exit
+        try { _fs.unlinkSync(serverPid); } catch {}
+        process.exit(0);
+      }, 200);
+      return;
+    }
+
     // Serve local images (only from .claude/image-cache)
     if (url === "/image" && fullUrl.includes("path=")) {
       const imgPath = decodeURIComponent(fullUrl.split("path=")[1]);

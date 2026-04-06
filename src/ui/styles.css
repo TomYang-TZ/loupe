@@ -421,6 +421,13 @@ body.minimal .session-tab .tab-dot {
 
 .toolbar-sep { width: 1px; height: 16px; background: var(--border); flex-shrink: 0; }
 
+.toolbar-center {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+}
+
 .toolbar-right {
   margin-left: auto;
   display: flex;

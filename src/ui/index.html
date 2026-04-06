@@ -30,7 +30,11 @@
           </g>
         </svg>
       </button>
-      <span><span class="conn-dot connecting" id="conn-dot"></span><span id="conn-status">connecting</span></span>
+      <span class="status-segment" id="status-session"><span class="status-dot" id="status-session-dot"></span><span id="status-session-text">Idle</span></span>
+      <span class="status-segment" id="status-health" style="display:none"><span class="status-dot" style="background:var(--red)"></span><span id="status-health-text"></span></span>
+      <span class="status-segment" id="status-agents" style="display:none"><span id="status-agents-text"></span></span>
+      <span class="status-segment" id="status-tasks" style="display:none"><span id="status-tasks-text"></span></span>
+      <span class="conn-status-wrap" id="conn-status-wrap" style="display:none"><span class="conn-dot" id="conn-dot"></span><span id="conn-status"></span></span>
       <span><span class="stat-val" id="line-count">0</span> events</span>
       <button class="scope-btn" id="view-toggle-btn" onclick="toggleView()" title="Map (m)"><div class="scope-icon"><svg class="scope-tube" viewBox="0 0 20 10" fill="currentColor"><rect x="2" y="3" width="16" height="5" rx="1.5"/><rect x="0" y="2" width="5" height="7" rx="1"/></svg><svg class="scope-stand" viewBox="0 0 12 8" fill="currentColor"><path d="M3 0 L6 8 L9 0" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></div></button>
       <span class="lock-wrap" title="Pin window (⌘⇧H)"><input type="checkbox" id="lock-toggle" checked onchange="toggleLock()"><label class="lock-label" for="lock-toggle"><div class="lock-wrapper"><div class="shackle"></div><svg class="lock-body" viewBox="0 0 15 10" fill="white"><rect width="15" height="10" rx="2"/></svg></div></label></span>
@@ -43,12 +47,7 @@
     <div class="session-tab active" data-session="all">All</div>
   </div>
 
-  <div class="status-bar" id="status-bar">
-    <span class="status-segment" id="status-session"><span class="status-dot" id="status-session-dot"></span><span id="status-session-text">Idle</span></span>
-    <span class="status-segment" id="status-health" style="display:none"><span class="status-dot" style="background:var(--red)"></span><span id="status-health-text"></span></span>
-    <span class="status-segment" id="status-agents" style="display:none"><span id="status-agents-text"></span></span>
-    <span class="status-segment" id="status-tasks" style="display:none"><span id="status-tasks-text"></span></span>
-  </div>
+  <!-- status bar moved into header -->
 
   <div class="minimal-topbar" id="minimal-topbar">
     <button id="theme-toggle-mini" class="theme-toggle" title="Toggle theme (⌘T)" aria-label="Switch to light theme">
@@ -88,7 +87,7 @@
       <div class="filter-menu" id="filter-menu"></div>
     </div>
     <div class="toolbar-sep"></div>
-    <div class="toolbar-right">
+    <div class="toolbar-center">
       <span class="grid-controls" id="grid-controls" style="display:none">
         <button class="btn btn-sm" onclick="setGridCols(gridCols-1)" title="Fewer columns">-</button>
         <span class="grid-label" id="grid-label">4 col</span>
@@ -98,7 +97,10 @@
       <button class="expand-all-btn" id="expand-all-btn" onclick="toggleExpandAll()" title="Expand/Collapse all queries">Expand All</button>
       <button class="replay-btn" id="replay-btn" onclick="requestReplayAnalysis()" title="Analyze session with Claude">Replay</button>
       <button class="replay-btn" id="insights-btn" onclick="openInsightsPopover()" title="Claude Code usage insights">Insights</button>
-      <button class="btn" onclick="clearLogs()" title="Clear">Clear</button>
+    </div>
+    <div class="toolbar-right">
+      <button class="btn" onclick="clearLogs()" title="Clear all events">Clear</button>
+      <button class="btn" id="stop-btn" onclick="stopServer()" title="Stop Loupe" style="color:#e55">⏻</button>
     </div>
   </div>
 

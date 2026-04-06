@@ -26,9 +26,14 @@ done
 LOUPE_MODE="window"
 [ -f "$MODE_FILE" ] && LOUPE_MODE=$(cat "$MODE_FILE" | tr -d '[:space:]')
 
+TUI_PID_FILE="$LOG_DIR/loupe-tui.pid"
+
 stop_all() {
     pkill -f "Loupe.app/Contents/MacOS/loupe" 2>/dev/null && echo "  Stopped app" || true
-    pkill -f "src/tui/index.js" 2>/dev/null && echo "  Stopped TUI" || true
+    if [ -f "$TUI_PID_FILE" ]; then
+        kill "$(cat "$TUI_PID_FILE")" 2>/dev/null && echo "  Stopped TUI (pid $(cat "$TUI_PID_FILE"))" || true
+        rm -f "$TUI_PID_FILE"
+    fi
     if [ -f "$PID_FILE" ]; then
         kill "$(cat "$PID_FILE")" 2>/dev/null && echo "  Stopped server (pid $(cat "$PID_FILE"))" || true
         rm -f "$PID_FILE"
