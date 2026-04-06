@@ -53,18 +53,12 @@ start_server() {
 }
 
 start_viewer() {
-    # Open TUI in a terminal split (detects tmux, Ghostty, iTerm2, Kitty)
-    TUI_RESULT=$("$LOUPE_DIR/scripts/open-tui.sh" "$PORT" 2>/dev/null) || true
-    case "$TUI_RESULT" in
-        tui:tmux)    echo "  Opened TUI in tmux split" ;;
-        tui:ghostty) echo "  Opened TUI in Ghostty split" ;;
-        tui:iterm2)  echo "  Opened TUI in iTerm2 split" ;;
-        tui:kitty)   echo "  Opened TUI in Kitty split" ;;
-        tui:window)  echo "  Opened TUI in new window" ;;
-    esac
-
-    # Always open native app (for dynamic island)
+    # Open native app (for dynamic island)
     open_app
+
+    # Run TUI in the current terminal (foreground)
+    echo "  Starting TUI..."
+    exec env LOUPE_PORT="$PORT" node "$LOUPE_DIR/src/tui/index.js"
 }
 
 open_app() {
