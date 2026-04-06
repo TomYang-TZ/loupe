@@ -421,18 +421,20 @@ updateGridControlsVisibility();
 
 // ===== WebSocket =====
 let ws;
+let isBacklog = true; // true until backlog_done received
 let reconnectDelay = 500;
 
 function connect() {
   const host = window.__LOGSTREAM_HOST || location.host;
   ws = new WebSocket(`ws://${host}/ws`);
 
-  ws.onopen = () => { reconnectDelay = 500; setConnState("connected"); };
+  ws.onopen = () => { reconnectDelay = 500; isBacklog = true; setConnState("connected"); };
 
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === "reset") { resetAll(); return; }
     if (msg.type === "backlog_done") {
+      isBacklog = false;
       scrollToBottom();
       // Clear stale states from backlog replay
       LoupeIsland.normalizeBacklogState();
@@ -575,9 +577,9 @@ function handleLine(msg) {
   if (gravityInitialized) Gravity.addEntry(entry);
   if (momentumInitialized) Momentum.addEntry(entry);
 
-  // Update Dynamic Island signals
+  // Update Dynamic Island signals (skip during backlog to avoid rapid cycling)
   const wasWaiting = statusBar.sessionState === "waiting";
-  LoupeIsland.updateIslandFromEntry(entry);
+  if (!isBacklog) LoupeIsland.updateIslandFromEntry(entry);
   updateStatusBarFromEntry(entry);
 
   // Strikethrough the last tool_use entry if it was rejected
