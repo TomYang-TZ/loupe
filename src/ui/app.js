@@ -577,10 +577,12 @@ function handleLine(msg) {
   if (gravityInitialized) Gravity.addEntry(entry);
   if (momentumInitialized) Momentum.addEntry(entry);
 
-  // Update Dynamic Island signals (skip during backlog to avoid rapid cycling)
+  // Update Dynamic Island + status bar (skip during backlog to avoid rapid cycling)
   const wasWaiting = statusBar.sessionState === "waiting";
-  if (!isBacklog) LoupeIsland.updateIslandFromEntry(entry);
-  updateStatusBarFromEntry(entry);
+  if (!isBacklog) {
+    LoupeIsland.updateIslandFromEntry(entry);
+    updateStatusBarFromEntry(entry);
+  }
 
   // Strikethrough the last tool_use entry if it was rejected
   // Only user_query and thinking are reliable rejection signals

@@ -89,8 +89,11 @@ let navOrder = [];
 // Queue of agent prompts from PreToolUse, consumed by SubagentStart in order
 const pendingAgentPrompts = [];
 let allCollapsed = false;
+let isBacklog = true;
 let clearPending = false;
 let clearTimer = null;
+let deletePending = false;
+let deleteTimer = null;
 
 // ===== Actions =====
 function openWindow() {
@@ -216,6 +219,7 @@ function handleMessage(data) {
 
   if (msg.type === "backlog_done" || msg.type === "sessions" || msg.type === "session_remove" || msg.type === "reset") {
     if (msg.type === "backlog_done") {
+      isBacklog = false;
       // Normalize transient states from backlog replay
       phase = "idle"; currentTool = null; thinkingActive = false;
       statusLine.sessionState = "idle"; statusLine.waitingTool = null;
@@ -262,66 +266,65 @@ function handleMessage(data) {
   // Hidden categories — tracked for state but not rendered as events
   const tuiHidden = cat === "permission_request" || cat === "permission_denied" || cat === "unknown";
 
-  // Phase tracking
-  if (cat === "thinking") { thinkingActive = true; phase = "exploring"; }
-  if (cat === "pre_tool" && json?.data) {
-    thinkingActive = false;
-    const tool = extractToolInfo(json);
-    if (tool) {
-      currentTool = tool;
-      const newPhase = detectPhaseFromTool(tool.name, json.data.tool_input?.command, phase);
-      if (newPhase) phase = newPhase;
+  // Phase/status/agent tracking — skip during backlog replay
+  if (!isBacklog) {
+    if (cat === "thinking") { thinkingActive = true; phase = "exploring"; }
+    if (cat === "pre_tool" && json?.data) {
+      thinkingActive = false;
+      const tool = extractToolInfo(json);
+      if (tool) {
+        currentTool = tool;
+        const newPhase = detectPhaseFromTool(tool.name, json.data.tool_input?.command, phase);
+        if (newPhase) phase = newPhase;
+      }
     }
-  }
-  if (cat === "error" || cat === "tool_failure") errorCount++;
+    if (cat === "error" || cat === "tool_failure") errorCount++;
 
-  // Token tracking
-  const usage = json?.data?.message?.usage || json?.message?.usage;
-  if (usage) tokenTotal += (usage.input_tokens || 0) + (usage.output_tokens || 0);
+    const usage = json?.data?.message?.usage || json?.message?.usage;
+    if (usage) tokenTotal += (usage.input_tokens || 0) + (usage.output_tokens || 0);
 
-  // Status line tracking
-  if (cat === "session_start") { statusLine.sessionState = "active"; statusLine.sessionStartTs = Date.now(); }
-  if (cat === "session_end") { statusLine.sessionState = "idle"; statusLine.sessionStartTs = null; }
-  if (cat === "compact") { statusLine.sessionState = json?._logstream_type === "PreCompact" ? "compacting" : "active"; }
-  if (cat === "permission_request") { statusLine.sessionState = "waiting"; statusLine.waitingTool = json?.data?.tool_name || "tool"; }
-  if (statusLine.sessionState === "waiting" && (cat === "pre_tool" || cat === "post_tool" || cat === "thinking" || cat === "user_query")) {
-    statusLine.approved = statusLine.waitingTool || "tool";
-    statusLine.sessionState = "active"; statusLine.waitingTool = null;
-    setTimeout(() => { statusLine.approved = null; render(); }, 1500);
-  }
-  if (statusLine.sessionState === "waiting" && cat === "tool_rejected") {
-    statusLine.sessionState = "active"; statusLine.waitingTool = null;
-  }
-  if (cat === "user_query") {
-    statusLine.errors = 0; statusLine.apiError = null;
-    statusLine.sessionState = "active"; statusLine.sessionStartTs = statusLine.sessionStartTs || Date.now();
-    phase = "active";
-  }
-  if (cat === "tool_failure" || cat === "tool_rejected") statusLine.errors++;
-  if (cat === "stop_failure") statusLine.apiError = json?.data?.reason || "API error";
-  if (cat === "Notification" && statusLine.sessionState !== "waiting") { statusLine.sessionState = "waiting"; }
-  if (cat === "Stop") {
-    statusLine.sessionState = "done"; statusLine.waitingTool = null;
-    phase = "idle"; currentTool = null; thinkingActive = false;
-    setTimeout(() => { if (statusLine.sessionState === "done") { statusLine.sessionState = "idle"; render(); } }, 10000);
-  }
-  if (cat === "Notification") { phase = "idle"; currentTool = null; thinkingActive = false; }
-  if (cat === "sub_agent") { statusLine.agentsRunning++; statusLine.agentsTotal++; }
-  if (cat === "sub_agent_result") { statusLine.agentsRunning = Math.max(0, statusLine.agentsRunning - 1); }
-  if (cat === "task_created") statusLine.tasksCreated++;
-  if (cat === "task_completed") statusLine.tasksCompleted++;
+    if (cat === "session_start") { statusLine.sessionState = "active"; statusLine.sessionStartTs = Date.now(); }
+    if (cat === "session_end") { statusLine.sessionState = "idle"; statusLine.sessionStartTs = null; }
+    if (cat === "compact") { statusLine.sessionState = json?._logstream_type === "PreCompact" ? "compacting" : "active"; }
+    if (cat === "permission_request") { statusLine.sessionState = "waiting"; statusLine.waitingTool = json?.data?.tool_name || "tool"; }
+    if (statusLine.sessionState === "waiting" && (cat === "pre_tool" || cat === "post_tool" || cat === "thinking" || cat === "user_query")) {
+      statusLine.approved = statusLine.waitingTool || "tool";
+      statusLine.sessionState = "active"; statusLine.waitingTool = null;
+      setTimeout(() => { statusLine.approved = null; render(); }, 1500);
+    }
+    if (statusLine.sessionState === "waiting" && cat === "tool_rejected") {
+      statusLine.sessionState = "active"; statusLine.waitingTool = null;
+    }
+    if (cat === "user_query") {
+      statusLine.errors = 0; statusLine.apiError = null;
+      statusLine.sessionState = "active"; statusLine.sessionStartTs = statusLine.sessionStartTs || Date.now();
+      phase = "active";
+    }
+    if (cat === "tool_failure" || cat === "tool_rejected") statusLine.errors++;
+    if (cat === "stop_failure") statusLine.apiError = json?.data?.reason || "API error";
+    if (cat === "Notification" && statusLine.sessionState !== "waiting") { statusLine.sessionState = "waiting"; }
+    if (cat === "Stop") {
+      statusLine.sessionState = "done"; statusLine.waitingTool = null;
+      phase = "idle"; currentTool = null; thinkingActive = false;
+      setTimeout(() => { if (statusLine.sessionState === "done") { statusLine.sessionState = "idle"; render(); } }, 10000);
+    }
+    if (cat === "Notification") { phase = "idle"; currentTool = null; thinkingActive = false; }
+    if (cat === "sub_agent") { statusLine.agentsRunning++; statusLine.agentsTotal++; }
+    if (cat === "sub_agent_result") { statusLine.agentsRunning = Math.max(0, statusLine.agentsRunning - 1); }
+    if (cat === "task_created") statusLine.tasksCreated++;
+    if (cat === "task_completed") statusLine.tasksCompleted++;
 
-  // Agent tree tracking
-  if (cat === "sub_agent") {
-    agentTree.push({ id: json?.data?.agent_id || `agent-${agentTree.length}`, type: json?.data?.agent_type || "Agent", status: "running", startTs: Date.now(), endTs: null });
-    agentTreeVisible = true;
-  }
-  if (cat === "sub_agent_result") {
-    const id = json?.data?.agent_id;
-    const agent = (id && agentTree.find(a => a.id === id && a.status === "running")) || agentTree.find(a => a.status === "running");
-    if (agent) { agent.status = "done"; agent.endTs = Date.now(); }
-    if (agentTree.length > 0 && agentTree.every(a => a.status === "done")) {
-      setTimeout(() => { if (agentTree.every(a => a.status === "done")) { agentTreeVisible = false; agentTree.length = 0; render(); } }, 5000);
+    if (cat === "sub_agent") {
+      agentTree.push({ id: json?.data?.agent_id || `agent-${agentTree.length}`, type: json?.data?.agent_type || "Agent", status: "running", startTs: Date.now(), endTs: null });
+      agentTreeVisible = true;
+    }
+    if (cat === "sub_agent_result") {
+      const id = json?.data?.agent_id;
+      const agent = (id && agentTree.find(a => a.id === id && a.status === "running")) || agentTree.find(a => a.status === "running");
+      if (agent) { agent.status = "done"; agent.endTs = Date.now(); }
+      if (agentTree.length > 0 && agentTree.every(a => a.status === "done")) {
+        setTimeout(() => { if (agentTree.every(a => a.status === "done")) { agentTreeVisible = false; agentTree.length = 0; render(); } }, 5000);
+      }
     }
   }
 
@@ -471,21 +474,12 @@ function renderStatusLine(cols) {
   const parts = [];
   if (statusLine.approved) {
     parts.push(`${FG.green}●${RESET} Approved: ${statusLine.approved}`);
-  } else if (statusLine.sessionState === "active") {
-    let label = `${FG.green}●${RESET} Active`;
-    if (statusLine.sessionStartTs) {
-      const secs = Math.floor((Date.now() - statusLine.sessionStartTs) / 1000);
-      label += ` ${DIM}${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, "0")}s${RESET}`;
-    }
-    parts.push(label);
   } else if (statusLine.sessionState === "done") {
     parts.push(`${FG.green}●${RESET} Done`);
   } else if (statusLine.sessionState === "waiting") {
     parts.push(`${FG.yellow}●${RESET} Waiting: ${statusLine.waitingTool || "approval"}`);
   } else if (statusLine.sessionState === "compacting") {
     parts.push(`${FG.yellow}●${RESET} Compacting…`);
-  } else {
-    parts.push(`${FG.gray}●${RESET} Idle`);
   }
   if (statusLine.errors > 0) parts.push(`${FG.red}Errors: ${statusLine.errors}${RESET}`);
   if (statusLine.apiError) parts.push(`${FG.red}${statusLine.apiError}${RESET}`);
@@ -500,7 +494,11 @@ function renderStatusLine(cols) {
     parts.push(`${FG.magenta}Tasks: ${statusLine.tasksCompleted}/${statusLine.tasksCreated}${allDone ? " ✓" : ""}${RESET}`);
   }
   parts.push(`${FG.gray}c${RESET}${DIM}:${RESET}${FG.cyan}${allCollapsed ? "▶ Expand" : "▼ Collapse"}${RESET}`);
-  parts.push(clearPending ? `${FG.red}x${RESET}${DIM}:${RESET}${FG.red}Press x again to clear${RESET}` : `${FG.gray}x${RESET}${DIM}:${RESET}${FG.cyan}Clear${RESET}`);
+  if (sessionFilter === "all") {
+    parts.push(clearPending ? `${FG.red}x${RESET}${DIM}:${RESET}${FG.red}Press x again to clear${RESET}` : `${FG.gray}x${RESET}${DIM}:${RESET}${FG.cyan}Clear${RESET}`);
+  } else {
+    parts.push(deletePending ? `${FG.red}d${RESET}${DIM}:${RESET}${FG.red}Press d again to delete${RESET}` : `${FG.gray}d${RESET}${DIM}:${RESET}${FG.cyan}Delete session${RESET}`);
+  }
   // Calculate visible length before adding window button
   const sep = `${DIM}  │  ${RESET}`;
   const beforeBtn = parts.join(sep);
@@ -650,6 +648,10 @@ function render() {
   const connStr = connected ? `${FG.green}●${RESET}` : `${FG.red}●${RESET}`;
   const phaseColor = { active: FG.green, exploring: FG.magenta, implementing: FG.blue, debugging: FG.red, testing: FG.green, planning: FG.yellow, idle: FG.gray }[phase] || FG.gray;
   let header = `${BOLD} LOUPE ${RESET} ${connStr} ${phaseColor}${BOLD}${thinkingActive ? "thinking" : phase}${RESET}`;
+  if (statusLine.sessionStartTs && statusLine.sessionState === "active") {
+    const secs = Math.floor((Date.now() - statusLine.sessionStartTs) / 1000);
+    header += ` ${DIM}${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, "0")}s${RESET}`;
+  }
   if (currentTool) header += `  ${DIM}▸ ${currentTool.name}${RESET}`;
 
   let stats = ` ${DIM}events:${RESET}${eventCount}  ${DIM}files:${RESET}${fileSet.size}  ${DIM}tokens:${RESET}${formatTokens(tokenTotal)}`;
@@ -860,7 +862,7 @@ function handleInput(buf) {
     render(); return;
   }
   if (s === "w") { openWindow(); render(); return; }
-  if (s === "x") {
+  if (s === "x" && sessionFilter === "all") {
     if (clearPending) {
       // Second press — clear all
       clearPending = false;
@@ -877,6 +879,22 @@ function handleInput(buf) {
       // First press — arm confirmation
       clearPending = true;
       clearTimer = setTimeout(() => { clearPending = false; render(); }, 2000);
+    }
+    render(); return;
+  }
+  if (s === "d" && sessionFilter !== "all") {
+    if (deletePending) {
+      // Second press — delete this session
+      deletePending = false;
+      if (deleteTimer) { clearTimeout(deleteTimer); deleteTimer = null; }
+      const sid = sessionFilter;
+      sessionQueries.delete(sid);
+      sessions.delete(sid);
+      sessionFilter = "all";
+      focusIdx = -1; autoFollow = true; scrollOffset = 0;
+    } else {
+      deletePending = true;
+      deleteTimer = setTimeout(() => { deletePending = false; render(); }, 2000);
     }
     render(); return;
   }

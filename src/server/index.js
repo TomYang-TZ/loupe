@@ -89,6 +89,11 @@ function buildMessage(line) {
   if (jsonMode || looksLikeJson(line)) {
     try {
       msg.json = JSON.parse(line);
+      // Use original timestamp from the event if available
+      if (msg.json._ts) {
+        const parsed = new Date(msg.json._ts).getTime();
+        if (parsed > 0) msg.ts = parsed;
+      }
     } catch {}
   }
   return msg;
