@@ -2,7 +2,7 @@
   <img src="docs/images/social-preview.png" alt="Loupe banner" width="100%">
 </p>
 
-# Loupe_
+<h1 align="center">Loupe_</h1>
 
 Real-time observer for Claude Code sessions. Streams tool calls, thinking blocks, approvals, errors, and agent activity into three display modes. TUI is the default view; press `w` for window mode.
 
