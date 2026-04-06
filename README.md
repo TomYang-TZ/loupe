@@ -41,15 +41,25 @@ Native macOS app. Press `w` in TUI or `Cmd+Shift+L`. Live event stream grouped b
 
 ## Keyboard Shortcuts
 
+**TUI keys:**
+
 | Key | Action |
 |-----|--------|
-| `Cmd+Shift+L` | Show/hide window |
-| `Cmd+Shift+I` | Toggle Dynamic Island |
-| `Cmd+Shift+M` | Compact/full mode |
+| `i` | Toggle Dynamic Island |
+| `w` | Open window |
+| `c` | Collapse/expand all |
+| `↑`/`↓` or `j`/`k` | Navigate |
+| `→`/`←` or `l`/`h` | Drill in/out |
+| `1`-`9` | Switch session |
+| `S` | Stop server |
+
+**Window keys:**
+
+| Key | Action |
+|-----|--------|
 | `m` | Toggle map |
 | `/` | Search |
-| `j`/`k` | Navigate |
-| `1`-`9` | Switch session |
+| `Cmd+Shift+M` | Compact/full mode |
 
 ## Architecture
 
