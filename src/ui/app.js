@@ -23,6 +23,7 @@ function isMinimalMode() { return document.body.classList.contains("minimal"); }
 
 // ===== State =====
 const entries = [];
+const entriesById = new Map(); // O(1) lookup for modal
 let lineCounter = 0;
 // Multi-select filter: set of HIDDEN types (everything shown by default)
 const hiddenTypes = new Set();
@@ -134,7 +135,7 @@ function updateStatusBarFromEntry(entry) {
     if (statusBarTimer) { clearInterval(statusBarTimer); statusBarTimer = null; }
   }
   if (cat === "compact") {
-    const hook = unwrapHook(entry.json);
+    const hook = LoupeParse.unwrapHook(entry.json);
     if (hook?.hookType === "PreCompact") statusBar.sessionState = "compacting";
     if (hook?.hookType === "PostCompact") statusBar.sessionState = "active";
   }
@@ -155,7 +156,7 @@ function updateStatusBarFromEntry(entry) {
   }
   if (cat === "tool_failure") statusBar.errors++;
   if (cat === "stop_failure") {
-    const hook = unwrapHook(entry.json);
+    const hook = LoupeParse.unwrapHook(entry.json);
     const inner = hook?.inner || {};
     statusBar.apiError = inner.reason || inner.error_type || "API error";
   }
@@ -191,536 +192,6 @@ function updateStatusBarFromEntry(entry) {
 // Map child session_ids back to parent so they nest correctly.
 const childSessionMap = new Map();   // childSessionId -> parentSessionId
 const pendingAgentSpawns = new Map(); // parentSessionId -> { ts, count }
-
-// ===== Topic/Query Grouping State =====
-const TASK_GAP_MS = 5 * 60 * 1000; // 5 minutes between queries = new topic
-let queryIdCounter = 0;
-
-// Per-session grouping state: sessionId -> GroupState
-const sessionGroups = new Map();
-
-function getGroupState(sessionId) {
-  if (!sessionGroups.has(sessionId)) {
-    sessionGroups.set(sessionId, {
-      tasks: [],
-      currentTask: null,
-      currentQuery: null,
-      agentStack: [],   // stack of { agentEntry, children: [], el: null, childrenEl: null }
-      topicCounter: 0,  // per-session topic numbering
-    });
-  }
-  return sessionGroups.get(sessionId);
-}
-
-const streamHiddenCategories = new Set(["Notification", "Stop", "permission_request", "permission_denied", "tool_rejected", "tool_approved_msg"]);
-// Categories that go into groups for state tracking but don't render as cards
-const streamNoRenderCategories = new Set(["post_tool"]);
-
-function assignToGroup(entry) {
-  // Stream-hidden entries and session boundaries don't go into groups
-  if (streamHiddenCategories.has(entry.category)) return;
-  if (entry.category === "session_start" || entry.category === "session_end") {
-    return; // don't assign to any group — rendered directly in the pane
-  }
-
-  const sid = entry.sessionId || "default";
-  const gs = getGroupState(sid);
-
-  // user_query or thinking with userQuery = new query boundary
-  // But skip if the current query already has the same userQuery (dedup)
-  // Also skip if we're inside an agent stack — sub-agent thinking/queries
-  // should nest as agent children, not create new top-level queries
-  const insideAgent = gs.agentStack.length > 0;
-  const isDuplicate = gs.currentQuery && entry.userQuery &&
-    gs.currentQuery.userQuery === entry.userQuery;
-  const isSystemPrompt = entry.userQuery && (entry.userQuery.includes("<task-notification>") || entry.userQuery.includes("<system-reminder>"));
-  const isQueryBoundary = !insideAgent && !isDuplicate && !isSystemPrompt && (
-    (entry.category === "user_query" && entry.userQuery) ||
-    (entry.category === "thinking" && entry.userQuery)
-  );
-  if (isQueryBoundary) {
-    // Close current agent stack (shouldn't happen, but defensive)
-    gs.agentStack = [];
-
-    // If current query is a preamble (no userQuery), absorb its items into the new query
-    // BUT only if the preamble items are temporally close (< 10s gap).
-    // Otherwise they belong to the previous turn and should stay as a separate group.
-    let preambleItems = null;
-    if (gs.currentQuery && !gs.currentQuery.userQuery && gs.currentQuery.items.length > 0) {
-      const lastPreambleTs = gs.currentQuery.endTs || 0;
-      const gap = entry.ts - lastPreambleTs;
-      if (gap < 10000) {
-        // Close enough — absorb into new query
-        preambleItems = gs.currentQuery.items;
-      }
-    }
-    if (preambleItems && gs.currentTask) {
-      // Remove the preamble query from the task
-      const idx = gs.currentTask.queries.indexOf(gs.currentQuery);
-      if (idx !== -1) gs.currentTask.queries.splice(idx, 1);
-      // If the task is now empty and this is the only task, reuse it
-      if (gs.currentTask.queries.length === 0) {
-        gs.currentTask.startTs = entry.ts;
-      }
-    }
-
-    const prevEndTs = gs.currentQuery ? gs.currentQuery.endTs : 0;
-    const gap = entry.ts - prevEndTs;
-
-    // New topic if first query or gap > 5 min
-    if (!gs.currentTask || (gs.currentTask.queries.length === 0 && gs.tasks.length === 0) || gap > TASK_GAP_MS) {
-      if (!gs.currentTask || gs.currentTask.queries.length > 0) {
-        gs.topicCounter++;
-        gs.currentTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
-        gs.tasks.push(gs.currentTask);
-      }
-    }
-
-    // New query — include absorbed preamble items
-    gs.currentQuery = { id: ++queryIdCounter, userQuery: entry.userQuery, thinkingEntry: entry.category === "thinking" ? entry : null, startTs: entry.ts, endTs: entry.ts, items: preambleItems || [], el: null, actionsEl: null, headerEl: null, collapsed: true };
-    gs.currentTask.queries.push(gs.currentQuery);
-    gs.currentTask.endTs = entry.ts;
-    return;
-  }
-
-  // If thinking arrives after user_query already set the boundary, attach it as the thinkingEntry
-  if (entry.category === "thinking" && entry.userQuery && gs.currentQuery && gs.currentQuery.userQuery === entry.userQuery) {
-    gs.currentQuery.thinkingEntry = entry;
-    // Don't return — let it fall through to be added as an item so the thinking text is accessible
-  }
-
-  // Ensure we have a current query (preamble)
-  if (!gs.currentQuery) {
-    if (!gs.currentTask) {
-      gs.topicCounter++;
-      gs.currentTask = { id: gs.topicCounter, seqNum: gs.topicCounter, startTs: entry.ts, endTs: entry.ts, queries: [], el: null, bodyEl: null, headerEl: null };
-      gs.tasks.push(gs.currentTask);
-    }
-    gs.currentQuery = { id: ++queryIdCounter, userQuery: null, thinkingEntry: null, startTs: entry.ts, endTs: entry.ts, items: [], el: null, actionsEl: null, headerEl: null, collapsed: true };
-    gs.currentTask.queries.push(gs.currentQuery);
-  }
-
-  // Sub-agent spawn: push onto stack
-  if (entry.category === "sub_agent") {
-    const ag = { agentEntry: entry, children: [], resultEntry: null, el: null, childrenEl: null };
-    if (gs.agentStack.length > 0) {
-      gs.agentStack[gs.agentStack.length - 1].children.push(ag);
-    } else {
-      gs.currentQuery.items.push(ag);
-    }
-    gs.agentStack.push(ag);
-    gs.currentQuery.endTs = entry.ts;
-    gs.currentTask.endTs = entry.ts;
-    return;
-  }
-
-  // Sub-agent result: pop stack
-  if (entry.category === "sub_agent_result") {
-    if (gs.agentStack.length > 0) {
-      const ag = gs.agentStack.pop();
-      ag.resultEntry = entry;
-    } else {
-      // Orphan result, treat as regular item
-      gs.currentQuery.items.push(entry);
-    }
-    gs.currentQuery.endTs = entry.ts;
-    gs.currentTask.endTs = entry.ts;
-    return;
-  }
-
-  // Regular entry: add to top-of-stack agent or current query
-  // user_query should never nest inside agents — skip it as an agent child
-  if (gs.agentStack.length > 0 && entry.category !== "user_query") {
-    gs.agentStack[gs.agentStack.length - 1].children.push(entry);
-  } else {
-    gs.currentQuery.items.push(entry);
-  }
-  gs.currentQuery.endTs = entry.ts;
-  gs.currentTask.endTs = entry.ts;
-}
-
-// ===== Dynamic Island Bridge =====
-// Sends condensed state signals to the native app's Dynamic Island
-// Per-session tracking for multi-dot display
-
-const islandSessions = new Map(); // sessionId -> per-session state
-
-function getIslandSession(sid) {
-  if (!islandSessions.has(sid)) {
-    islandSessions.set(sid, {
-      id: sid,
-      label: "",
-      phase: "idle",
-      progress: null,
-      tool: null,
-      toolDetail: null,
-      thinking: false,
-      waiting: false,
-      waitingTool: null,
-      approved: null,        // briefly set after approval for strikethrough
-      idleSince: null,
-      userQuery: null,
-      recentTools: [],
-      errors: 0,
-      tokens: 0,
-      files: 0,
-      activeFile: null,
-      startTs: null,
-      denied: null,
-      rejected: null,
-      denials: 0,
-      agentsRunning: 0,
-      agentsTotal: 0,
-      apiError: null,
-      _fileSet: new Set(),
-      _totalTokens: 0,
-      _pendingToolTimer: null,
-      _idleTimer: null,
-      _stopFailureTs: null,
-      _agentClearTimer: null,
-    });
-  }
-  return islandSessions.get(sid);
-}
-
-function updateIslandFromEntry(entry) {
-  const cat = entry.category;
-  const sid = entry.sessionId;
-  if (!sid) { sendIslandUpdate(); return; } // skip entries without session
-  const s = getIslandSession(sid);
-  if (!s.startTs) s.startTs = entry.ts;
-  s._lastActivityTs = entry.ts;
-
-  // Session label + color
-  const sInfo = sessions.get(sid);
-  if (sInfo) {
-    s.label = sInfo.label;
-    s._color = sInfo.color || null;
-  }
-
-  // Track user query — new turn resets phase
-  if (cat === "user_query" && entry.userQuery) {
-    s.userQuery = entry.userQuery.slice(0, 120);
-    s.phase = "starting";
-    s.pulsing = false;
-    if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
-    s.idleSince = null;
-    if (s._idleTimer) { clearTimeout(s._idleTimer); s._idleTimer = null; }
-    s._lastActivityTs = entry.ts;
-  }
-
-  // Track thinking — also clears "starting"
-  if (cat === "thinking") {
-    s.thinking = true;
-    s.phase = "exploring";
-    if (entry.userQuery && !s.userQuery) s.userQuery = entry.userQuery.slice(0, 120);
-  }
-
-  // Track tool usage
-  if (cat === "tool_use" || cat === "pre_tool") {
-    s.thinking = false;
-    const toolName = entry.json?.data?.tool_name || entry.json?.tool_name || entry.title || "";
-    const input = entry.json?.data?.tool_input || {};
-    s.tool = toolName;
-
-    let detail = "";
-    if (input.file_path) {
-      const parts = input.file_path.split("/");
-      detail = parts.slice(-2).join("/");
-      s.activeFile = input.file_path;
-      s._fileSet.add(input.file_path);
-    } else if (input.command) {
-      detail = input.command.split("\n")[0].slice(0, 80);
-    } else if (input.pattern) {
-      detail = input.pattern;
-    } else if (input.description) {
-      detail = input.description.slice(0, 60);
-    }
-    s.toolDetail = detail;
-    s.files = s._fileSet.size;
-
-    s.recentTools.push({ name: toolName, detail, ts: entry.ts });
-    if (s.recentTools.length > 5) s.recentTools.shift();
-
-    if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) s.phase = "exploring";
-    else if (["Edit", "Write", "NotebookEdit"].some(t => toolName.includes(t))) s.phase = "implementing";
-    else if (toolName.includes("Bash")) {
-      const cmd = input.command || "";
-      if (/test|jest|pytest|cargo test|npm test/.test(cmd)) s.phase = "testing";
-      else if (s.phase === "idle" || s.phase === "starting") s.phase = "implementing";
-    } else if (toolName.includes("Agent")) s.phase = "planning";
-  }
-
-  // Approval tracking — any tool activity after waiting means approval was granted
-  if (cat === "tool_use" || cat === "pre_tool") {
-    // New tool arriving while waiting = previous tool was approved
-    if (s.waiting || s.phase === "waiting for input") {
-      s.approved = s.waitingTool || s._pendingToolName || s.tool;
-      s.waiting = false;
-      s.pulsing = false;
-      s.waitingTool = null;
-      if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
-      sendIslandUpdate();
-      setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1000);
-    }
-    s._pendingToolName = s.tool;
-    s._pendingToolTs = Date.now();
-  }
-  if (cat === "post_tool" || cat === "tool_result" || cat === "sub_agent_result") {
-    // Tool completed — if we were waiting, this means approval was granted
-    if (s.waiting || s.phase === "waiting for input") {
-      s.approved = s.waitingTool || s._pendingToolName || s.tool;
-      s.waiting = false;
-      s.pulsing = false;
-      s.waitingTool = null;
-      if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
-      s.phase = s.tool ? "implementing" : "exploring";
-      sendIslandUpdate();
-      setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1000);
-    }
-    s._pendingToolName = null;
-    s._pendingToolTs = null;
-  }
-  // Thinking after waiting also means approval (Claude resumed work)
-  if (cat === "thinking" && (s.waiting || s.phase === "waiting for input")) {
-    s.approved = s.waitingTool || s.tool;
-    s.waiting = false;
-    s.pulsing = false;
-    s.waitingTool = null;
-    if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
-    s.phase = "exploring";
-    sendIslandUpdate();
-    setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1000);
-  }
-
-  // Rejection detection — tool_rejected, user_query, or thinking after waiting = tool was rejected
-  // Only check the session that the event belongs to (not all sessions)
-  if (cat === "user_query" || cat === "thinking" || cat === "tool_rejected") {
-    if (s.waiting) {
-      s.rejected = s.waitingTool || "tool";
-      s.waiting = false;
-      s.pulsing = false;
-      s.waitingTool = null;
-      if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
-      s.phase = "exploring";
-      setTimeout(() => { s.rejected = null; sendIslandUpdate(); }, 1500);
-    }
-    sendIslandUpdate();
-  }
-
-  // Errors
-  if (cat === "error") { s.errors++; s.progress = "stuck"; }
-  else if (cat === "tool_result" || cat === "post_tool") {
-    if (s.progress === "stuck") s.progress = null;
-  }
-
-  // Tokens
-  const usage = entry.json?.data?.message?.usage || entry.json?.message?.usage;
-  if (usage) {
-    s._totalTokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
-    s.tokens = s._totalTokens;
-  }
-
-  // Notification hook = Claude needs input → show "needs input"
-  if (cat === "Notification") {
-    s.phase = "waiting for input";
-    s.thinking = false;
-    // Don't clear waiting/waitingTool if PermissionRequest already set them
-    if (!s.waiting) {
-      s.waitingTool = null;
-      // Pulse 10 times for waiting for input
-      s.pulsing = true;
-      if (s._pulseTimer) clearTimeout(s._pulseTimer);
-      s._pulseTimer = setTimeout(() => { s.pulsing = false; sendIslandUpdate(); }, 10000);
-    }
-    if (s._idleTimer) clearTimeout(s._idleTimer);
-  }
-
-  // PermissionRequest — explicit waiting signal
-  if (cat === "permission_request") {
-    const toolName = entry.json?.data?.tool_name || entry.title || "tool";
-    s.waiting = true;
-    s.pulsing = true;
-    s.waitingTool = toolName;
-    s.phase = "waiting for input";
-    s.thinking = false;
-    if (s._idleTimer) clearTimeout(s._idleTimer);
-    // Pulse for ~10s then hold steady
-    if (s._pulseTimer) clearTimeout(s._pulseTimer);
-    s._pulseTimer = setTimeout(() => {
-      s.pulsing = false;
-      sendIslandUpdate();
-    }, 10000);
-  }
-
-  // PermissionDenied — flash denied, increment friction counter
-  if (cat === "permission_denied") {
-    const toolName = entry.json?.data?.tool_name || entry.title || "tool";
-    s.denied = toolName;
-    s.denials++;
-    if (s.denials >= 3) s.progress = "stuck";
-    sendIslandUpdate();
-    setTimeout(() => { s.denied = null; sendIslandUpdate(); }, 2000);
-  }
-
-  // Reset denials on new turn
-  if (cat === "user_query") {
-    s.denials = 0;
-  }
-
-  // SubagentStart — track running agent count
-  if (cat === "sub_agent") {
-    s.agentsRunning++;
-    s.agentsTotal++;
-    s.toolDetail = s.agentsRunning + " agent" + (s.agentsRunning > 1 ? "s" : "");
-    if (s._agentClearTimer) { clearTimeout(s._agentClearTimer); s._agentClearTimer = null; }
-  }
-
-  // SubagentStop — decrement, show progress
-  if (cat === "sub_agent_result") {
-    s.agentsRunning = Math.max(0, s.agentsRunning - 1);
-    if (s.agentsRunning > 0) {
-      const done = s.agentsTotal - s.agentsRunning;
-      s.toolDetail = done + "/" + s.agentsTotal + " agents";
-    } else {
-      s.toolDetail = s.agentsTotal + "/" + s.agentsTotal + " agents";
-      s._agentClearTimer = setTimeout(() => {
-        s.agentsRunning = 0;
-        s.agentsTotal = 0;
-        s.toolDetail = null;
-        sendIslandUpdate();
-      }, 3000);
-    }
-  }
-
-  // PostToolUseFailure — increment errors, signal stuck
-  if (cat === "tool_failure") {
-    s.errors++;
-    s.progress = "stuck";
-  }
-
-  // stop_failure — API error (rate limit, auth, billing)
-  if (cat === "stop_failure") {
-    s.progress = "stuck";
-    s._stopFailureTs = Date.now();
-    s.phase = "idle";
-    s.thinking = false;
-    s.tool = null;
-    s.toolDetail = null;
-  }
-
-  // Stop hook = Claude finished → "done", then idle after 10s
-  // StopFailure takes precedence — suppress "done" if StopFailure arrived within 500ms
-  if (cat === "Stop" && !(s._stopFailureTs && (Date.now() - s._stopFailureTs < 500))) {
-    s.phase = "done";
-    s.thinking = false;
-    s.tool = null;
-    s.toolDetail = null;
-    // Pulse for done
-    s.pulsing = true;
-    if (s._pulseTimer) clearTimeout(s._pulseTimer);
-    s._pulseTimer = setTimeout(() => { s.pulsing = false; sendIslandUpdate(); }, 5000);
-    if (s._idleTimer) clearTimeout(s._idleTimer);
-    s._idleTimer = setTimeout(() => {
-      s.phase = "idle";
-      s.idleSince = Date.now();
-      sendIslandUpdate();
-    }, 10000);
-  }
-
-  // Fallback idle timer — reset on activity (not on Stop/thinking/Notification which have their own timers)
-  if (cat !== "thinking" && cat !== "Notification" && cat !== "Stop" && cat !== "stop_failure") {
-    s.idleSince = null;
-    if (s._idleTimer) clearTimeout(s._idleTimer);
-    s._idleTimer = setTimeout(() => {
-      s.phase = "idle";
-      s.tool = null;
-      s.toolDetail = null;
-      s.thinking = false;
-      s.idleSince = Date.now();
-      sendIslandUpdate();
-    }, 30000);
-  }
-
-  // Prune stale sessions (no events for 5 min)
-  const now = Date.now();
-  for (const [id, ss] of islandSessions) {
-    const lastEvent = ss.recentTools.length > 0 ? ss.recentTools[ss.recentTools.length - 1].ts : (ss.startTs || 0);
-    if (now - lastEvent > 5 * 60 * 1000) {
-      if (ss._idleTimer) clearTimeout(ss._idleTimer);
-      if (ss._pendingToolTimer) clearTimeout(ss._pendingToolTimer);
-      islandSessions.delete(id);
-    }
-  }
-
-  sendIslandUpdate();
-}
-
-function sendIslandUpdate() {
-  try {
-    // Most recently active session drives the main display
-    let active = null;
-    let latestTs = 0;
-    for (const [, s] of islandSessions) {
-      const t = s._lastActivityTs || s.startTs || 0;
-      if (t > latestTs) { latestTs = t; active = s; }
-    }
-    if (!active) active = { phase: "idle", progress: null, tool: null, toolDetail: null, files: 0, tokens: 0, errors: 0, thinking: false, waiting: false, waitingTool: null, yourTurn: false, userQuery: null, recentTools: [], activeFile: null, startTs: null };
-
-    // Build session dots: { status: "working"|"waiting"|"yourTurn"|"stuck", label }
-    const sessionDots = [];
-    let dotIdx = 0;
-    for (const [, s] of islandSessions) {
-      let status = "working";
-      if (s.phase === "waiting for input") status = "needsInput";
-      else if (s.phase === "done") status = "done";
-      else if (s.phase === "idle") status = "idle";
-      else if (s.waiting) status = "waiting";
-      else if (s.progress === "stuck") status = "stuck";
-      else if (s.thinking) status = "thinking";
-      const mainSession = sessions.get(s.id);
-      const dotColor = mainSession?.color || s._color || SESSION_COLORS[dotIdx % SESSION_COLORS.length];
-      sessionDots.push({ status, label: s.label || s.id.slice(0, 6), color: dotColor, id: s.id });
-      dotIdx++;
-    }
-
-    const elapsed = active.startTs ? Math.floor((Date.now() - active.startTs) / 1000) : 0;
-    window.webkit.messageHandlers.islandUpdate.postMessage({
-      phase: active.phase,
-      progress: active.progress,
-      tool: active.tool,
-      toolDetail: active.toolDetail,
-      files: active.files,
-      sessions: islandSessions.size,
-      tokens: active.tokens,
-      errors: active.errors,
-      thinking: active.thinking,
-      waiting: active.waiting,
-      pulsing: active.pulsing || false,
-      waitingTool: active.waitingTool,
-      approved: active.approved,
-      denied: active.denied || null,
-      rejected: active.rejected || null,
-      agentsRunning: active.agentsRunning || 0,
-      agentsTotal: active.agentsTotal || 0,
-      apiError: active.apiError || null,
-      idleSeconds: active.idleSince ? Math.floor((Date.now() - active.idleSince) / 1000) : 0,
-      userQuery: active.userQuery,
-      recentTools: active.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
-      activeFile: active.activeFile,
-      elapsed: elapsed,
-      sessionDots: sessionDots,
-      activeSessionColor: active._color || (active.id && sessions.get(active.id)?.color) || null,
-      activeSessionId: active.id || null,
-    });
-  } catch (e) { console.error("sendIslandUpdate error:", e); }
-}
-
-// Periodic update so idle seconds tick up in the pill
-setInterval(() => {
-  const hasIdle = [...islandSessions.values()].some(s => s.idleSince);
-  if (hasIdle) sendIslandUpdate();
-}, 1000);
 
 // DOM
 const paneContainer = document.getElementById("pane-container");
@@ -964,22 +435,10 @@ function connect() {
     if (msg.type === "backlog_done") {
       scrollToBottom();
       // Clear stale states from backlog replay
-      for (const [, ss] of islandSessions) {
-        ss.waiting = false;
-        ss.pulsing = false;
-        ss.waitingTool = null;
-        ss.rejected = null;
-        ss.approved = null;
-        ss.denied = null;
-        // Normalize transient phases — "starting" and "done" are momentary
-        if (ss.phase === "starting") ss.phase = "idle";
-        if (ss.phase === "done") ss.phase = "idle";
-        if (ss.phase === "waiting for input") ss.phase = "idle";
-      }
+      LoupeIsland.normalizeBacklogState();
       // Normalize status bar after backlog
       if (["waiting", "done", "compacting"].includes(statusBar.sessionState)) statusBar.sessionState = "idle";
       statusBar.waitingTool = null;
-      sendIslandUpdate();
       updateStatusBar();
       return;
     }
@@ -1008,232 +467,15 @@ function setConnState(state) {
 
 function resetAll() {
   entries.length = 0;
+  entriesById.clear();
   lineCounter = 0;
   firstEventTs = null;
   sessions.clear();
-  sessionGroups.clear();
-  queryIdCounter = 0;
+  LoupeGrouping.reset();
   colorIdx = 0;
   if (momentumInitialized) Momentum.reset();
   rebuildTabs();
   rebuildPanes();
-}
-
-// ===== Parse =====
-function unwrapHook(json) {
-  if (json && json._logstream_type && json.data) return { hookType: json._logstream_type, ts: json._ts, inner: json.data };
-  return null;
-}
-
-function categorize(msg) {
-  const json = msg.json;
-  if (json) {
-    const hook = unwrapHook(json);
-    if (hook) {
-      // --- Dedup rule 1: Agent events via dedicated hooks only ---
-      // Stash Agent PreToolUse prompt for the next SubagentStart
-      if (hook.hookType === "PreToolUse") {
-        if (hook.inner?.tool_name === "Agent") {
-          window._pendingAgentPrompt = hook.inner?.tool_input?.prompt || hook.inner?.tool_input?.description || null;
-          return null;
-        }
-        return "tool_use";
-      }
-      if (hook.hookType === "PostToolUse") {
-        if (hook.inner?.tool_name === "Agent") return null; // filtered out
-        // --- Dedup rule 2: error path handled by PostToolUseFailure ---
-        if (hook.inner?.is_error) return null; // filtered out
-        return "post_tool";
-      }
-      // --- New hook categories ---
-      if (hook.hookType === "SubagentStart") {
-        if (window._pendingAgentPrompt) {
-          hook.inner._agentPrompt = window._pendingAgentPrompt;
-          window._pendingAgentPrompt = null;
-        }
-        return "sub_agent";
-      }
-      if (hook.hookType === "SubagentStop") return "sub_agent_result";
-      if (hook.hookType === "PostToolUseFailure") return "tool_failure";
-      if (hook.hookType === "StopFailure") return "stop_failure";
-      if (hook.hookType === "SessionStart") return "session_start";
-      if (hook.hookType === "SessionEnd") return "session_end";
-      if (hook.hookType === "PreCompact") return "compact";
-      if (hook.hookType === "PostCompact") return "compact";
-      if (hook.hookType === "UserPromptSubmit") return "user_query";
-      if (hook.hookType === "PermissionRequest") return "permission_request";
-      if (hook.hookType === "PermissionDenied") return "permission_denied";
-      if (hook.hookType === "TaskCreated") return "task_created";
-      if (hook.hookType === "TaskCompleted") return "task_completed";
-      // --- Existing categories ---
-      if (hook.hookType === "tool_rejected") return "tool_rejected";
-      if (hook.hookType === "tool_approved_with_message") return "tool_approved_msg";
-      if (hook.hookType === "thinking") return "thinking";
-      if (hook.hookType === "user_query") return "user_query";
-      if (hook.hookType === "Notification") return "Notification";
-      if (hook.hookType === "Stop") return "Stop";
-    }
-    const t = json.type;
-    if (t === "user_query") return "user_query";
-    if (t === "thinking" || json.thinking) return "thinking";
-    if (t === "tool_use") return "tool_use";
-    if (t === "tool_result") return json.is_error ? "error" : "tool_result";
-    if (t === "error" || json.error) return "error";
-    if (t === "text" || t === "content_block_delta" || t === "assistant") return "text";
-  }
-  const lower = (msg.data || "").toLowerCase();
-  if (lower.includes("error") || lower.includes("fatal")) return "error";
-  return "text";
-}
-
-function extractTitle(msg, category) {
-  const json = msg.json;
-  if (!json) return null;
-  const hook = unwrapHook(json);
-  if (hook && hook.inner) {
-    if (category === "sub_agent" || category === "sub_agent_result") {
-      return hook.inner.agent_type || hook.inner.subagent_type || (hook.inner.tool_input || {}).subagent_type || hook.inner.description || "Agent";
-    }
-    if (category === "permission_request" || category === "permission_denied") {
-      return hook.inner.tool_name || null;
-    }
-    if (category === "tool_failure") {
-      return hook.inner.tool_name || null;
-    }
-    if (category === "task_created" || category === "task_completed") {
-      return null; // subject goes in summary
-    }
-    return hook.inner.tool_name || hook.inner.name || null;
-  }
-  if (category === "tool_use") return json.name || json.tool_name || null;
-  return null;
-}
-
-function extractSummary(msg, category) {
-  const json = msg.json;
-  if (!json) return msg.data || "";
-  const hook = unwrapHook(json);
-  const inner = hook?.inner || json;
-
-  if (category === "tool_use") {
-    const input = inner.tool_input || inner.input || {};
-    if (input.description) return input.description;
-    if (input.file_path) return input.file_path;
-    if (input.command) return input.command.split("\n")[0];
-    if (input.pattern) return `pattern: ${input.pattern}`;
-    if (input.query) return input.query;
-    return Object.keys(input).slice(0, 3).join(", ");
-  }
-  if (category === "tool_result" || category === "post_tool") {
-    const resp = inner.tool_response || {};
-    const out = resp.stdout || inner.tool_result || inner.output || inner.content;
-    if (typeof out === "string") return out.split("\n")[0];
-    return "";
-  }
-  if (category === "error") return inner.error || inner.tool_result || "Error";
-  if (category === "thinking") {
-    const t = inner.thinking || inner.content || inner.text || "";
-    return typeof t === "string" ? t : "";
-  }
-  if (category === "sub_agent") {
-    const prompt = inner._agentPrompt || inner.description || inner.prompt || (inner.tool_input || {}).description || (inner.tool_input || {}).prompt || "";
-    return typeof prompt === "string" ? prompt.slice(0, 100) : "";
-  }
-  if (category === "sub_agent_result") {
-    const text = inner.last_assistant_message || inner.tool_response?.content?.[0]?.text || inner.tool_response?.status || "";
-    return typeof text === "string" ? text.split("\n")[0] : "";
-  }
-  if (category === "permission_request") {
-    return "Waiting: " + (inner.tool_name || "unknown");
-  }
-  if (category === "permission_denied") {
-    return "Blocked: " + (inner.tool_name || "unknown") + (inner.reason ? " \u2014 " + inner.reason : "");
-  }
-  if (category === "tool_failure") {
-    const errMsg = inner.error || inner.tool_result || "unknown error";
-    const firstLine = typeof errMsg === "string" ? errMsg.split("\n")[0] : String(errMsg);
-    return (inner.tool_name || "") + " failed \u2014 " + firstLine;
-  }
-  if (category === "stop_failure") {
-    const reason = inner.reason || inner.error_type || inner.error || "API error";
-    return typeof reason === "string" ? reason.split("\n")[0] : "API error";
-  }
-  if (category === "session_start") {
-    return inner.source === "resume" ? "Session resumed" : "Session started";
-  }
-  if (category === "session_end") {
-    return "Session ended";
-  }
-  if (category === "compact") {
-    const hookType = hook?.hookType;
-    return hookType === "PreCompact" ? "Context compacting..." : "Compaction complete";
-  }
-  if (category === "task_created") {
-    return inner.task_subject || inner.subject || "New task";
-  }
-  if (category === "task_completed") {
-    return (inner.task_subject || inner.subject || "Task") + " \u2713";
-  }
-  return "";
-}
-
-function extractBody(msg, category) {
-  const json = msg.json;
-  if (!json) return msg.data;
-  const hook = unwrapHook(json);
-  if (hook && hook.inner) {
-    const inner = hook.inner;
-    if (category === "sub_agent") return inner._agentPrompt || inner.prompt || inner.tool_input || inner;
-    if (category === "sub_agent_result") return inner.last_assistant_message || inner.tool_response || inner;
-    if (category === "tool_use") return inner.tool_input || inner.input || inner;
-    if (category === "tool_result" || category === "post_tool") return inner.tool_response || inner.tool_result || inner.output || inner.content || inner;
-    if (category === "error") return inner.error || inner.tool_result || inner;
-    if (category === "thinking") return inner.thinking || inner.content || inner.text || inner;
-    return inner;
-  }
-  if (category === "thinking") return json.thinking || json.content || json.text || msg.data;
-  if (category === "text") return json.text || json.content || json.data || msg.data;
-  if (category === "tool_use") return json.input || json.parameters || json;
-  if (category === "tool_result" || category === "post_tool" || category === "error") return json.content || json.output || json.result || json.error || msg.data;
-  return json;
-}
-
-function extractSessionId(msg) {
-  const json = msg.json;
-  if (!json) return null;
-  const hook = unwrapHook(json);
-  return (hook?.inner || json).session_id || null;
-}
-
-function extractUserQuery(msg) {
-  const json = msg.json;
-  if (!json) return null;
-  const hook = unwrapHook(json);
-  const inner = hook?.inner || json;
-  return inner.user_query || inner.prompt || null;
-}
-
-function extractMeta(msg) {
-  const json = msg.json;
-  if (!json) return null;
-  const hook = unwrapHook(json);
-  return (hook?.inner || json).meta || null;
-}
-
-function extractUserImages(msg) {
-  const json = msg.json;
-  if (!json) return null;
-  const hook = unwrapHook(json);
-  return (hook?.inner || json).user_images || null;
-}
-
-function extractSessionLabel(msg) {
-  const json = msg.json;
-  if (!json) return null;
-  const hook = unwrapHook(json);
-  const cwd = (hook?.inner || json).cwd;
-  if (cwd) { const parts = cwd.split("/"); return parts[parts.length - 1] || parts[parts.length - 2] || cwd; }
-  return null;
 }
 
 // ===== Render =====
@@ -1241,16 +483,16 @@ function handleLine(msg) {
   lineCounter++;
   signalActivity();
 
-  const category = categorize(msg);
+  const category = LoupeParse.categorize(msg);
   if (category === null) return; // dedup: filtered out
-  const title = extractTitle(msg, category);
-  const summary = extractSummary(msg, category);
-  const body = extractBody(msg, category);
-  let sessionId = extractSessionId(msg);
-  const sessionLabel = extractSessionLabel(msg);
-  const userQuery = extractUserQuery(msg);
-  const meta = extractMeta(msg);
-  const userImages = extractUserImages(msg);
+  const title = LoupeParse.extractTitle(msg, category);
+  const summary = LoupeParse.extractSummary(msg, category);
+  const body = LoupeParse.extractBody(msg, category);
+  let sessionId = LoupeParse.extractSessionId(msg);
+  const sessionLabel = LoupeParse.extractSessionLabel(msg);
+  const userQuery = LoupeParse.extractUserQuery(msg);
+  const meta = LoupeParse.extractMeta(msg);
+  const userImages = LoupeParse.extractUserImages(msg);
   if (!firstEventTs) firstEventTs = msg.ts;
 
   // --- Sub-agent session mapping ---
@@ -1269,29 +511,30 @@ function handleLine(msg) {
     }
   }
 
-  // If this is a new session_id and there's a pending agent spawn, map it to the parent
-  if (sessionId && !sessions.has(sessionId) && !childSessionMap.has(sessionId)) {
-    // Heuristic 1: match against pending agent spawns (within 60s)
-    for (const [parentSid, info] of pendingAgentSpawns) {
-      if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
-        childSessionMap.set(sessionId, parentSid);
-        break;
+  // If this session_id isn't yet mapped, try to map it to a parent
+  if (sessionId && !childSessionMap.has(sessionId)) {
+    const lbl = (sessionLabel || "").toLowerCase();
+    const sid = (sessionId || "").toLowerCase();
+    const looksLikeAgent = lbl.startsWith("agent-") || lbl.startsWith("agent_") ||
+                           sid.startsWith("agent-") || sid.startsWith("agent_");
+
+    if (!sessions.has(sessionId)) {
+      // Heuristic 1: match against pending agent spawns (within 60s)
+      for (const [parentSid, info] of pendingAgentSpawns) {
+        if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
+          childSessionMap.set(sessionId, parentSid);
+          break;
+        }
       }
     }
     // Heuristic 2: if session ID or label looks like a sub-agent (e.g., "agent-a1"),
-    // map to the most recently active parent session
-    if (!childSessionMap.has(sessionId)) {
-      const lbl = (sessionLabel || "").toLowerCase();
-      const sid = (sessionId || "").toLowerCase();
-      const looksLikeAgent = lbl.startsWith("agent-") || lbl.startsWith("agent_") ||
-                             sid.startsWith("agent-") || sid.startsWith("agent_");
-      if (looksLikeAgent) {
-        let bestParent = null, bestTs = 0;
-        for (const [parentId, info] of sessions) {
-          if (info.lastEventTs > bestTs) { bestTs = info.lastEventTs; bestParent = parentId; }
-        }
-        if (bestParent) childSessionMap.set(sessionId, bestParent);
+    // map to the most recently active parent session (works during backlog too)
+    if (!childSessionMap.has(sessionId) && looksLikeAgent) {
+      let bestParent = null, bestTs = 0;
+      for (const [parentId, info] of sessions) {
+        if (parentId !== sessionId && info.lastEventTs > bestTs) { bestTs = info.lastEventTs; bestParent = parentId; }
       }
+      if (bestParent) childSessionMap.set(sessionId, bestParent);
     }
   }
 
@@ -1323,9 +566,10 @@ function handleLine(msg) {
 
   const entry = { id: lineCounter, category, title, summary, body, raw: msg.data, json: msg.json, ts: msg.ts, sessionId, userQuery, userImages, meta };
   entries.push(entry);
+  entriesById.set(entry.id, entry);
 
   // Assign to task/query group
-  assignToGroup(entry);
+  LoupeGrouping.assignToGroup(entry);
 
   // Feed to universe renderer if initialized
   if (gravityInitialized) Gravity.addEntry(entry);
@@ -1333,7 +577,7 @@ function handleLine(msg) {
 
   // Update Dynamic Island signals
   const wasWaiting = statusBar.sessionState === "waiting";
-  updateIslandFromEntry(entry);
+  LoupeIsland.updateIslandFromEntry(entry);
   updateStatusBarFromEntry(entry);
 
   // Strikethrough the last tool_use entry if it was rejected
@@ -1372,775 +616,17 @@ function handleLine(msg) {
     }
   }
 
-  const streamHidden = streamHiddenCategories.has(entry.category) || streamNoRenderCategories.has(entry.category);
+  const streamHidden = LoupeGrouping.streamHiddenCategories.has(entry.category) || LoupeGrouping.streamNoRenderCategories.has(entry.category);
 
   if (newSession && activeSession === "all" && sessions.size > 1) {
     rebuildPanes();
     rebuildAllPaneContents();
   } else if (!streamHidden && matchesAll(entry)) {
-    appendEntryGrouped(entry);
+    LoupeRender.appendEntryGrouped(entry);
   }
 
   lineCountEl.textContent = lineCounter;
 }
-
-function formatTime(ts) {
-  return new Date(ts).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function badgeLabel(cat) {
-  return {
-    tool_use: "USE", tool_result: "RESULT", post_tool: "POST", error: "ERROR",
-    thinking: "THINK", text: "TEXT", sub_agent: "AGENT", sub_agent_result: "AGENT DONE",
-    user_query: "PROMPT",
-    session_start: "SESSION", session_end: "SESSION",
-    compact: "COMPACT",
-    permission_request: "APPROVE", permission_denied: "DENIED",
-    tool_failure: "FAILED", stop_failure: "API ERROR",
-    task_created: "TASK", task_completed: "TASK \u2713",
-  }[cat] || cat.toUpperCase();
-}
-
-function esc(str) { const d = document.createElement("div"); d.textContent = str; return d.innerHTML; }
-
-function copyToClipboard(text) {
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    return navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
-  }
-  return fallbackCopy(text);
-}
-
-function fallbackCopy(text) {
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.setAttribute("readonly", "");
-  ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0;pointer-events:none";
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  try {
-    document.execCommand("copy");
-  } catch (err) {
-    console.warn("Fallback copy failed:", err);
-  }
-  document.body.removeChild(ta);
-  return Promise.resolve();
-}
-
-function renderEntry(entry) {
-  const div = document.createElement("div");
-  div.className = "log-entry";
-  div.dataset.id = entry.id;
-  div.dataset.category = entry.category;
-  if (entry.sessionId) div.dataset.session = entry.sessionId;
-
-  div.innerHTML = `
-    <div class="entry-row">
-      <span class="entry-badge cat-${entry.category}">${badgeLabel(entry.category)}</span>
-      ${entry.title ? `<span class="entry-tool">${esc(entry.title)}</span>` : ""}
-      <span class="entry-summary">${esc(entry.summary)}</span>
-      <span class="entry-time">${formatTime(entry.ts)}</span>
-    </div>
-  `;
-
-  div.addEventListener("click", () => openModal(entry.id));
-  return div;
-}
-
-// ===== Grouped Rendering =====
-
-function formatTimeRange(startTs, endTs) {
-  const s = formatTime(startTs);
-  const e = formatTime(endTs);
-  return s === e ? s : `${s}–${e}`;
-}
-
-function countItemActions(items) {
-  let count = 0;
-  for (const item of items) {
-    if (item.agentEntry) {
-      count += 1 + item.children.length + (item.resultEntry ? 1 : 0);
-    } else {
-      count++;
-    }
-  }
-  return count;
-}
-
-function renderTaskHeader(task, displayNum) {
-  const div = document.createElement("div");
-  div.className = "task-header";
-  const qCount = task.queries.length;
-  const chevron = task.collapsed ? "\u25B6" : "\u25BC";
-  const num = displayNum || task.seqNum;
-  div.innerHTML = `<span class="task-chevron">${chevron}</span><span class="task-label">Topic ${num}</span><span class="task-time">${formatTimeRange(task.startTs, task.endTs)}</span><span class="task-qcount">${qCount} ${qCount === 1 ? "query" : "queries"}</span>`;
-  return div;
-}
-
-function bindTaskHeaderClick(task) {
-  task.headerEl.addEventListener("click", () => {
-    const isCollapsed = task.bodyEl.classList.toggle("collapsed");
-    task.headerEl.querySelector(".task-chevron").textContent = isCollapsed ? "\u25B6" : "\u25BC";
-    task.collapsed = isCollapsed;
-  });
-}
-
-function renderQueryHeader(query) {
-  const div = document.createElement("div");
-  div.className = "query-header";
-  const actionCount = countItemActions(query.items);
-  const qText = query.userQuery ? esc(query.userQuery) : "No user query found";
-  const chevron = query.collapsed === false ? "\u25BC" : "\u25B6";
-  div.innerHTML = `<span class="query-chevron">${chevron}</span><span class="query-badge">Q</span><span class="query-text-wrap"><span class="query-text">${qText}</span>${query.userQuery ? `<span class="query-tooltip">${esc(query.userQuery)}</span>` : ""}<span class="query-copied">Copied!</span></span><span class="query-count">${actionCount}</span><span class="query-time">${formatTimeRange(query.startTs, query.endTs)}</span>`;
-
-  // Click on query text copies the full query
-  if (query.userQuery) {
-    const wrapEl = div.querySelector(".query-text-wrap");
-    wrapEl.addEventListener("click", (e) => {
-      e.stopPropagation();
-      copyToClipboard(query.userQuery).then(() => {
-        const copiedEl = wrapEl.querySelector(".query-copied");
-        copiedEl.classList.add("visible");
-        wrapEl.classList.add("just-copied");
-        setTimeout(() => {
-          copiedEl.classList.remove("visible");
-          wrapEl.classList.remove("just-copied");
-        }, 1000);
-      });
-    });
-  }
-
-  return div;
-}
-
-function renderAgentHeader(agentEntry) {
-  const div = document.createElement("div");
-  div.className = "agent-header";
-  div.innerHTML = `<span class="agent-chevron">\u25B6</span><span class="entry-badge cat-sub_agent">AGENT</span><span class="agent-desc">${esc(agentEntry.title || agentEntry.summary || "Agent")}</span><span class="entry-time">${formatTime(agentEntry.ts)}</span>`;
-  return div;
-}
-
-function renderAgentGroup(ag, matchFn) {
-  const wrap = document.createElement("div");
-  wrap.className = "agent-group";
-
-  const header = renderAgentHeader(ag.agentEntry);
-  wrap.appendChild(header);
-
-  const childrenEl = document.createElement("div");
-  childrenEl.className = "agent-children collapsed";
-
-  for (const child of ag.children) {
-    if (child.agentEntry) {
-      // Nested agent
-      const nested = renderAgentGroup(child, matchFn);
-      if (nested) childrenEl.appendChild(nested);
-    } else {
-      if (matchFn && !matchFn(child)) continue;
-      const el = renderEntry(child);
-      childrenEl.appendChild(el);
-      child.el = el;
-    }
-  }
-  if (ag.resultEntry) {
-    if (!matchFn || matchFn(ag.resultEntry)) {
-      const resEl = renderEntry(ag.resultEntry);
-      childrenEl.appendChild(resEl);
-      ag.resultEntry.el = resEl;
-    }
-  }
-
-  wrap.appendChild(childrenEl);
-
-  // Chevron click: toggle collapse
-  const chevronEl = header.querySelector(".agent-chevron");
-  chevronEl.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const isCollapsed = childrenEl.classList.toggle("collapsed");
-    chevronEl.textContent = isCollapsed ? "\u25B6" : "\u25BC";
-  });
-
-  // Click on badge/desc: open modal to see the agent prompt
-  header.addEventListener("click", (e) => {
-    e.stopPropagation();
-    // If clicking the chevron, let its own handler deal with it
-    if (e.target === chevronEl || e.target.closest(".agent-chevron")) return;
-    openModal(ag.agentEntry.id);
-  });
-
-  ag.el = wrap;
-  ag.childrenEl = childrenEl;
-  return wrap;
-}
-
-function renderQueryGroup(query, matchFn) {
-  const wrap = document.createElement("div");
-  wrap.className = "query-group";
-
-  const header = renderQueryHeader(query);
-  wrap.appendChild(header);
-
-  const actionsEl = document.createElement("div");
-  actionsEl.className = query.collapsed === false ? "query-actions" : "query-actions collapsed";
-
-  for (const item of query.items) {
-    if (item.agentEntry) {
-      const agEl = renderAgentGroup(item, matchFn);
-      if (agEl) actionsEl.appendChild(agEl);
-    } else {
-      if (matchFn && !matchFn(item)) continue;
-      const el = renderEntry(item);
-      actionsEl.appendChild(el);
-      item.el = el;
-    }
-  }
-
-  wrap.appendChild(actionsEl);
-
-  header.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const isCollapsed = actionsEl.classList.toggle("collapsed");
-    header.querySelector(".query-chevron").textContent = isCollapsed ? "\u25B6" : "\u25BC";
-    query.collapsed = isCollapsed;
-  });
-
-  // Double-click opens thinking entry modal
-  if (query.thinkingEntry) {
-    header.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      openModal(query.thinkingEntry.id);
-    });
-  }
-
-  query.el = wrap;
-  query.actionsEl = actionsEl;
-  query.headerEl = header;
-  return wrap;
-}
-
-function renderTaskGroup(task, matchFn) {
-  const wrap = document.createElement("div");
-  wrap.className = "task-group";
-
-  // No topic header — queries render directly
-  const bodyEl = document.createElement("div");
-  bodyEl.className = "task-body";
-
-  for (const query of task.queries) {
-    const qEl = renderQueryGroup(query, matchFn);
-    bodyEl.appendChild(qEl);
-  }
-
-  wrap.appendChild(bodyEl);
-
-  task.el = wrap;
-  task.bodyEl = bodyEl;
-  task.headerEl = null;
-  return wrap;
-}
-
-// Render all grouped entries for a given session into a container
-// topicOffset: starting topic number (for multi-session rendering in same container)
-function renderGroupedEntries(container, sessionId, topicOffset) {
-  const gs = sessionGroups.get(sessionId);
-  if (!gs) return { matchCount: 0, topicCount: 0 };
-
-  const matchFn = (entry) => matchesFilter(entry) && matchesSearch(entry);
-  let matchCount = 0;
-  const base = topicOffset || 0;
-
-  for (let i = 0; i < gs.tasks.length; i++) {
-    const task = gs.tasks[i];
-    task._displayNum = base + i + 1; // sequential display number
-    const taskEl = renderTaskGroup(task, matchFn);
-    container.appendChild(taskEl);
-    taskEl.querySelectorAll(".log-entry").forEach(() => matchCount++);
-  }
-
-  return { matchCount, topicCount: gs.tasks.length };
-}
-
-// Real-time append: insert entry into its correct grouped DOM position
-function appendEntryGrouped(entry) {
-  const container = getContainerFor(entry);
-  if (!container || !container.isConnected) {
-    // Container missing or detached — schedule a full pane rebuild to recover
-    scheduleIntegrityRebuild();
-    return;
-  }
-
-  const empty = container.querySelector(".empty-state");
-  if (empty) empty.remove();
-
-  // Session boundaries are rendered directly, not inside query groups
-  if (entry.category === "session_start" || entry.category === "session_end") {
-    const el = renderEntry(entry);
-    el.classList.add("session-divider");
-    el.classList.add("flash");
-    entry.el = el;
-    container.appendChild(el);
-    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
-    return;
-  }
-
-  const sid = entry.sessionId || "default";
-  const gs = sessionGroups.get(sid);
-  if (!gs) return;
-
-  const task = gs.currentTask;
-  const query = gs.currentQuery;
-  if (!task || !query) return;
-
-  // Detect stale DOM: task.el or query.actionsEl detached from the live document
-  if ((task.el && !task.el.isConnected) || (query.actionsEl && !query.actionsEl.isConnected)) {
-    scheduleIntegrityRebuild();
-    return;
-  }
-
-  // Compute display number: count tasks in all prior sessions + index in current session
-  if (!task._displayNum) {
-    let offset = 0;
-    for (const [otherSid, otherGs] of sessionGroups) {
-      if (otherSid === sid) break;
-      offset += otherGs.tasks.length;
-    }
-    task._displayNum = offset + gs.tasks.indexOf(task) + 1;
-  }
-
-  // Ensure task DOM exists (no topic header — queries render directly)
-  if (!task.el) {
-    const taskEl = document.createElement("div");
-    taskEl.className = "task-group";
-    const bodyEl = document.createElement("div");
-    bodyEl.className = "task-body";
-    taskEl.appendChild(bodyEl);
-    task.el = taskEl;
-    task.bodyEl = bodyEl;
-    task.headerEl = null;
-    container.appendChild(taskEl);
-  }
-
-  // Ensure query DOM exists
-  if (!query.el) {
-    const matchFn = (e) => matchesFilter(e) && matchesSearch(e);
-    const qEl = renderQueryGroup(query, matchFn);
-    task.bodyEl.appendChild(qEl);
-  } else {
-    // Update query header (action count may have changed)
-    const newQHeader = renderQueryHeader(query);
-    // Preserve collapse state in new header
-    if (!query.collapsed) {
-      newQHeader.querySelector(".query-chevron").textContent = "\u25BC";
-    }
-    // Re-bind click handler
-    newQHeader.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const isCollapsed = query.actionsEl.classList.toggle("collapsed");
-      newQHeader.querySelector(".query-chevron").textContent = isCollapsed ? "\u25B6" : "\u25BC";
-      query.collapsed = isCollapsed;
-    });
-    if (query.thinkingEntry) {
-      newQHeader.addEventListener("dblclick", (e) => {
-        e.stopPropagation();
-        openModal(query.thinkingEntry.id);
-      });
-    }
-    if (query.headerEl && query.el.contains(query.headerEl)) {
-      query.el.replaceChild(newQHeader, query.headerEl);
-    } else {
-      query.el.insertBefore(newQHeader, query.el.firstChild);
-    }
-    query.headerEl = newQHeader;
-  }
-
-  // user_query and thinking entries that started a new query are represented by the query header
-  if (entry.category === "user_query") {
-    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
-    return;
-  }
-  if (entry.category === "thinking" && entry.userQuery && query.thinkingEntry === entry && query.items.length === 0) {
-    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
-    return;
-  }
-
-  // For sub_agent and sub_agent_result, the agent group rendering handles it
-  if (entry.category === "sub_agent") {
-    // Find the agent group just created by assignToGroup
-    const ag = findAgentGroupForEntry(gs, entry);
-    if (ag) {
-      const agEl = renderAgentGroup(ag, (e) => matchesFilter(e) && matchesSearch(e));
-      if (agEl) {
-        // Insert into correct parent
-        if (gs.agentStack.length > 1) {
-          // Nested: parent agent's childrenEl
-          const parentAg = gs.agentStack[gs.agentStack.length - 2];
-          if (parentAg && parentAg.childrenEl) parentAg.childrenEl.appendChild(agEl);
-        } else {
-          query.actionsEl.appendChild(agEl);
-        }
-      }
-    }
-    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
-    return;
-  }
-
-  if (entry.category === "sub_agent_result") {
-    // Result was already attached to agent group by assignToGroup
-    // Re-render the agent group or just append result entry
-    // Find the agent group that just got its result
-    const ag = findAgentGroupForResult(gs, entry);
-    if (ag && ag.childrenEl) {
-      if (matchesFilter(entry) && matchesSearch(entry)) {
-        const resEl = renderEntry(entry);
-        resEl.classList.add("flash");
-        ag.childrenEl.appendChild(resEl);
-        entry.el = resEl;
-      }
-    }
-    if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
-    return;
-  }
-
-  // Regular entry
-  if (!matchesFilter(entry) || !matchesSearch(entry)) return;
-
-  const el = renderEntry(entry);
-  el.classList.add("flash");
-
-  // Append to top-of-stack agent or query actions
-  if (gs.agentStack.length > 0) {
-    const topAg = gs.agentStack[gs.agentStack.length - 1];
-    if (topAg.childrenEl) topAg.childrenEl.appendChild(el);
-    else query.actionsEl.appendChild(el);
-  } else {
-    query.actionsEl.appendChild(el);
-  }
-
-  entry.el = el;
-  if (shouldAutoScroll(entry)) scrollPaneToBottom(entry);
-}
-
-function findAgentGroupForEntry(gs, entry) {
-  // The entry was just pushed as the last item on the agent stack
-  if (gs.agentStack.length > 0) {
-    const top = gs.agentStack[gs.agentStack.length - 1];
-    if (top.agentEntry === entry) return top;
-  }
-  return null;
-}
-
-function findAgentGroupForResult(gs, entry) {
-  // The result was just popped off the stack — search recent query items
-  const query = gs.currentQuery;
-  if (!query) return null;
-  function searchItems(items) {
-    for (const item of items) {
-      if (item.agentEntry && item.resultEntry === entry) return item;
-      if (item.agentEntry) {
-        const found = searchItems(item.children);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-  return searchItems(query.items);
-}
-
-// ===== Detail Modal =====
-let modalEntryId = null;
-
-function openModal(id) {
-  const entry = entries.find(e => e.id === id);
-  if (!entry) return;
-  modalEntryId = id;
-
-  modalBadge.className = `modal-badge cat-${entry.category}`;
-  modalBadge.textContent = badgeLabel(entry.category);
-  modalTool.textContent = entry.title || "";
-  modalTime.textContent = formatTime(entry.ts);
-
-  // Apply thinking variant to panel
-  modalPanel.classList.toggle("modal-thinking", entry.category === "thinking");
-
-  modalBody.innerHTML = "";
-
-  if (entry.category === "thinking") {
-    // Thinking modal: user query + thinking content
-    if (entry.userQuery) {
-      const queryWrap = document.createElement("div");
-      queryWrap.className = "modal-user-query-inline";
-      queryWrap.innerHTML = `<span class="modal-user-query-label">Q</span><span class="modal-user-query-text">${esc(entry.userQuery)}</span>`;
-      queryWrap.style.cursor = "pointer";
-      queryWrap.addEventListener("click", () => {
-        const isExpanded = queryWrap.classList.toggle("expanded");
-        queryWrap.title = isExpanded ? "Click to collapse" : "Click to expand";
-      });
-      queryWrap.title = "Click to expand";
-      modalBody.appendChild(queryWrap);
-    }
-    // Image thumbnails
-    if (entry.userImages && entry.userImages.length > 0) {
-      const imgRow = document.createElement("div");
-      imgRow.className = "modal-image-row";
-      for (const imgPath of entry.userImages) {
-        const thumb = document.createElement("img");
-        thumb.className = "modal-image-thumb";
-        thumb.src = `/image?path=${encodeURIComponent(imgPath)}`;
-        thumb.alt = "User image";
-        thumb.addEventListener("click", () => {
-          thumb.classList.toggle("modal-image-expanded");
-        });
-        imgRow.appendChild(thumb);
-      }
-      modalBody.appendChild(imgRow);
-    }
-    const thinkCode = document.createElement("div");
-    thinkCode.className = "modal-code modal-thinking-body";
-    const bodyText = String(entry.body || "");
-    thinkCode.textContent = bodyText;
-    modalBody.appendChild(thinkCode);
-
-    // If thinking text was truncated by backlog, add expand button to fetch full content
-    if (bodyText.match(/\.\.\.\(\d+ more chars\)$/)) {
-      const expandBtn = document.createElement("button");
-      expandBtn.className = "modal-expand-btn";
-      expandBtn.textContent = "Load full thinking";
-      expandBtn.addEventListener("click", async () => {
-        expandBtn.textContent = "Loading...";
-        expandBtn.disabled = true;
-        try {
-          const resp = await fetch("/api/full-entry", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ts: entry.ts, category: "thinking" }),
-          });
-          if (resp.ok) {
-            const fullObj = await resp.json();
-            const inner = fullObj.data || fullObj;
-            const fullText = inner.thinking || inner.content || inner.text || "";
-            if (fullText) {
-              thinkCode.textContent = fullText;
-              expandBtn.remove();
-            } else {
-              expandBtn.textContent = "Full text not found";
-            }
-          } else {
-            expandBtn.textContent = "Failed to load";
-          }
-        } catch {
-          expandBtn.textContent = "Failed to load";
-        }
-      });
-      modalBody.insertBefore(expandBtn, thinkCode.nextSibling);
-    }
-
-    // Collapsible metadata
-    if (entry.meta) {
-      const metaToggle = document.createElement("div");
-      metaToggle.className = "modal-meta-toggle";
-      metaToggle.innerHTML = `<span class="modal-meta-arrow">\u25b6</span> Metadata`;
-      const metaContent = document.createElement("div");
-      metaContent.className = "modal-meta-content";
-      metaContent.style.display = "none";
-      const m = entry.meta;
-      const rows = [];
-      if (m.model) rows.push(["Model", m.model]);
-      if (m.input_tokens) rows.push(["Input tokens", m.input_tokens.toLocaleString()]);
-      if (m.output_tokens) rows.push(["Output tokens", m.output_tokens.toLocaleString()]);
-      if (m.cache_read) rows.push(["Cache read", m.cache_read.toLocaleString()]);
-      if (m.cache_create) rows.push(["Cache create", m.cache_create.toLocaleString()]);
-      if (m.cwd) rows.push(["Working dir", m.cwd]);
-      if (m.git_branch) rows.push(["Branch", m.git_branch]);
-      if (m.version) rows.push(["Version", m.version]);
-      metaContent.innerHTML = rows.map(([k, v]) =>
-        `<div class="modal-meta-row"><span class="modal-meta-key">${esc(k)}</span><span class="modal-meta-val">${esc(String(v))}</span></div>`
-      ).join("");
-      metaToggle.addEventListener("click", () => {
-        const open = metaContent.style.display !== "none";
-        metaContent.style.display = open ? "none" : "";
-        metaToggle.querySelector(".modal-meta-arrow").textContent = open ? "\u25b6" : "\u25bc";
-      });
-      modalBody.appendChild(metaToggle);
-      modalBody.appendChild(metaContent);
-    }
-  } else if (entry.category === "sub_agent" || entry.category === "sub_agent_result") {
-    const content = entry.body;
-    if (content && typeof content === "object") {
-      // Prompt section
-      const prompt = content.prompt || content.description;
-      if (prompt) {
-        const lbl = document.createElement("div");
-        lbl.className = "modal-section-label";
-        lbl.textContent = "Prompt";
-        modalBody.appendChild(lbl);
-        const code = document.createElement("div");
-        code.className = "modal-code";
-        code.textContent = prompt;
-        modalBody.appendChild(code);
-      }
-      // Content blocks
-      const blocks = content.content || [];
-      if (Array.isArray(blocks) && blocks.length > 0) {
-        const lbl = document.createElement("div");
-        lbl.className = "modal-section-label";
-        lbl.textContent = "Response";
-        modalBody.appendChild(lbl);
-        for (const block of blocks) {
-          const blockDiv = document.createElement("div");
-          blockDiv.className = "modal-code modal-agent-block";
-          if (block.type && block.type !== "text") {
-            const tag = document.createElement("span");
-            tag.className = "modal-agent-block-type";
-            tag.textContent = block.type;
-            blockDiv.appendChild(tag);
-          }
-          const text = block.text || block.content || (typeof block === "string" ? block : JSON.stringify(block));
-          const textNode = document.createTextNode(text);
-          blockDiv.appendChild(textNode);
-          modalBody.appendChild(blockDiv);
-        }
-      }
-      // Status if present
-      if (content.status && content.status !== "completed") {
-        const lbl = document.createElement("div");
-        lbl.className = "modal-section-label";
-        lbl.textContent = "Status";
-        modalBody.appendChild(lbl);
-        const code = document.createElement("div");
-        code.className = "modal-code";
-        code.textContent = content.status;
-        modalBody.appendChild(code);
-      }
-    } else if (content) {
-      const code = document.createElement("div");
-      code.className = "modal-code";
-      code.textContent = String(content);
-      modalBody.appendChild(code);
-    }
-  } else {
-    const content = entry.body;
-    if (content && typeof content === "object") {
-      if (content.tool_input || content.command || content.file_path) {
-        addModalSection("Input", content);
-      } else if (content.tool_response) {
-        addModalSection("Input", { ...content, tool_response: undefined });
-        addModalSection("Response", content.tool_response);
-      } else {
-        addModalSection("Detail", content);
-      }
-    } else if (content) {
-      const code = document.createElement("div");
-      code.className = "modal-code";
-      code.textContent = String(content);
-      modalBody.appendChild(code);
-    }
-  }
-
-  modalOverlay.classList.add("visible");
-}
-
-function addModalSection(label, obj) {
-  const lbl = document.createElement("div");
-  lbl.className = "modal-section-label";
-  lbl.textContent = label;
-  modalBody.appendChild(lbl);
-
-  const code = document.createElement("div");
-  code.className = "modal-code";
-  if (typeof obj === "object" && obj !== null) {
-    code.appendChild(renderJsonTree(obj));
-  } else {
-    code.textContent = String(obj || "");
-  }
-  modalBody.appendChild(code);
-}
-
-function closeModal() {
-  modalOverlay.classList.remove("visible");
-  modalOverlay.classList.remove("modal-replay");
-  modalEntryId = null;
-}
-
-modalClose.addEventListener("click", closeModal);
-modalOverlay.addEventListener("click", (e) => { if (e.target === modalOverlay) closeModal(); });
-
-document.getElementById("modal-copy").addEventListener("click", () => {
-  const text = modalBody.innerText || modalBody.textContent || "";
-  copyToClipboard(text);
-  const btn = document.getElementById("modal-copy");
-  btn.textContent = "\u2713";
-  setTimeout(() => { btn.innerHTML = "&#x2398;"; }, 1000);
-});
-
-// ===== JSON Tree =====
-function renderJsonTree(obj, depth = 0) {
-  const wrap = document.createElement("div");
-  wrap.className = "json-tree";
-  if (typeof obj !== "object" || obj === null) { wrap.innerHTML = renderPrimitive(obj); return wrap; }
-
-  const isArr = Array.isArray(obj);
-  const keys = Object.keys(obj);
-  const open = isArr ? "[" : "{";
-  const close = isArr ? "]" : "}";
-  if (keys.length === 0) { wrap.innerHTML = `<span class="json-bracket">${open}${close}</span>`; return wrap; }
-
-  const collapsed = depth > 1;
-  const toggle = document.createElement("span");
-  toggle.className = "json-toggle";
-  toggle.textContent = collapsed ? "\u25b6 " : "\u25bc ";
-  toggle.onclick = (e) => {
-    e.stopPropagation();
-    const c = wrap.querySelector(".json-content");
-    const ind = wrap.querySelector(".json-collapsed-indicator");
-    if (c.style.display === "none") { c.style.display = ""; if (ind) ind.style.display = "none"; toggle.textContent = "\u25bc "; }
-    else { c.style.display = "none"; if (ind) ind.style.display = ""; toggle.textContent = "\u25b6 "; }
-  };
-  wrap.appendChild(toggle);
-  wrap.appendChild(spanOf(open, "json-bracket"));
-
-  const indicator = document.createElement("span");
-  indicator.className = "json-collapsed-indicator";
-  indicator.textContent = ` ${keys.length} items `;
-  indicator.style.display = collapsed ? "" : "none";
-  wrap.appendChild(indicator);
-
-  const content = document.createElement("div");
-  content.className = "json-content";
-  content.style.paddingLeft = "14px";
-  content.style.display = collapsed ? "none" : "";
-
-  keys.forEach((key, i) => {
-    const line = document.createElement("div");
-    if (!isArr) { line.appendChild(spanOf(`"${key}"`, "json-key")); line.appendChild(spanOf(": ", "json-bracket")); }
-    const val = obj[key];
-    if (typeof val === "object" && val !== null) line.appendChild(renderJsonTree(val, depth + 1));
-    else line.innerHTML += renderPrimitive(val);
-    if (i < keys.length - 1) line.appendChild(spanOf(",", "json-bracket"));
-    content.appendChild(line);
-  });
-
-  wrap.appendChild(content);
-  wrap.appendChild(spanOf(close, "json-bracket"));
-  return wrap;
-}
-
-let truncId = 0;
-function renderPrimitive(val) {
-  if (val === null) return `<span class="json-null">null</span>`;
-  if (typeof val === "boolean") return `<span class="json-bool">${val}</span>`;
-  if (typeof val === "number") return `<span class="json-number">${val}</span>`;
-  const str = String(val);
-  if (str.length <= 800) return `<span class="json-string">"${esc(str)}"</span>`;
-  const id = "trunc-" + (truncId++);
-  return `<span class="json-string" id="${id}">"${esc(str.slice(0, 800))}<span class="trunc-fade">...</span>"<button class="trunc-btn" onclick="event.stopPropagation(); expandTruncated('${id}', this)" data-full="${esc(str).replace(/"/g, '&quot;')}">${str.length.toLocaleString()} chars</button></span>`;
-}
-
-window.expandTruncated = (id, btn) => {
-  const el = document.getElementById(id);
-  if (el) el.innerHTML = `"${btn.dataset.full}"`;
-};
-
-function spanOf(text, cls) { const s = document.createElement("span"); s.className = cls; s.textContent = text; return s; }
 
 // ===== Filtering =====
 function matchesAll(entry) { return matchesFilter(entry) && matchesSession(entry) && matchesSearch(entry); }
@@ -2157,8 +643,8 @@ function matchesSearch(entry) {
 }
 
 function applySearch(text) {
-  if (!searchQuery) return esc(text);
-  const escaped = esc(text);
+  if (!searchQuery) return LoupeUtils.esc(text);
+  const escaped = LoupeUtils.esc(text);
   const q = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return escaped.replace(new RegExp(`(${q})`, "gi"), "<mark>$1</mark>");
 }
@@ -2277,7 +763,7 @@ function rebuildAllPaneContents() {
   for (const p of panes.values()) p.scrollEl.innerHTML = "";
 
   // Clear DOM references in group state so they get re-created
-  for (const gs of sessionGroups.values()) {
+  for (const gs of LoupeGrouping.sessionGroups.values()) {
     for (const task of gs.tasks) {
       task.el = null; task.bodyEl = null; task.headerEl = null;
       for (const query of task.queries) {
@@ -2298,7 +784,7 @@ function rebuildAllPaneContents() {
     // Single session: render grouped
     const container = panes.get("main")?.scrollEl;
     if (container) {
-      const r = renderGroupedEntries(container, activeSession, 0);
+      const r = LoupeRender.renderGroupedEntries(container, activeSession, 0);
       matchCount = r.matchCount;
     }
   } else if (sessions.size <= 1) {
@@ -2306,7 +792,7 @@ function rebuildAllPaneContents() {
     const sid = sessions.keys().next().value || "default";
     const container = panes.get("main")?.scrollEl;
     if (container) {
-      const r = renderGroupedEntries(container, sid, 0);
+      const r = LoupeRender.renderGroupedEntries(container, sid, 0);
       matchCount = r.matchCount;
     }
   } else {
@@ -2315,7 +801,7 @@ function rebuildAllPaneContents() {
     for (const [sid] of sessions) {
       const pane = panes.get(sid);
       if (pane) {
-        const r = renderGroupedEntries(pane.scrollEl, sid, topicOffset);
+        const r = LoupeRender.renderGroupedEntries(pane.scrollEl, sid, topicOffset);
         matchCount += r.matchCount;
         topicOffset += r.topicCount;
       }
@@ -2357,7 +843,7 @@ function rebuildTabs() {
       const tab = document.createElement("div");
       tab.className = "session-tab active";
       tab.dataset.session = id;
-      tab.innerHTML = `<span class="tab-label">${esc(info.label)}</span>`;
+      tab.innerHTML = `<span class="tab-label">${LoupeUtils.esc(info.label)}</span>`;
       tabBar.appendChild(tab);
     }
     return;
@@ -2386,7 +872,7 @@ function rebuildTabs() {
     tab.draggable = true;
     const shortcut = tabIdx <= 9 ? `<span class="tab-shortcut">${tabIdx}</span>` : "";
     const staleLabel = isStale ? `<span class="tab-stale-label">${staleMinutes}m</span>` : "";
-    tab.innerHTML = `<span class="tab-label">${esc(info.label)}</span>${shortcut}${staleLabel}<span class="tab-dot"></span><button class="tab-close" title="Remove">&times;</button>`;
+    tab.innerHTML = `<span class="tab-label">${LoupeUtils.esc(info.label)}</span>${shortcut}${staleLabel}<span class="tab-dot"></span><button class="tab-close" title="Remove">&times;</button>`;
     tab.onclick = (e) => { if (!e.target.classList.contains("tab-close")) switchSession(id); };
     tab.querySelector(".tab-close").onclick = (e) => { e.stopPropagation(); removeSession(id); };
 
@@ -2454,14 +940,23 @@ function reconcileSessions(serverList) {
       if (sInfo && !sInfo.stale) { sInfo.stale = true; changed = true; }
     }
   }
-  // Add missing sessions from server
+  // Add missing sessions from server (skip agent sub-sessions)
   for (const s of serverList) {
-    if (!sessions.has(s.id)) {
-      const sColor = nextSessionColor();
-      sessions.set(s.id, { label: s.label, count: 0, color: sColor, lastEventTs: null });
-      if (Gravity.registerSession) Gravity.registerSession(s.id, s.label, sColor);
-      changed = true;
+    if (sessions.has(s.id) || childSessionMap.has(s.id)) continue;
+    const sid = (s.id || "").toLowerCase();
+    const slbl = (s.label || "").toLowerCase();
+    if (sid.startsWith("agent-") || sid.startsWith("agent_") || slbl.startsWith("agent-") || slbl.startsWith("agent_")) {
+      // Map agent session to most recent parent
+      let bestParent = null, bestTs = 0;
+      for (const [parentId, info] of sessions) {
+        if (parentId !== s.id && (info.lastEventTs || 0) > bestTs) { bestTs = info.lastEventTs || 0; bestParent = parentId; }
+      }
+      if (bestParent) { childSessionMap.set(s.id, bestParent); continue; }
     }
+    const sColor = nextSessionColor();
+    sessions.set(s.id, { label: s.label, count: 0, color: sColor, lastEventTs: null });
+    if (Gravity.registerSession) Gravity.registerSession(s.id, s.label, sColor);
+    changed = true;
   }
   if (changed) {
     rebuildTabs();
@@ -2518,7 +1013,7 @@ window.toggleExpandAll = () => {
   });
 
   // Update collapsed state in data model and rebuild to ensure DOM is consistent
-  for (const gs of sessionGroups.values()) {
+  for (const gs of LoupeGrouping.sessionGroups.values()) {
     for (const task of gs.tasks) {
       task.collapsed = !allExpanded;
       for (const query of task.queries) {
@@ -2529,301 +1024,17 @@ window.toggleExpandAll = () => {
   rebuildAllPaneContents();
 };
 
-// ===== Replay Analysis =====
-let replayAbort = null;      // current AbortController
-let replaySessionId = null;  // session being analyzed
-let replayAnalyzing = false;
-let replayRawMarkdown = null; // raw analysis text for export
-
-window.requestReplayAnalysis = async () => {
-  const sid = activeSession === "all" ? (sessions.keys().next().value || null) : activeSession;
-  if (!sid) return;
-  // Open the popover with timeline only — don't auto-run analysis
-  openReplayPopover(sid);
-};
-
-async function fetchReplayTimeline(sid) {
-  try {
-    const resp = await fetch("/api/session-timeline", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: sid }),
-    });
-    const data = await resp.json();
-    renderReplayTimeline(data.timeline || [], data.totalEntries || 0);
-  } catch {}
-}
-
-async function runReplayAnalysis(sid) {
-  if (replayAbort) replayAbort.abort();
-  replayAbort = new AbortController();
-  replaySessionId = sid;
-  replayAnalyzing = true;
-  updateReplayActionBtn();
-
-  const scroll = document.getElementById("replay-analysis-scroll");
-  scroll.innerHTML = '<div class="replay-loading">Analyzing session...</div>';
-
-  const data = await fetch("/api/replay-analysis", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId: sid }),
-    signal: replayAbort.signal,
-  }).then(r => r.json()).catch(err => {
-    if (err.name === "AbortError") return { cancelled: true };
-    return { error: `Request failed: ${err.message}` };
-  });
-
-  replayAnalyzing = false;
-  updateReplayActionBtn();
-
-  if (data.cancelled) {
-    replayRawMarkdown = null;
-    scroll.innerHTML = '<div class="replay-error" style="color:var(--text-muted)">Analysis cancelled.</div>';
-  } else if (data.error) {
-    replayRawMarkdown = null;
-    scroll.innerHTML = `<div class="replay-error">${esc(data.error)}</div>`;
-  } else {
-    replayRawMarkdown = data.analysis;
-    scroll.innerHTML = `<div class="replay-content">${renderMarkdown(data.analysis)}</div>`;
-  }
-  updateExportBtn();
-}
-
-window.startReplayAnalysis = function() {
-  if (!replaySessionId) return;
-  runReplayAnalysis(replaySessionId);
-};
-
-window.cancelReplayAnalysis = function() {
-  if (replayAbort) { replayAbort.abort(); replayAbort = null; }
-};
-
-window.restartReplayAnalysis = function() {
-  if (!replaySessionId) return;
-  runReplayAnalysis(replaySessionId);
-};
-
-function updateReplayActionBtn() {
-  const btn = document.getElementById("replay-action-btn");
-  if (!btn) return;
-  if (replayAnalyzing) {
-    btn.textContent = "Cancel";
-    btn.title = "Cancel analysis";
-    btn.onclick = cancelReplayAnalysis;
-    btn.className = "replay-action-btn replay-action-cancel";
-  } else if (replayRawMarkdown) {
-    btn.textContent = "Restart";
-    btn.title = "Re-run analysis";
-    btn.onclick = restartReplayAnalysis;
-    btn.className = "replay-action-btn replay-action-restart";
-  } else {
-    btn.textContent = "Start";
-    btn.title = "Run analysis";
-    btn.onclick = startReplayAnalysis;
-    btn.className = "replay-action-btn replay-action-start";
-  }
-}
-
-function updateExportBtn() {
-  const btn = document.getElementById("replay-export-btn");
-  if (!btn) return;
-  btn.disabled = !replayRawMarkdown;
-  btn.style.opacity = replayRawMarkdown ? "1" : "0.4";
-}
-
-window.exportReplayMd = function() {
-  if (!replayRawMarkdown) return;
-  const sInfo = replaySessionId ? sessions.get(replaySessionId) : null;
-  const label = sInfo ? sInfo.label : "session";
-  const date = new Date().toISOString().slice(0, 10);
-  const filename = `replay-${label}-${date}.md`;
-
-  const blob = new Blob([replayRawMarkdown], { type: "text/markdown;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-};
-
-function openReplayPopover(sessionId) {
-  const overlay = document.getElementById("replay-popover-overlay");
-  const sessionLabel = document.getElementById("replay-session-label");
-  const archetypeBadge = document.getElementById("replay-archetype-badge");
-  const timelineScroll = document.getElementById("replay-timeline-scroll");
-  const analysisScroll = document.getElementById("replay-analysis-scroll");
-  const riskMeter = document.getElementById("replay-risk-meter");
-
-  // Reset content
-  replayRawMarkdown = null;
-  replaySessionId = sessionId;
-  replayAnalyzing = false;
-  timelineScroll.innerHTML = '<div class="replay-loading">Loading timeline...</div>';
-  analysisScroll.innerHTML = '<div class="replay-idle">Press <strong>Start</strong> to run analysis</div>';
-  updateReplayActionBtn();
-  updateExportBtn();
-
-  // Fetch timeline immediately
-  fetchReplayTimeline(sessionId);
-
-  // Session label
-  const sInfo = sessions.get(sessionId);
-  sessionLabel.textContent = sInfo ? sInfo.label : sessionId.slice(0, 12);
-
-  // Behavioral signature data from Momentum
-  const sig = Momentum.getSignature ? Momentum.getSignature(sessionId) : null;
-  if (sig && sig.archetype) {
-    archetypeBadge.textContent = sig.archetype.replace(/-/g, " ");
-    archetypeBadge.style.display = "";
-  } else {
-    archetypeBadge.style.display = "none";
-  }
-
-  // Risk meter
-  if (sig) {
-    const risk = Math.round(sig.riskScore * 100);
-    let barColor;
-    if (sig.riskScore < 0.3) barColor = "#06b6d4";
-    else if (sig.riskScore < 0.6) barColor = "#eab308";
-    else barColor = "#ef4444";
-    riskMeter.innerHTML = `
-      <span class="risk-label">risk ${risk}%</span>
-      <div class="risk-bar"><div class="risk-fill" style="width:${risk}%;background:${barColor}"></div></div>
-    `;
-  } else {
-    riskMeter.innerHTML = "";
-  }
-
-  overlay.style.display = "";
-}
-
-window.closeReplayPopover = function() {
-  document.getElementById("replay-popover-overlay").style.display = "none";
-};
-
-function renderReplayTimeline(timeline, totalEntries) {
-  const scroll = document.getElementById("replay-timeline-scroll");
-  if (!timeline || timeline.length === 0) {
-    scroll.innerHTML = '<div class="replay-loading" style="animation:none">No timeline data available</div>';
-    return;
-  }
-
-  const frag = document.createDocumentFragment();
-
-  for (const item of timeline) {
-    const div = document.createElement("div");
-    div.className = `tl-entry tl-${item.type}`;
-
-    const num = document.createElement("span");
-    num.className = "tl-num";
-    num.textContent = item.n;
-    div.appendChild(num);
-
-    const badge = document.createElement("span");
-    badge.className = `tl-badge tl-badge-${item.type}`;
-    if (item.type === "user") badge.textContent = "Q";
-    else if (item.type === "think") badge.textContent = "T";
-    else if (item.type === "tool") badge.textContent = item.tool || "USE";
-    else if (item.type === "error") badge.textContent = "ERR";
-    else badge.textContent = "TXT";
-    div.appendChild(badge);
-
-    const text = document.createElement("span");
-    text.className = "tl-text";
-    let displayText = item.text || item.detail || "";
-    // Shorten file paths to basename for readability
-    displayText = displayText.replace(/\/[\w./-]+\/([\w.-]+)/g, "$1");
-    text.textContent = displayText;
-    text.title = item.text || item.detail || ""; // full path in tooltip
-    div.appendChild(text);
-
-    frag.appendChild(div);
-  }
-
-  // Summary at top
-  const summary = document.createElement("div");
-  summary.className = "tl-entry";
-  summary.style.cssText = "padding:8px 10px;color:var(--text-muted);border-bottom:1px solid var(--border,rgba(255,255,255,0.06));margin-bottom:4px";
-  const userCount = timeline.filter(t => t.type === "user").length;
-  const toolCount = timeline.filter(t => t.type === "tool").length;
-  const errCount = timeline.filter(t => t.type === "error").length;
-  summary.innerHTML = `<span style="font-size:10px">${totalEntries} entries &middot; ${userCount} queries &middot; ${toolCount} tools${errCount ? ` &middot; <span style="color:#ef4444">${errCount} errors</span>` : ""}</span>`;
-
-  scroll.innerHTML = "";
-  scroll.appendChild(summary);
-  scroll.appendChild(frag);
-}
-
-function renderMarkdown(text) {
-  if (!text) return "";
-  // Escape HTML
-  let html = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-  // Fenced code blocks (```...```)
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-    `<pre class="md-code-block"><code>${code.trimEnd()}</code></pre>`);
-
-  // Tables: detect rows of |...|...|
-  html = html.replace(/((?:^\|.+\|$\n?)+)/gm, (tableBlock) => {
-    const rows = tableBlock.trim().split("\n").filter(r => r.trim());
-    if (rows.length < 2) return tableBlock;
-    // Check if second row is separator (|---|---|)
-    const isSep = rows[1] && /^\|[\s:-]+\|/.test(rows[1]);
-    const dataRows = isSep ? [rows[0], ...rows.slice(2)] : rows;
-    let t = '<table class="md-table">';
-    dataRows.forEach((row, i) => {
-      const cells = row.split("|").slice(1, -1).map(c => c.trim());
-      const tag = (i === 0 && isSep) ? "th" : "td";
-      t += "<tr>" + cells.map(c => `<${tag}>${c}</${tag}>`).join("") + "</tr>";
-    });
-    t += "</table>";
-    return t;
-  });
-
-  // Headings
-  html = html.replace(/^## (.+)$/gm, "<h3>$1</h3>");
-  html = html.replace(/^### (.+)$/gm, "<h4>$1</h4>");
-  // Inline formatting
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-  // Progress bars
-  html = html.replace(/^(\s*)(█+░*)\s*(.*)$/gm,
-    '<div style="font-family:monospace;font-size:10px;color:var(--text-muted)">$1<span style="color:#06b6d4">$2</span> $3</div>');
-  // Block formatting
-  html = html.replace(/\n\n/g, "<br><br>");
-  html = html.replace(/\n- /g, "<br>• ");
-  html = html.replace(/\n(\d+)\. /g, "<br>$1. ");
-  return html;
-}
-
-// Legacy modal fallback (kept for non-popover contexts)
-function showReplayModal(html) {
-  modalOverlay.classList.add("modal-replay");
-  modalBadge.className = "modal-badge cat-thinking";
-  modalBadge.textContent = "REPLAY";
-  modalTool.textContent = "Session Analysis";
-  modalTime.textContent = formatTime(Date.now());
-  modalPanel.classList.remove("modal-thinking");
-  modalBody.innerHTML = html;
-  modalOverlay.classList.add("visible");
-}
-
 window.clearLogs = () => {
   if (activeSession === "all") {
     // Clear everything
     entries.length = 0;
+    entriesById.clear();
     lineCounter = 0;
     firstEventTs = null;
     sessions.clear();
-    sessionGroups.clear();
+    LoupeGrouping.reset();
     childSessionMap.clear();
     pendingAgentSpawns.clear();
-    queryIdCounter = 0;
     colorIdx = 0;
     rebuildTabs();
     rebuildPanes();
@@ -2833,7 +1044,7 @@ window.clearLogs = () => {
     for (let i = entries.length - 1; i >= 0; i--) {
       if (entries[i].sessionId === activeSession) entries.splice(i, 1);
     }
-    sessionGroups.delete(activeSession);
+    LoupeGrouping.sessionGroups.delete(activeSession);
     rebuildView();
   }
 };
@@ -2907,7 +1118,7 @@ document.addEventListener("keydown", (e) => {
     const sel = window.getSelection();
     if (sel && sel.toString()) {
       e.preventDefault();
-      copyToClipboard(sel.toString());
+      LoupeRender.copyToClipboard(sel.toString());
     }
     return;
   }
@@ -2921,7 +1132,7 @@ document.addEventListener("keydown", (e) => {
 
   // Modal open: Esc closes it
   if (modalOverlay.classList.contains("visible")) {
-    if (e.key === "Escape") { closeModal(); return; }
+    if (e.key === "Escape") { LoupeModal.closeModal(); return; }
     return; // Don't process other keys while modal is open
   }
 
@@ -2954,7 +1165,7 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "j" || e.key === "ArrowDown") { if (!visible.length) return; e.preventDefault(); selectedIdx = Math.min(selectedIdx + 1, visible.length - 1); focusEntry(visible, selectedIdx); }
   if (e.key === "k" || e.key === "ArrowUp") { if (!visible.length) return; e.preventDefault(); selectedIdx = Math.max(selectedIdx - 1, 0); focusEntry(visible, selectedIdx); }
-  if (e.key === "Enter") { if (selectedIdx < 0 || !visible[selectedIdx]) return; e.preventDefault(); openModal(parseInt(visible[selectedIdx].dataset.id)); }
+  if (e.key === "Enter") { if (selectedIdx < 0 || !visible[selectedIdx]) return; e.preventDefault(); LoupeModal.openModal(parseInt(visible[selectedIdx].dataset.id)); }
   if (e.key === "e") {
     // Toggle: show only errors vs show all
     if (hiddenTypes.size === 0) {
@@ -3022,7 +1233,7 @@ function applyZoom(pct) {
   document.querySelectorAll(".log-scroll").forEach(el => { el.style.zoom = (pct / 100).toString(); });
 }
 
-// ===== Mode switching (compact ↔ full) =====
+// ===== Mode switching (compact <-> full) =====
 window.toggleMode = () => {
   const mode = isMinimalMode() ? "window" : "menubar";
   if (window.webkit?.messageHandlers?.switchMode) {
@@ -3074,7 +1285,7 @@ window.setMapMode = (mode) => {
       Momentum.addEntries(entries);
       momentumInitialized = true;
       Momentum.setOnSessionFilterChange((id) => { switchSession(id); });
-      Momentum.setOnClickSpan((entryId) => { openModal(entryId); });
+      Momentum.setOnClickSpan((entryId) => { LoupeModal.openModal(entryId); });
     }
     // Sync momentum session filter with current active session
     Momentum.setSessionFilter(activeSession === "all" ? "all" : activeSession);
@@ -3181,6 +1392,26 @@ window.toggleMapPopover = () => {
 };
 
 // Old tooltip removed — canvas mini card in gravity.js replaces it
+
+// ===== Module Init =====
+LoupeIsland.init({ sessions });
+LoupeModal.init({
+  getEntry: (id) => entriesById.get(id),
+  elements: { modalOverlay, modalPanel, modalBadge, modalTool, modalTime, modalBody, modalClose },
+});
+LoupeRender.init({
+  openModal: LoupeModal.openModal,
+  getContainerFor,
+  shouldAutoScroll,
+  scrollPaneToBottom,
+  matchesFilter,
+  matchesSearch,
+  scheduleIntegrityRebuild,
+});
+LoupeReplay.init({
+  sessions,
+  getActiveSession: () => activeSession,
+});
 
 // ===== Init =====
 connect();

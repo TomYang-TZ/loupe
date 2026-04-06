@@ -62,27 +62,10 @@ const Gravity = (() => {
   const LABEL_MIN_ACCESS = 3;
   const EDGE_MIN_WEIGHT = 1;
 
-  const TOOL_ACTIONS = {
-    Read: "read", Grep: "read", Glob: "read",
-    Edit: "edit", Write: "edit",
-    Bash: "exec",
-  };
-
-  // Map bash subcommands to action categories for edge classification
-  const BASH_CMD_CATEGORY = {
-    cat: "read", head: "read", tail: "read", less: "read", more: "read", ls: "read", stat: "read", file: "read", wc: "read",
-    sed: "edit", awk: "edit", tee: "edit", chmod: "edit", chown: "edit", chgrp: "edit", touch: "edit",
-    mv: "edit", cp: "edit", rm: "exec", mkdir: "exec", rmdir: "exec",
-    node: "exec", python: "exec", python3: "exec", npm: "exec", npx: "exec", make: "exec", cargo: "exec", go: "exec",
-    git: "exec", docker: "exec", curl: "exec", wget: "exec",
-  };
-
-  function extractBashSubcommand(cmd) {
-    if (!cmd) return null;
-    // Strip leading env vars, sudo, etc.
-    const m = cmd.match(/^(?:sudo\s+|env\s+\S+=\S+\s+)*(\w[\w.+-]*)/);
-    return m ? m[1] : null;
-  }
+  // Tool classification — delegated to LoupeUtils (shared with momentum.js)
+  const TOOL_ACTIONS = LoupeUtils.TOOL_ACTIONS;
+  const BASH_CMD_CATEGORY = LoupeUtils.BASH_CMD_CATEGORY;
+  const extractBashSubcommand = LoupeUtils.extractBashSubcommand;
 
   function classifyEdge(prevAction, prevFile, currAction, currFile) {
     const sameFile = prevFile === currFile;
@@ -236,30 +219,9 @@ const Gravity = (() => {
     return e;
   }
 
-  function extractFilePath(entry) {
-    const json = entry.json; if (!json) return null;
-    const hook = (json._logstream_type && json.data) ? json.data : null;
-    const inner = hook || json;
-    const input = inner.tool_input || inner.input || {};
-    if (input.file_path) return input.file_path;
-    if (input.path && !input.command) return input.path;
-    if (input.command) {
-      const cmd = input.command;
-      // Absolute path with extension (file)
-      const fileMatch = cmd.match(/(?:^|\s)(\/\S+\.\w+)/);
-      if (fileMatch) return fileMatch[1];
-      // Absolute directory path (for ls, mkdir, chmod, mv, cp, rm, etc.)
-      const dirMatch = cmd.match(/(?:^|\s)(\/(?:[^\s/]+\/)+[^\s/]+)/);
-      if (dirMatch) return dirMatch[1];
-    }
-    return null;
-  }
-
-  function extractToolName(entry) {
-    const json = entry.json; if (!json) return null;
-    const hook = (json._logstream_type && json.data) ? json.data : null;
-    return (hook || json).tool_name || (hook || json).name || null;
-  }
+  // Entry extraction — delegated to LoupeUtils (shared with momentum.js)
+  const extractFilePath = LoupeUtils.extractFilePath;
+  const extractToolName = LoupeUtils.extractToolName;
 
   function processEntry(entry) {
     const json = entry.json; if (!json) return false;

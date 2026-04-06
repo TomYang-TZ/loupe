@@ -2,7 +2,8 @@
 // Processes events and produces island display state
 // Consumers: native island (Swift WebSocket), webview (app.js), TUI
 
-const SESSION_COLORS = ["#8b5cf6","#06b6d4","#10b981","#f59e0b","#ef4444","#ec4899","#6366f1","#14b8a6"];
+const { SESSION_COLORS, extractSessionId: _extractSessionId, extractUserQuery: _extractUserQuery, extractSessionLabel: _extractSessionLabel } = require("../shared/session-extract");
+const { extractToolDetail, detectPhaseFromTool } = require("../shared/tool-detail");
 
 const sessions = new Map(); // sessionId → { label, color }
 const islandSessions = new Map(); // sessionId → per-session state
@@ -33,21 +34,9 @@ function getSession(sid) {
   return islandSessions.get(sid);
 }
 
-function extractSessionLabel(json) {
-  const data = json?.data || json || {};
-  const cwd = data.cwd;
-  if (cwd) { const parts = cwd.split("/"); return parts[parts.length - 1] || parts[parts.length - 2] || cwd; }
-  return null;
-}
-
-function extractSessionId(json) {
-  return json?.data?.session_id || json?.session_id || null;
-}
-
-function extractUserQuery(json) {
-  const data = json?.data || json || {};
-  return data.prompt || data.user_query || null;
-}
+function extractSessionLabel(json) { return _extractSessionLabel(json); }
+function extractSessionId(json) { return _extractSessionId(json); }
+function extractUserQuery(json) { return _extractUserQuery(json); }
 
 function categorize(json) {
   if (!json) return null;
@@ -126,31 +115,18 @@ function processEvent(json, ts) {
     const input = data.tool_input || {};
     s.tool = toolName;
 
-    let detail = "";
-    if (input.file_path) {
-      const parts = input.file_path.split("/");
-      detail = parts.slice(-2).join("/");
-      s.activeFile = input.file_path;
-      s._fileSet.add(input.file_path);
-    } else if (input.command) {
-      detail = input.command.split("\n")[0].slice(0, 80);
-    } else if (input.pattern) {
-      detail = input.pattern;
-    } else if (input.description) {
-      detail = input.description.slice(0, 60);
+    const { detail, filePath } = extractToolDetail(input);
+    if (filePath) {
+      s.activeFile = filePath;
+      s._fileSet.add(filePath);
     }
     s.toolDetail = detail;
     s.files = s._fileSet.size;
     s.recentTools.push({ name: toolName, detail, ts });
     if (s.recentTools.length > 5) s.recentTools.shift();
 
-    if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) s.phase = "exploring";
-    else if (["Edit", "Write", "NotebookEdit"].some(t => toolName.includes(t))) s.phase = "implementing";
-    else if (toolName.includes("Bash")) {
-      const cmd = input.command || "";
-      if (/test|jest|pytest|cargo test|npm test/.test(cmd)) s.phase = "testing";
-      else if (s.phase === "idle" || s.phase === "starting") s.phase = "implementing";
-    } else if (toolName.includes("Agent")) s.phase = "planning";
+    const newPhase = detectPhaseFromTool(toolName, input.command, s.phase);
+    if (newPhase) s.phase = newPhase;
   }
 
   // Approval — any activity after waiting means approved

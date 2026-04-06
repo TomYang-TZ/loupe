@@ -6,6 +6,8 @@
 const WebSocket = require("ws");
 const { execSync } = require("child_process");
 const path = require("path");
+const { extractSessionId: _extractSessionId, extractUserQuery: _extractUserQuery } = require("../shared/session-extract");
+const { extractToolDetail, detectPhaseFromTool } = require("../shared/tool-detail");
 
 const PORT = process.env.LOUPE_PORT || 8390;
 const WS_URL = `ws://localhost:${PORT}`;
@@ -84,8 +86,8 @@ let rowMap = [];
 let windowBtnCol = -1; // column where "w:⧉ Window" starts in status line
 // Navigation order — maps visual position to query index (rebuilt each render)
 let navOrder = [];
-// Stash agent prompt from PreToolUse for SubagentStart
-let pendingAgentPrompt = null;
+// Queue of agent prompts from PreToolUse, consumed by SubagentStart in order
+const pendingAgentPrompts = [];
 let allCollapsed = false;
 
 // ===== Actions =====
@@ -120,7 +122,7 @@ function categorize(json) {
   const data = json.data || {};
   if (type === "PreToolUse") {
     if (data.tool_name === "Agent") {
-      pendingAgentPrompt = data.tool_input?.prompt || data.tool_input?.description || null;
+      pendingAgentPrompts.push(data.tool_input?.prompt || data.tool_input?.description || null);
       return null;
     }
     return "pre_tool";
@@ -158,17 +160,8 @@ function extractToolInfo(json) {
   const name = d.tool_name;
   if (!name) return null;
   const input = d.tool_input || {};
-  let detail = "";
-  if (input.file_path) {
-    detail = input.file_path.split("/").slice(-2).join("/");
-    fileSet.add(input.file_path);
-  } else if (input.command) {
-    detail = input.command.split("\n")[0].slice(0, 60);
-  } else if (input.pattern) {
-    detail = `pattern: ${input.pattern}`;
-  } else if (input.description) {
-    detail = input.description.slice(0, 60);
-  }
+  const { detail, filePath } = extractToolDetail(input);
+  if (filePath) fileSet.add(filePath);
   return { name, detail };
 }
 
@@ -178,13 +171,8 @@ function getSessionQueries(sid) {
   return sessionQueries.get(key);
 }
 
-function extractSessionId(json) {
-  return json?.data?.session_id || null;
-}
-
-function extractUserQuery(json) {
-  return json?.data?.user_query || json?.data?.prompt || null;
-}
+function extractSessionId(json) { return _extractSessionId(json); }
+function extractUserQuery(json) { return _extractUserQuery(json); }
 
 // ===== ANSI utilities =====
 function stripAnsi(str) {
@@ -279,13 +267,8 @@ function handleMessage(data) {
     const tool = extractToolInfo(json);
     if (tool) {
       currentTool = tool;
-      if (["Read", "Glob", "Grep", "LSP"].some(t => tool.name.includes(t))) phase = "exploring";
-      else if (["Edit", "Write"].some(t => tool.name.includes(t))) phase = "implementing";
-      else if (tool.name.includes("Bash")) {
-        const cmd = json.data.tool_input?.command || "";
-        if (/test|jest|pytest|cargo test|npm test/.test(cmd)) phase = "testing";
-        else if (phase === "idle") phase = "implementing";
-      }
+      const newPhase = detectPhaseFromTool(tool.name, json.data.tool_input?.command, phase);
+      if (newPhase) phase = newPhase;
     }
   }
   if (cat === "error" || cat === "tool_failure") errorCount++;
@@ -409,9 +392,8 @@ function handleMessage(data) {
     line += `${FG.red}Tool rejected by user${RESET}`;
   } else if (cat === "sub_agent") {
     // Attach stashed prompt from PreToolUse
-    if (pendingAgentPrompt) {
-      json.data._agentPrompt = pendingAgentPrompt;
-      pendingAgentPrompt = null;
+    if (pendingAgentPrompts.length > 0) {
+      json.data._agentPrompt = pendingAgentPrompts.shift();
     }
     const agentPrompt = json?.data?._agentPrompt || "";
     const promptPreview = agentPrompt ? `${DIM}${agentPrompt.slice(0, 50)}${RESET}` : "";
@@ -710,7 +692,9 @@ function render() {
       output += padLine(visible[i] || "", cols) + "\n";
     }
     output += sep + "\n";
-    output += renderStatusLine(cols);
+    const showTreeDetail = agentTreeVisible && cols >= 80 && (sessionFilter === "all" || agentTree.some(a => true));
+    const detailStatusWidth = showTreeDetail ? Math.max(40, cols - TREE_WIDTH - 1) : cols;
+    output += renderStatusLine(detailStatusWidth);
     process.stdout.write(output);
     return;
   }
@@ -801,8 +785,8 @@ function render() {
   const visibleRows = rowData.slice(scrollOffset, scrollOffset + logRows);
   rowMap = visibleRows.map(r => r ? { type: r.isHeader ? "header" : "event", queryIdx: r.queryIdx, eventIdx: r.eventIdx } : null);
 
-  // Render rows with optional agent tree pane
-  const showTree = agentTreeVisible && (sessionFilter === "all" || agentTree.some(a => true));
+  // Render rows with optional agent tree pane (hide tree if terminal too narrow)
+  const showTree = agentTreeVisible && cols >= 80 && (sessionFilter === "all" || agentTree.some(a => true));
   const logWidth = showTree ? Math.max(40, cols - TREE_WIDTH - 1) : cols;
   const treeLines = showTree ? renderAgentTree(logRows) : null;
 
@@ -819,7 +803,7 @@ function render() {
   }
 
   output += sep + "\n";
-  output += renderStatusLine(cols);
+  output += renderStatusLine(showTree ? logWidth : cols);
 
   // "↓ new" indicator
   if (hasNewQueries && !autoFollow) {
