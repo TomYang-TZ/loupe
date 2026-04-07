@@ -289,7 +289,7 @@ const Momentum = (() => {
       else if (a.action === "exec") execs++;
     }
 
-    // Priority cascade: debugging > testing > implementing > planning > exploring
+    // Priority cascade: debugging > testing > orchestrating > implementing > planning > exploring
     // Debugging: error in span OR revisiting errored files
     if (span.hasError) return "debugging";
     if (state.erroredFiles.size > 0) {
@@ -305,6 +305,10 @@ const Momentum = (() => {
       const hasTestCmd = span.bashCommands.some(cmd => TEST_CMD_RE.test(cmd));
       if (hasTestCmd) return "testing";
     }
+
+    // Orchestrating: Agent tool usage
+    const hasAgent = span.actions.some(a => a.toolName && a.toolName.includes("Agent"));
+    if (hasAgent) return "orchestrating";
 
     // Implementing: edit-heavy
     if (edits / total >= 0.4) return "implementing";
@@ -460,7 +464,7 @@ const Momentum = (() => {
   // Per-session behavioral signature: computed incrementally as spans arrive
   const sessionSignatures = new Map(); // sessionId -> BehavioralSignature
 
-  const PHASES = ["exploring", "implementing", "testing", "debugging", "planning"];
+  const PHASES = ["exploring", "implementing", "testing", "debugging", "planning", "orchestrating"];
   const ARCHETYPES = {
     "focused-executor":  { desc: "Direct path, minimal loops, high edit ratio", color: "#06b6d4" },
     "explorer-debugger": { desc: "Wide search, frequent debugging, many reads", color: "#eab308" },
@@ -474,7 +478,7 @@ const Momentum = (() => {
     if (!sessionSignatures.has(sessionId)) {
       sessionSignatures.set(sessionId, {
         // Phase distribution (normalized)
-        phaseDist: { exploring: 0, implementing: 0, testing: 0, debugging: 0, planning: 0 },
+        phaseDist: { exploring: 0, implementing: 0, testing: 0, debugging: 0, planning: 0, orchestrating: 0 },
         // Transition matrix: phase[i] -> phase[j] counts
         transitions: {},
         // Peak pattern scores across session

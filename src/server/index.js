@@ -225,10 +225,11 @@ wss.on("connection", (ws) => {
         }
       }
       // Dynamic history: client requests older events
-      // { type: "fetch_history", before: timestamp, count: 200 }
+      // { type: "fetch_history", before: timestamp, count: 200, sessionId?: string }
       if (msg.type === "fetch_history") {
         const before = msg.before || Date.now();
         const count = Math.min(msg.count || 200, 500);
+        const filterSid = msg.sessionId || null;
         try {
           const content = fs.readFileSync(filePath, "utf-8");
           const allLines = content.split("\n").filter(l => l.trim() !== "");
@@ -237,18 +238,126 @@ wss.on("connection", (ws) => {
             try {
               const obj = JSON.parse(allLines[i]);
               const ts = obj._ts ? new Date(obj._ts).getTime() : 0;
-              if (ts < before) older.unshift(allLines[i]);
+              if (ts >= before) continue;
+              if (filterSid) {
+                const sid = (obj.data && obj.data.session_id) || obj.session_id;
+                if (sid !== filterSid) continue;
+              }
+              older.unshift(allLines[i]);
             } catch {}
           }
           for (const line of older) {
             const m = buildMessage(truncateForBacklog(line));
             if (m.json && isReplayAnalysisLine(m.json)) continue;
+            // Send as history to requester, as line to other clients (window UI)
             ws.send(JSON.stringify({ ...m, type: "history" }));
+            const lineMsg = JSON.stringify(m);
+            for (const client of wss.clients) {
+              if (client !== ws && client.readyState === 1) client.send(lineMsg);
+            }
           }
           ws.send(JSON.stringify({ type: "history_done", count: older.length }));
         } catch (err) {
           ws.send(JSON.stringify({ type: "history_done", count: 0, error: err.message }));
         }
+      }
+      // List available sessions from ~/.claude/projects/
+      if (msg.type === "list_sessions") {
+        try {
+          const claudeProjectsDir = path.join(process.env.HOME || "", ".claude", "projects");
+          const sessions = [];
+          if (fs.existsSync(claudeProjectsDir)) {
+            for (const projDir of fs.readdirSync(claudeProjectsDir)) {
+              const projPath = path.join(claudeProjectsDir, projDir);
+              if (!fs.statSync(projPath).isDirectory()) continue;
+              for (const f of fs.readdirSync(projPath)) {
+                if (!f.endsWith(".jsonl")) continue;
+                const sid = f.replace(".jsonl", "");
+                // Skip non-UUID filenames
+                if (!/^[0-9a-f]{8}-/.test(sid)) continue;
+                const fPath = path.join(projPath, f);
+                try {
+                  const stat = fs.statSync(fPath);
+                  // Read first portion to extract metadata + first user query
+                  const head = fs.readFileSync(fPath, "utf-8").slice(0, 16384);
+                  const headLines = head.split("\n").filter(l => l.trim());
+                  let startTs = null, cwd = null, gitBranch = null, firstQuery = null;
+                  for (const hl of headLines) {
+                    try {
+                      const obj = JSON.parse(hl);
+                      if (!startTs && obj.timestamp) startTs = obj.timestamp;
+                      if (!cwd && obj.cwd) cwd = obj.cwd;
+                      if (!gitBranch && obj.gitBranch) gitBranch = obj.gitBranch;
+                      if (!firstQuery && obj.type === "user" && obj.message) {
+                        const content = obj.message.content;
+                        if (typeof content === "string") firstQuery = content;
+                        else if (Array.isArray(content)) {
+                          const textBlock = content.find(b => b.type === "text" && b.text);
+                          if (textBlock) firstQuery = textBlock.text;
+                        }
+                      }
+                      if (startTs && cwd && gitBranch && firstQuery) break;
+                    } catch {}
+                  }
+                  sessions.push({
+                    id: sid,
+                    project: projDir.replace(/-/g, "/").replace(/^\//, ""),
+                    cwd: cwd || projDir,
+                    gitBranch: gitBranch || null,
+                    firstQuery: firstQuery ? firstQuery.slice(0, 120) : null,
+                    startTs,
+                    size: stat.size,
+                    mtime: stat.mtime.toISOString(),
+                  });
+                } catch {}
+              }
+            }
+          }
+          // Sort by mtime descending
+          sessions.sort((a, b) => (b.mtime || "").localeCompare(a.mtime || ""));
+          ws.send(JSON.stringify({ type: "sessions_list", sessions: sessions.slice(0, 50) }));
+        } catch (err) {
+          ws.send(JSON.stringify({ type: "sessions_list", sessions: [], error: err.message }));
+        }
+      }
+
+      // Load a specific session transcript (async to avoid blocking event loop)
+      if (msg.type === "load_session" && msg.sessionId) {
+        (async () => {
+          try {
+            const { convertSessionFile } = require("./session-convert");
+            const claudeProjectsDir = path.join(process.env.HOME || "", ".claude", "projects");
+            let sessionFile = null;
+            for (const projDir of fs.readdirSync(claudeProjectsDir)) {
+              const candidate = path.join(claudeProjectsDir, projDir, `${msg.sessionId}.jsonl`);
+              if (fs.existsSync(candidate)) { sessionFile = candidate; break; }
+            }
+            if (!sessionFile) {
+              ws.send(JSON.stringify({ type: "session_load_done", sessionId: msg.sessionId, count: 0, error: "Session file not found" }));
+              return;
+            }
+            const content = fs.readFileSync(sessionFile, "utf-8");
+            const events = convertSessionFile(content);
+            let sent = 0;
+            for (const evt of events) {
+              if (ws.readyState !== 1) break;
+              const m = buildMessage(truncateForBacklog(evt.line));
+              if (!m.json) continue;
+              ws.send(JSON.stringify({ ...m, type: "session_load" }));
+              // Broadcast as line to other clients (window UI)
+              const lineMsg = JSON.stringify(m);
+              for (const client of wss.clients) {
+                if (client !== ws && client.readyState === 1) client.send(lineMsg);
+              }
+              sent++;
+              // Yield every 50 events to keep event loop responsive
+              if (sent % 50 === 0) await new Promise(r => setTimeout(r, 5));
+            }
+            ws.send(JSON.stringify({ type: "session_load_done", sessionId: msg.sessionId, count: sent }));
+          } catch (err) {
+            ws.send(JSON.stringify({ type: "session_load_done", sessionId: msg.sessionId, count: 0, error: err.message }));
+          }
+        })();
       }
     } catch (e) { /* ignore non-JSON */ }
   });

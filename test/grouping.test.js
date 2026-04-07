@@ -139,6 +139,35 @@ assert(gs4.tasks[0].queries[1].userQuery === "new question", "second query has c
 // The tool after the new query should NOT be inside the agent
 assert(gs4.tasks[0].queries[1].items.length === 1, `new query has 1 tool item (got ${gs4.tasks[0].queries[1].items.length})`);
 
+// ── Test 5: parallel agents with _originalSessionId routing ──
+console.log("\nAgent grouping — parallel agents route tools by _originalSessionId");
+
+seedQuery();
+
+// Agent A starts (child session "agent-a")
+mod.assignToGroup(makeEntry("sub_agent", 2000, { _originalSessionId: "agent-a" }));
+// Agent B starts (child session "agent-b") — both running
+mod.assignToGroup(makeEntry("sub_agent", 2100, { _originalSessionId: "agent-b" }));
+// Tool from agent A's session
+mod.assignToGroup(makeEntry("pre_tool", 2200, { _originalSessionId: "agent-a" }));
+// Tool from agent B's session
+mod.assignToGroup(makeEntry("pre_tool", 2300, { _originalSessionId: "agent-b" }));
+// Another tool from agent A's session
+mod.assignToGroup(makeEntry("pre_tool", 2400, { _originalSessionId: "agent-a" }));
+// Agent A finishes
+mod.assignToGroup(makeEntry("sub_agent_result", 2500));
+// Agent B finishes
+mod.assignToGroup(makeEntry("sub_agent_result", 2600));
+
+const items5 = topItems();
+const agents5 = items5.filter(i => i.agentEntry);
+
+assert(agents5.length === 2, `2 parallel agents (got ${agents5.length})`);
+assert(agents5[0].children.length === 2, `Agent A has 2 tool children (got ${agents5[0].children.length})`);
+assert(agents5[1].children.length === 1, `Agent B has 1 tool child (got ${agents5[1].children.length})`);
+assert(agents5[0].resultEntry != null, "Agent A resolved");
+assert(agents5[1].resultEntry != null, "Agent B resolved");
+
 // ── Summary ──
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) throw new Error(`${failed} test(s) failed`);

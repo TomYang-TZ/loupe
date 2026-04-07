@@ -100,6 +100,7 @@ class IslandView: NSView {
     var waitingTool: String? = nil
     var approvedTool: String? = nil
     var rejectedTool: String? = nil
+    var planningStrike: Bool = false
     var idleSeconds: Int = 0
     var sessionDots: [(status: String, label: String, color: String, id: String)] = []
     var activeSessionColor: NSColor? = nil
@@ -142,6 +143,8 @@ class IslandView: NSView {
         "debugging":     NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1),     // red
         "testing":       NSColor(red: 34/255, green: 197/255, blue: 94/255, alpha: 1),     // green
         "planning":      NSColor(red: 234/255, green: 179/255, blue: 8/255, alpha: 1),     // yellow
+        "thinking":      NSColor(red: 234/255, green: 179/255, blue: 8/255, alpha: 1),     // yellow
+        "orchestrating": NSColor(red: 6/255, green: 182/255, blue: 212/255, alpha: 1),     // cyan
         "idle":          NSColor(white: 0.35, alpha: 1),
         "starting":      NSColor(red: 59/255, green: 130/255, blue: 246/255, alpha: 1),    // blue
         "done":          NSColor(red: 34/255, green: 197/255, blue: 94/255, alpha: 1),    // green
@@ -158,6 +161,7 @@ class IslandView: NSView {
     static let asciiGlyphs: [Character: [String]] = [
         "A": ["▄▀▄", "█▀█"],
         "B": ["██▀", "██▄"],
+        "C": ["▄▀▀", "▀▄▄"],
         "D": ["█▀▄", "█▄▀"],
         "E": ["██▀", "█▄▄"],
         "G": ["█▀▀", "█▄█"],
@@ -185,6 +189,7 @@ class IslandView: NSView {
         "testing": "TESTING",
         "planning": "PLANNING",
         "thinking": "THINKING",
+        "orchestrating": "ORCHESTRATE",
         "done": "DONE",
         "starting": "STARTING",
         "waiting for input": "WAITING",
@@ -635,6 +640,20 @@ class IslandView: NSView {
                 .draw(at: NSPoint(x: rect.minX + pad, y: y - CGFloat(i) * artLineH))
         }
 
+        // Planning strikethrough — dimmed "PLANNING" with line-through after current phase art
+        if planningStrike {
+            let strikeColor = (IslandView.phaseColors["planning"] ?? NSColor.gray).withAlphaComponent(Double(alpha) * 0.4)
+            let topLineWidth = NSAttributedString(string: artLines[0], attributes: [.font: artFont]).size().width
+            let strikeAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 8, weight: .medium),
+                .foregroundColor: strikeColor,
+                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                .strikethroughColor: strikeColor,
+            ]
+            NSAttributedString(string: " PLANNING", attributes: strikeAttrs)
+                .draw(at: NSPoint(x: rect.minX + pad + topLineWidth + 4, y: y - artLineH + 2))
+        }
+
         // Elapsed time (right-aligned, top row)
         if elapsedSeconds > 0 {
             let mins = elapsedSeconds / 60
@@ -944,6 +963,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
             )
             island.islandView?.pulsing = data["pulsing"] as? Bool ?? false
             island.islandView?.rejectedTool = data["rejected"] as? String
+            island.islandView?.planningStrike = data["planningStrike"] as? Bool ?? false
         }
     }
 
@@ -1309,6 +1329,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         )
         island.islandView?.pulsing = data["pulsing"] as? Bool ?? false
         island.islandView?.rejectedTool = data["rejected"] as? String
+        island.islandView?.planningStrike = data["planningStrike"] as? Bool ?? false
     }
 
     func applicationWillTerminate(_ notification: Notification) {

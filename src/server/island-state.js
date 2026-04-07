@@ -29,6 +29,7 @@ function getSession(sid) {
       _pendingToolName: null, _pendingToolTs: null,
       _pulseTimer: null, _idleTimer: null,
       _stopFailureTs: null, _agentClearTimer: null, _color: null,
+      _erroredFiles: new Set(), planningStrike: false, _planningStrikeTimer: null,
     });
   }
   return islandSessions.get(sid);
@@ -48,7 +49,7 @@ function categorize(json) {
   }
   if (type === "PostToolUse") {
     if (data.tool_name === "Agent") return null;
-    if (data.is_error) return null;
+    if (data.is_error) return "tool_error";
     return "post_tool";
   }
   if (type === "thinking") return "thinking";
@@ -65,6 +66,8 @@ function categorize(json) {
   if (type === "Notification") return "Notification";
   if (type === "Stop") return "Stop";
   if (type === "tool_rejected") return "tool_rejected";
+  if (type === "TaskCreated") return "task_created";
+  if (type === "TaskCompleted") return "task_completed";
   return null;
 }
 
@@ -104,7 +107,7 @@ function processEvent(json, ts) {
   // Thinking
   if (cat === "thinking") {
     s.thinking = true;
-    s.phase = "exploring";
+    s.phase = "thinking";
     if (userQuery && !s.userQuery) s.userQuery = userQuery.slice(0, 120);
   }
 
@@ -125,8 +128,20 @@ function processEvent(json, ts) {
     s.recentTools.push({ name: toolName, detail, ts });
     if (s.recentTools.length > 5) s.recentTools.shift();
 
+    // Strikethrough when exiting plan mode
+    if (toolName.includes("ExitPlanMode") && s.phase === "planning") {
+      s.planningStrike = true;
+      if (s._planningStrikeTimer) clearTimeout(s._planningStrikeTimer);
+      s._planningStrikeTimer = setTimeout(() => { s.planningStrike = false; emit(); }, 1500);
+    }
+
     const newPhase = detectPhaseFromTool(toolName, input.command, s.phase);
     if (newPhase) s.phase = newPhase;
+
+    // Override to debugging if touching a previously-errored file
+    if (s._erroredFiles.size > 0 && filePath && s._erroredFiles.has(filePath)) {
+      s.phase = "debugging";
+    }
   }
 
   // Approval — any activity after waiting means approved
@@ -138,7 +153,7 @@ function processEvent(json, ts) {
       s.waitingTool = null;
       if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
       if (cat !== "thinking") s.phase = s.tool ? "implementing" : "exploring";
-      else s.phase = "exploring";
+      else s.phase = "thinking";
       emit();
       setTimeout(() => { s.approved = null; emit(); }, 1000);
     }
@@ -151,13 +166,26 @@ function processEvent(json, ts) {
     s.rejected = s.waitingTool || "tool";
     s.waiting = false; s.pulsing = false; s.waitingTool = null;
     if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
-    s.phase = "exploring";
+    s.phase = "thinking";
     setTimeout(() => { s.rejected = null; emit(); }, 1500);
   }
 
-  // Errors
-  if (cat === "error") { s.errors++; s.progress = "stuck"; }
+  // Errors — track errored files and switch to debugging
+  if (cat === "error" || cat === "tool_failure" || cat === "tool_error") {
+    s.errors++;
+    s.progress = "stuck";
+    s.phase = "debugging";
+    if (s.activeFile) s._erroredFiles.add(s.activeFile);
+  }
   if ((cat === "post_tool") && s.progress === "stuck") s.progress = null;
+
+  // Tasks — planning phase
+  if (cat === "task_created") s.phase = "planning";
+  if (cat === "task_completed" && s.phase === "planning") {
+    s.planningStrike = true;
+    if (s._planningStrikeTimer) clearTimeout(s._planningStrikeTimer);
+    s._planningStrikeTimer = setTimeout(() => { s.planningStrike = false; emit(); }, 1500);
+  }
 
   // Tokens
   const usage = data?.message?.usage;
@@ -197,6 +225,7 @@ function processEvent(json, ts) {
 
   // Subagents
   if (cat === "sub_agent") {
+    s.phase = "orchestrating";
     s.agentsRunning++; s.agentsTotal++;
     s.toolDetail = s.agentsRunning + " agent" + (s.agentsRunning > 1 ? "s" : "");
     if (s._agentClearTimer) { clearTimeout(s._agentClearTimer); s._agentClearTimer = null; }
@@ -285,7 +314,7 @@ function getState() {
       waiting: false, pulsing: false, waitingTool: null, approved: null,
       denied: null, rejected: null, agentsRunning: 0, agentsTotal: 0,
       apiError: null, idleSeconds: 0, userQuery: null, recentTools: [],
-      activeFile: null, elapsed: 0, sessionDots: [],
+      activeFile: null, elapsed: 0, planningStrike: false, sessionDots: [],
       activeSessionColor: null, activeSessionId: null };
   }
 
@@ -320,6 +349,7 @@ function getState() {
     recentTools: active.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
     activeFile: active.activeFile,
     elapsed: active.startTs ? Math.floor((Date.now() - active.startTs) / 1000) : 0,
+    planningStrike: active.planningStrike || false,
     sessionDots, activeSessionColor: active._color || null,
     activeSessionId: active.id || null,
   };

@@ -22,6 +22,7 @@ const LoupeGrouping = (() => {
         currentTask: null,
         currentQuery: null,
         agentStack: [],   // stack of { agentEntry, children: [], el: null, childrenEl: null }
+        agentSessionMap: new Map(),  // childSessionId → agent node (for parallel agent routing)
         topicCounter: 0,  // per-session topic numbering
       });
     }
@@ -129,6 +130,7 @@ const LoupeGrouping = (() => {
     if (isQueryBoundary) {
       // Close current agent stack (shouldn't happen, but defensive)
       gs.agentStack = [];
+      gs.agentSessionMap.clear();
 
       // If current query is a preamble (no userQuery), absorb its items into the new query
       // BUT only if the preamble items are temporally close (< 10s gap).
@@ -193,7 +195,9 @@ const LoupeGrouping = (() => {
     // Subagents cannot spawn subagents, so nesting is never correct.
     if (entry.category === "sub_agent") {
       const ag = { agentEntry: entry, children: [], resultEntry: null, el: null, childrenEl: null };
-      gs.agentStack = [ag]; // replace stack — only one active agent at a time
+      gs.agentStack.push(ag);
+      // Don't map agentSessionMap here — sub_agent fires from parent session.
+      // Mapping happens lazily when the first child event arrives (see regular routing below).
       gs.currentQuery.items.push(ag);
       gs.currentQuery.endTs = entry.ts;
       gs.currentTask.endTs = entry.ts;
@@ -211,6 +215,10 @@ const LoupeGrouping = (() => {
             // Remove from agentStack if present
             const idx = gs.agentStack.indexOf(item);
             if (idx !== -1) gs.agentStack.splice(idx, 1);
+            // Remove from session map
+            for (const [sid, ag] of gs.agentSessionMap) {
+              if (ag === item) { gs.agentSessionMap.delete(sid); break; }
+            }
             return true;
           }
           if (item.agentEntry && item.children) {
@@ -229,10 +237,32 @@ const LoupeGrouping = (() => {
       return;
     }
 
-    // Regular entry: add to top-of-stack agent or current query
-    // user_query should never nest inside agents — skip it as an agent child
+    // Regular entry: route to matching agent (by session_id), fallback to top-of-stack, then query
+    // user_query should never nest inside agents
     if (gs.agentStack.length > 0 && entry.category !== "user_query") {
-      gs.agentStack[gs.agentStack.length - 1].children.push(entry);
+      const childSid = entry._originalSessionId;
+      const isChildSession = childSid && childSid !== entry.sessionId;
+      // Try session_id match first (handles parallel agents)
+      let matchedAgent = isChildSession ? gs.agentSessionMap.get(childSid) : null;
+      if (matchedAgent && !matchedAgent.resultEntry) {
+        matchedAgent.children.push(entry);
+      } else if (isChildSession && !matchedAgent) {
+        // Lazy mapping: first event from a new child session → assign to first unmapped agent on stack
+        let target = null;
+        const mappedAgents = new Set(gs.agentSessionMap.values());
+        for (const ag of gs.agentStack) {
+          if (!mappedAgents.has(ag) && !ag.resultEntry) { target = ag; break; }
+        }
+        if (!target && gs.agentStack.length > 0) target = gs.agentStack[gs.agentStack.length - 1];
+        if (target) {
+          gs.agentSessionMap.set(childSid, target);
+          target.children.push(entry);
+        } else {
+          gs.currentQuery.items.push(entry);
+        }
+      } else {
+        gs.agentStack[gs.agentStack.length - 1].children.push(entry);
+      }
     } else {
       gs.currentQuery.items.push(entry);
     }

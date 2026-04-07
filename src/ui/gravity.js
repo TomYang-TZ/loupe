@@ -285,7 +285,7 @@ const Gravity = (() => {
   // --- Lane computation ---
   // Fixed lane definitions for action and phase modes
   const ACTION_LANES = ["read", "edit", "exec"];
-  const PHASE_LANES = ["exploring", "planning", "implementing", "testing", "debugging"];
+  const PHASE_LANES = ["exploring", "planning", "implementing", "testing", "debugging", "orchestrating"];
 
   // Fixed axis geometry (frozen row/column like a chart)
   // AXIS_LEFT_W auto-computed from longest lane label; AXIS_BOTTOM_H fixed

@@ -99,6 +99,6 @@ console.log('      Hooks configured in ' + path);
 echo ""
 echo "  Installation complete!"
 echo ""
-echo "  Loupe will automatically open when you start a Claude Code session."
-echo "  Press ? in the viewer to see keyboard shortcuts."
+echo "  Start Loupe with:  npm start"
+echo "  Press ? in the TUI viewer to see keyboard shortcuts."
 echo ""

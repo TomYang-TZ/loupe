@@ -37,10 +37,13 @@ const LoupeIsland = (() => {
         agentsTotal: 0,
         apiError: null,
         _fileSet: new Set(),
+        _erroredFiles: new Set(),
         _totalTokens: 0,
         _idleTimer: null,
         _stopFailureTs: null,
         _agentClearTimer: null,
+        planningStrike: false,
+        _planningStrikeTimer: null,
       });
     }
     return islandSessions.get(sid);
@@ -75,7 +78,7 @@ const LoupeIsland = (() => {
     // Track thinking — also clears "starting"
     if (cat === "thinking") {
       s.thinking = true;
-      s.phase = "exploring";
+      s.phase = "thinking";
       if (entry.userQuery && !s.userQuery) s.userQuery = entry.userQuery.slice(0, 120);
     }
 
@@ -105,13 +108,27 @@ const LoupeIsland = (() => {
       s.recentTools.push({ name: toolName, detail, ts: entry.ts });
       if (s.recentTools.length > 5) s.recentTools.shift();
 
-      if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) s.phase = "exploring";
+      // Strikethrough when exiting plan mode
+      if (toolName.includes("ExitPlanMode") && s.phase === "planning") {
+        s.planningStrike = true;
+        if (s._planningStrikeTimer) clearTimeout(s._planningStrikeTimer);
+        s._planningStrikeTimer = setTimeout(() => { s.planningStrike = false; sendIslandUpdate(); }, 1500);
+      }
+
+      if (["TodoWrite", "TaskCreate", "TaskUpdate", "EnterPlanMode"].some(t => toolName.includes(t))) s.phase = "planning";
+      else if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) s.phase = "exploring";
       else if (["Edit", "Write", "NotebookEdit"].some(t => toolName.includes(t))) s.phase = "implementing";
       else if (toolName.includes("Bash")) {
         const cmd = input.command || "";
         if (/test|jest|pytest|cargo test|npm test/.test(cmd)) s.phase = "testing";
         else if (s.phase === "idle" || s.phase === "starting") s.phase = "implementing";
-      } else if (toolName.includes("Agent")) s.phase = "planning";
+      } else if (toolName.includes("Agent")) s.phase = "orchestrating";
+
+      // Override to debugging if touching a previously-errored file
+      const filePath = input.file_path;
+      if (s._erroredFiles.size > 0 && filePath && s._erroredFiles.has(filePath)) {
+        s.phase = "debugging";
+      }
     }
 
     // Approval tracking — any tool activity after waiting means approval was granted
@@ -151,7 +168,7 @@ const LoupeIsland = (() => {
       s.pulsing = false;
       s.waitingTool = null;
       if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
-      s.phase = "exploring";
+      s.phase = "thinking";
       sendIslandUpdate();
       setTimeout(() => { s.approved = null; sendIslandUpdate(); }, 1000);
     }
@@ -165,16 +182,28 @@ const LoupeIsland = (() => {
         s.pulsing = false;
         s.waitingTool = null;
         if (s._pulseTimer) { clearTimeout(s._pulseTimer); s._pulseTimer = null; }
-        s.phase = "exploring";
+        s.phase = "thinking";
         setTimeout(() => { s.rejected = null; sendIslandUpdate(); }, 1500);
       }
       sendIslandUpdate();
     }
 
-    // Errors
-    if (cat === "error") { s.errors++; s.progress = "stuck"; }
-    else if (cat === "tool_result" || cat === "post_tool") {
+    // Errors — track errored files and switch to debugging
+    if (cat === "error" || cat === "tool_failure" || cat === "tool_error") {
+      s.errors++;
+      s.progress = "stuck";
+      s.phase = "debugging";
+      if (s.activeFile) s._erroredFiles.add(s.activeFile);
+    } else if (cat === "tool_result" || cat === "post_tool") {
       if (s.progress === "stuck") s.progress = null;
+    }
+
+    // Tasks — planning phase
+    if (cat === "task_created") s.phase = "planning";
+    if (cat === "task_completed" && s.phase === "planning") {
+      s.planningStrike = true;
+      if (s._planningStrikeTimer) clearTimeout(s._planningStrikeTimer);
+      s._planningStrikeTimer = setTimeout(() => { s.planningStrike = false; sendIslandUpdate(); }, 1500);
     }
 
     // Tokens
@@ -233,6 +262,7 @@ const LoupeIsland = (() => {
 
     // SubagentStart — track running agent count
     if (cat === "sub_agent") {
+      s.phase = "orchestrating";
       s.agentsRunning++;
       s.agentsTotal++;
       s.toolDetail = s.agentsRunning + " agent" + (s.agentsRunning > 1 ? "s" : "");
@@ -375,6 +405,7 @@ const LoupeIsland = (() => {
         recentTools: active.recentTools.map(t => t.name + (t.detail ? " " + t.detail : "")),
         activeFile: active.activeFile,
         elapsed: elapsed,
+        planningStrike: active.planningStrike || false,
         sessionDots: sessionDots,
         activeSessionColor: active._color || (active.id && _sessions && _sessions.get(active.id)?.color) || null,
         activeSessionId: active.id || null,

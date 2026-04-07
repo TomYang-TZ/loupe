@@ -26,8 +26,7 @@ const LoupeParse = (() => {
         }
         if (hook.hookType === "PostToolUse") {
           if (hook.inner?.tool_name === "Agent") return null; // filtered out
-          // --- Dedup rule 2: error path handled by PostToolUseFailure ---
-          if (hook.inner?.is_error) return null; // filtered out
+          if (hook.inner?.is_error) return "tool_error";
           return "post_tool";
         }
         // --- New hook categories ---
@@ -101,7 +100,7 @@ const LoupeParse = (() => {
       if (category === "permission_request" || category === "permission_denied") {
         return hook.inner.tool_name || null;
       }
-      if (category === "tool_failure") {
+      if (category === "tool_failure" || category === "tool_error") {
         return hook.inner.tool_name || null;
       }
       if (category === "task_created" || category === "task_completed") {
@@ -153,7 +152,7 @@ const LoupeParse = (() => {
     if (category === "permission_denied") {
       return "Blocked: " + (inner.tool_name || "unknown") + (inner.reason ? " \u2014 " + inner.reason : "");
     }
-    if (category === "tool_failure") {
+    if (category === "tool_failure" || category === "tool_error") {
       const errMsg = inner.error || inner.tool_result || "unknown error";
       const firstLine = typeof errMsg === "string" ? errMsg.split("\n")[0] : String(errMsg);
       return (inner.tool_name || "") + " failed \u2014 " + firstLine;

@@ -549,7 +549,8 @@ function handleLine(msg) {
     }
   }
 
-  // Remap child session to parent
+  // Remap child session to parent (preserve original for agent grouping)
+  const originalSessionId = sessionId;
   if (sessionId && childSessionMap.has(sessionId)) {
     sessionId = childSessionMap.get(sessionId);
   }
@@ -575,7 +576,7 @@ function handleLine(msg) {
     }
   }
 
-  const entry = { id: lineCounter, category, title, summary, body, raw: msg.data, json: msg.json, ts: msg.ts, sessionId, userQuery, userImages, meta };
+  const entry = { id: lineCounter, category, title, summary, body, raw: msg.data, json: msg.json, ts: msg.ts, sessionId, _originalSessionId: originalSessionId, userQuery, userImages, meta };
   entries.push(entry);
   entriesById.set(entry.id, entry);
 

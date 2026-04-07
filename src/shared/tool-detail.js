@@ -25,6 +25,7 @@ function extractToolDetail(input) {
 function detectPhaseFromTool(toolName, command, currentPhase) {
   if (!toolName) return null;
   if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) return "exploring";
+  if (["TodoWrite", "TaskCreate", "TaskUpdate", "EnterPlanMode"].some(t => toolName.includes(t))) return "planning";
   if (["Edit", "Write", "NotebookEdit"].some(t => toolName.includes(t))) return "implementing";
   if (toolName.includes("Bash")) {
     const cmd = command || "";
@@ -32,7 +33,7 @@ function detectPhaseFromTool(toolName, command, currentPhase) {
     if (currentPhase === "idle" || currentPhase === "starting") return "implementing";
     return null;
   }
-  if (toolName.includes("Agent")) return "planning";
+  if (toolName.includes("Agent")) return "orchestrating";
   return null;
 }
 

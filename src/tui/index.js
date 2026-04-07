@@ -18,6 +18,7 @@ const ESC = "\x1b";
 const RESET = `${ESC}[0m`;
 const BOLD = `${ESC}[1m`;
 const DIM = `${ESC}[2m`;
+const STRIKE = `${ESC}[9m`;
 const ITALIC = `${ESC}[3m`;
 const CLEAR_SCREEN = `${ESC}[2J${ESC}[H`;
 const HIDE_CURSOR = `${ESC}[?25l`;
@@ -40,9 +41,16 @@ let eventCount = 0;
 let errorCount = 0;
 let tokenTotal = 0;
 const fileSet = new Set();
+const erroredFiles = new Set();
+let activeFile = null;
+let planningStrike = false; // briefly true when planning phase ends
 
 // Query-grouped data model — per session, like window mode
 const sessionQueries = new Map(); // sessionId → [query objects]
+const sessionAgentStacks = new Map();  // sessionId → [{ agentEvent, children: [], resultEvent: null }]
+const tuiAgentSessionMap = new Map();  // childSessionId → agent node
+const tuiChildSessionMap = new Map();  // childSessionId → parentSessionId
+const tuiPendingAgentSpawns = new Map(); // parentSessionId → { count, ts }
 let queryIdCounter = 0;
 const MAX_QUERIES_PER_SESSION = 100;
 
@@ -52,11 +60,84 @@ let focusIdx = -1;
 let autoFollow = true;
 let hasNewQueries = false;
 let scrollOffset = 0;
+let earliestTs = Infinity;   // track oldest event ts for "load more"
+let loadingHistory = false;  // true while waiting for history_done
+let historyStatus = null;    // brief status message after load
+let historyBuffer = [];      // buffer history events before merging
+
+// Session picker state
+let sessionPickerVisible = false;
+let sessionPickerList = [];   // [{id, project, cwd, startTs, size, mtime}]
+let sessionPickerIdx = 0;
+let sessionPickerScroll = 0;
+let sessionPickerLoadingId = null; // session ID being loaded, to switch tab on done
 
 // Two-level navigation
 let navLevel = "query";   // "query" | "event" | "detail"
-let eventFocusIdx = -1;   // which event within the focused query
+let eventFocusIdx = -1;   // which event within the focused query (flat index including agent children)
+let eventAutoFollow = true; // auto-advance to newest event when at tail
 let detailScroll = 0;     // scroll offset within detail view
+
+// Count total flat event rows for a query (respects collapsed agents)
+function queryEventCount(q) {
+  let count = 0;
+  for (const ev of q.events) {
+    if (ev.agentEvent) {
+      count++; // agent header always visible
+      if (!ev.collapsed) {
+        count += ev.children.length;
+        if (ev.resultEvent) count++;
+      }
+    } else {
+      count++;
+    }
+  }
+  return count;
+}
+
+// Get the flat event object at index N (respects collapsed agents)
+// Returns the event object, or the agent container if idx points to the agent header
+function queryEventAt(q, idx) {
+  let i = 0;
+  for (const ev of q.events) {
+    if (ev.agentEvent) {
+      if (i === idx) return ev.agentEvent;
+      i++;
+      if (!ev.collapsed) {
+        for (const child of ev.children) {
+          if (i === idx) return child;
+          i++;
+        }
+        if (ev.resultEvent) {
+          if (i === idx) return ev.resultEvent;
+          i++;
+        }
+      }
+    } else {
+      if (i === idx) return ev;
+      i++;
+    }
+  }
+  return null;
+}
+
+// Get the agent container at flat index (or null if not an agent header)
+function queryAgentAt(q, idx) {
+  let i = 0;
+  for (const ev of q.events) {
+    if (ev.agentEvent) {
+      if (i === idx) return ev;
+      i++;
+      if (!ev.collapsed) {
+        i += ev.children.length;
+        if (ev.resultEvent) i++;
+      }
+    } else {
+      i++;
+    }
+  }
+  return null;
+}
 
 // Session tracking
 const sessions = new Map();
@@ -134,7 +215,7 @@ const catColors = {
   user_query: FG.yellow, pre_tool: FG.blue,
   session_start: FG.green, session_end: FG.gray, compact: FG.gray,
   permission_request: FG.yellow, permission_denied: FG.yellow,
-  tool_failure: FG.red, stop_failure: FG.red,
+  tool_failure: FG.red, tool_error: FG.red, stop_failure: FG.red,
   task_created: FG.magenta, task_completed: FG.green,
   tool_rejected: FG.red,
   topic_shift: FG.magenta,
@@ -154,7 +235,7 @@ function categorize(json) {
   }
   if (type === "PostToolUse") {
     if (data.tool_name === "Agent") return null;
-    if (data.is_error) return null;
+    if (data.is_error) return "tool_error";
     return "post_tool";
   }
   if (type === "thinking") return "thinking";
@@ -250,8 +331,8 @@ function handleMessage(data) {
     }
     if (msg.type === "reset") {
       eventCount = 0; errorCount = 0; tokenTotal = 0;
-      fileSet.clear();
-      sessionQueries.clear(); queries = []; queryIdCounter = 0;
+      fileSet.clear(); erroredFiles.clear(); activeFile = null;
+      sessionQueries.clear(); queries = []; queryIdCounter = 0; sessionAgentStacks.clear(); tuiAgentSessionMap.clear(); tuiChildSessionMap.clear(); tuiPendingAgentSpawns.clear(); eventAutoFollow = true;
       focusIdx = -1; autoFollow = true; hasNewQueries = false;
       sessions.clear(); sessionFilter = "all";
       phase = "idle"; currentTool = null;
@@ -266,9 +347,92 @@ function handleMessage(data) {
     else if (msg.error) { topicStatus = msg.error; setTimeout(() => { topicStatus = null; render(); }, 3000); }
     render(); return;
   }
+  if (msg.type === "history") {
+    // Buffer history events — merge on history_done
+    historyBuffer.push({ ...msg, type: "line" });
+    return;
+  }
+  if (msg.type === "history_done") {
+    loadingHistory = false;
+    const count = historyBuffer.length;
+    if (count > 0) {
+      // Stash existing queries, process history into a clean slate, then merge
+      const stashedQueries = new Map();
+      for (const [sid, sq] of sessionQueries) {
+        stashedQueries.set(sid, [...sq]);
+      }
+      sessionQueries.clear();
+
+      // Process history events chronologically as backlog
+      const saved = isBacklog; isBacklog = true;
+      historyBuffer.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      for (const hMsg of historyBuffer) {
+        handleMessage(JSON.stringify(hMsg));
+      }
+      isBacklog = saved;
+
+      // Merge: prepend history queries before stashed queries, dedup by startTs
+      for (const [sid, stashed] of stashedQueries) {
+        const historyQs = sessionQueries.get(sid) || [];
+        // Remove history queries that overlap with existing (same startTs within 5s)
+        const merged = [...historyQs];
+        for (const sq of stashed) {
+          const isDup = merged.some(hq => hq.userQuery === sq.userQuery && Math.abs(hq.startTs - sq.startTs) < 5000);
+          if (!isDup) merged.push(sq);
+        }
+        merged.sort((a, b) => a.startTs - b.startTs);
+        sessionQueries.set(sid, merged);
+      }
+      // Keep any sessions from history that weren't in stashed
+      // (already in sessionQueries from handleMessage processing)
+    }
+    historyBuffer = [];
+    historyStatus = count > 0 ? `Loaded ${count} events` : "No more events";
+    setTimeout(() => { historyStatus = null; render(); }, 2000);
+    render(); return;
+  }
+  if (msg.type === "sessions_list") {
+    // Session picker data — handled in Part 2
+    handleSessionsList(msg.sessions || []);
+    return;
+  }
+  if (msg.type === "session_load") {
+    // Buffer session load events — merge on session_load_done
+    historyBuffer.push({ ...msg, type: "line" });
+    return;
+  }
+  if (msg.type === "session_load_done") {
+    loadingHistory = false;
+    if (historyBuffer.length > 0) {
+      // Process buffered events chronologically
+      const saved = isBacklog; isBacklog = true;
+      historyBuffer.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      for (const hMsg of historyBuffer) {
+        handleMessage(JSON.stringify(hMsg));
+      }
+      isBacklog = saved;
+      // Sort queries by time
+      for (const [, sq] of sessionQueries) {
+        sq.sort((a, b) => a.startTs - b.startTs);
+      }
+    }
+    historyBuffer = [];
+    historyStatus = `Session loaded (${msg.count} events)`;
+    setTimeout(() => { historyStatus = null; render(); }, 3000);
+    isBacklog = false;
+    phase = "idle"; currentTool = null; thinkingActive = false;
+    // Switch to the loaded session's tab
+    if (sessionPickerLoadingId && sessions.has(sessionPickerLoadingId)) {
+      sessionFilter = sessionPickerLoadingId;
+      focusIdx = -1; autoFollow = true;
+    }
+    sessionPickerLoadingId = null;
+    render(); return;
+  }
   if (msg.type !== "line") return;
 
   eventCount++;
+  if (msg.ts && msg.ts < earliestTs) earliestTs = msg.ts;
   const json = msg.json;
   const cat = categorize(json);
   if (cat === null) return;
@@ -296,17 +460,33 @@ function handleMessage(data) {
 
   // Phase/status/agent tracking — skip during backlog replay
   if (!isBacklog) {
-    if (cat === "thinking") { thinkingActive = true; phase = "exploring"; }
+    if (cat === "thinking") { thinkingActive = true; phase = "thinking"; }
     if (cat === "pre_tool" && json?.data) {
       thinkingActive = false;
       const tool = extractToolInfo(json);
       if (tool) {
         currentTool = tool;
+        // Strikethrough when exiting plan mode
+        if (tool.name.includes("ExitPlanMode") && phase === "planning") {
+          planningStrike = true;
+          setTimeout(() => { planningStrike = false; render(); }, 1500);
+        }
         const newPhase = detectPhaseFromTool(tool.name, json.data.tool_input?.command, phase);
         if (newPhase) phase = newPhase;
+        // Track active file for debugging detection
+        const filePath = json.data.tool_input?.file_path;
+        if (filePath) activeFile = filePath;
+        // Override to debugging if touching a previously-errored file
+        if (erroredFiles.size > 0 && filePath && erroredFiles.has(filePath)) {
+          phase = "debugging";
+        }
       }
     }
-    if (cat === "error" || cat === "tool_failure") errorCount++;
+    if (cat === "error" || cat === "tool_failure" || cat === "tool_error") {
+      errorCount++;
+      phase = "debugging";
+      if (activeFile) erroredFiles.add(activeFile);
+    }
 
     const usage = json?.data?.message?.usage || json?.message?.usage;
     if (usage) tokenTotal += (usage.input_tokens || 0) + (usage.output_tokens || 0);
@@ -337,10 +517,16 @@ function handleMessage(data) {
       setTimeout(() => { if (statusLine.sessionState === "done") { statusLine.sessionState = "idle"; render(); } }, 10000);
     }
     if (cat === "Notification") { phase = "idle"; currentTool = null; thinkingActive = false; }
-    if (cat === "sub_agent") { statusLine.agentsRunning++; statusLine.agentsTotal++; }
+    if (cat === "sub_agent") { statusLine.agentsRunning++; statusLine.agentsTotal++; phase = "orchestrating"; }
     if (cat === "sub_agent_result") { statusLine.agentsRunning = Math.max(0, statusLine.agentsRunning - 1); }
-    if (cat === "task_created") statusLine.tasksCreated++;
-    if (cat === "task_completed") statusLine.tasksCompleted++;
+    if (cat === "task_created") { statusLine.tasksCreated++; phase = "planning"; }
+    if (cat === "task_completed") {
+      statusLine.tasksCompleted++;
+      if (phase === "planning") {
+        planningStrike = true;
+        setTimeout(() => { planningStrike = false; render(); }, 1500);
+      }
+    }
 
     if (cat === "sub_agent") {
       agentTree.push({ id: json?.data?.agent_id || `agent-${agentTree.length}`, type: json?.data?.agent_type || "Agent", status: "running", startTs: Date.now(), endTs: null });
@@ -385,7 +571,7 @@ function handleMessage(data) {
     sub_agent_result: "AGT", user_query: "QRY",
     session_start: "SSN", session_end: "SSN", compact: "CMP",
     permission_request: "APR", permission_denied: "DEN",
-    tool_failure: "FLD", stop_failure: "API",
+    tool_failure: "FLD", tool_error: "ERR", stop_failure: "API",
     task_created: "TSK", task_completed: "TSK",
     tool_rejected: "REJ",
   }[cat] || cat.slice(0, 3).toUpperCase();
@@ -413,7 +599,7 @@ function handleMessage(data) {
     line += `${FG.yellow}Waiting: ${json?.data?.tool_name || "tool"}${RESET}`;
   } else if (cat === "permission_denied") {
     line += `${FG.yellow}Denied: ${json?.data?.tool_name || "tool"}${RESET}`;
-  } else if (cat === "tool_failure") {
+  } else if (cat === "tool_failure" || cat === "tool_error") {
     line += `${FG.red}${json?.data?.tool_name || ""} failed — ${String(json?.data?.error || "").split("\n")[0].slice(0, 50)}${RESET}`;
   } else if (cat === "stop_failure") {
     line += `${FG.red}${json?.data?.reason || json?.data?.error_type || "API error"}${RESET}`;
@@ -438,7 +624,7 @@ function handleMessage(data) {
   }
 
   // Session tracking
-  const sessionId = extractSessionId(json);
+  let sessionId = extractSessionId(json);
   if (sessionId && deletedSessionIds.has(sessionId)) { render(); return; }
   if (sessionId && !sessions.has(sessionId)) {
     sessions.set(sessionId, { id: sessionId, label: json?.data?.cwd?.split("/").pop() || sessionId.slice(0, 8), eventCount: 0, active: true });
@@ -488,6 +674,33 @@ function handleMessage(data) {
     render(); return;
   }
 
+  // Track agent spawns for child session remapping
+  if (cat === "sub_agent") {
+    const pending = tuiPendingAgentSpawns.get(sessionId) || { count: 0, ts: 0 };
+    pending.count++; pending.ts = msg.ts;
+    tuiPendingAgentSpawns.set(sessionId, pending);
+  }
+  if (cat === "sub_agent_result") {
+    const pending = tuiPendingAgentSpawns.get(sessionId);
+    if (pending) { pending.count = Math.max(0, pending.count - 1); if (pending.count === 0) tuiPendingAgentSpawns.delete(sessionId); }
+  }
+
+  // Remap child sessions to parent (like window UI's childSessionMap)
+  const originalSessionId = sessionId;
+  if (tuiChildSessionMap.has(sessionId)) {
+    sessionId = tuiChildSessionMap.get(sessionId);
+  } else if (!sessionQueries.has(sessionId) && sessionId !== "_default") {
+    // Unknown session — check if it's a child of a parent with pending agent spawns
+    for (const [parentSid, info] of tuiPendingAgentSpawns) {
+      if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
+        tuiChildSessionMap.set(sessionId, parentSid);
+        sessionId = parentSid;
+        break;
+      }
+    }
+  }
+  const isChildSession = originalSessionId !== sessionId;
+
   // Per-session query grouping (same architecture as window mode)
   const userQuery = extractUserQuery(json);
   const isSystemPrompt = userQuery && (userQuery.includes("<task-notification>") || userQuery.includes("<system-reminder>"));
@@ -512,6 +725,12 @@ function handleMessage(data) {
     sq.push(q);
     if (sq.length > MAX_QUERIES_PER_SESSION) sq.shift();
     hasNewQueries = true;
+    // Clear agent stacks and associated session map entries on query boundary
+    const oldStack = sessionAgentStacks.get(sessionId) || [];
+    for (const [sid, ag] of tuiAgentSessionMap) {
+      if (oldStack.includes(ag)) tuiAgentSessionMap.delete(sid);
+    }
+    sessionAgentStacks.set(sessionId, []);
   } else if (cat === "tool_rejected") {
     // Rejection: search this session's queries for the last pre_tool
     const rejectMsg = json?.data?.message || null;
@@ -531,7 +750,65 @@ function handleMessage(data) {
       sq.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _preamble: true });
     }
     const target = sq[sq.length - 1];
-    target.events.push(eventObj);
+
+    if (cat === "sub_agent") {
+      // Create agent container node
+      const ag = { agentEvent: eventObj, children: [], resultEvent: null, collapsed: false };
+      const stack = sessionAgentStacks.get(sessionId) || [];
+      stack.push(ag);
+      sessionAgentStacks.set(sessionId, stack);
+      // Don't map session_id here — SubagentStart fires in the parent session context.
+      // Child session mapping happens lazily when child events arrive (see routing below).
+      target.events.push(ag);
+    } else if (cat === "sub_agent_result") {
+      // Match first unresolved agent in this query's events
+      let matched = false;
+      for (const evt of target.events) {
+        if (evt.agentEvent && !evt.resultEvent) {
+          evt.resultEvent = eventObj;
+          // Remove from stack
+          const stack = sessionAgentStacks.get(sessionId) || [];
+          const idx = stack.indexOf(evt);
+          if (idx !== -1) stack.splice(idx, 1);
+          // Remove from session map
+          for (const [sid, ag] of tuiAgentSessionMap) {
+            if (ag === evt) { tuiAgentSessionMap.delete(sid); break; }
+          }
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) target.events.push(eventObj);
+    } else {
+      // Route to matching agent: by child session_id, lazy map, stack fallback, then query-level
+      const matchedAgent = isChildSession ? tuiAgentSessionMap.get(originalSessionId) : null;
+      if (matchedAgent && !matchedAgent.resultEvent) {
+        matchedAgent.children.push(eventObj);
+      } else if (isChildSession && !matchedAgent) {
+        // Lazy mapping: first event from child session → first unmapped agent on parent stack
+        const stack = sessionAgentStacks.get(sessionId) || [];
+        if (stack.length > 0) {
+          const mappedAgents = new Set(tuiAgentSessionMap.values());
+          let targetAg = null;
+          for (const ag of stack) {
+            if (!mappedAgents.has(ag) && !ag.resultEvent) { targetAg = ag; break; }
+          }
+          if (!targetAg) targetAg = stack[stack.length - 1];
+          tuiAgentSessionMap.set(originalSessionId, targetAg);
+          targetAg.children.push(eventObj);
+        } else {
+          target.events.push(eventObj);
+        }
+      } else {
+        // Parent session event — use stack if agents are active
+        const stack = sessionAgentStacks.get(sessionId) || [];
+        if (stack.length > 0) {
+          stack[stack.length - 1].children.push(eventObj);
+        } else {
+          target.events.push(eventObj);
+        }
+      }
+    }
     target.endTs = msg.ts;
   }
 
@@ -540,48 +817,54 @@ function handleMessage(data) {
 
 // ===== Rendering =====
 function renderStatusLine(cols) {
+  // Helper: cyan bold key + dim rest
+  const k = (key, label) => `${FG.cyan}${BOLD}${key}${RESET}${DIM}${label}${RESET}`;
   const parts = [];
-  if (statusLine.approved) {
-    parts.push(`${FG.green}●${RESET} Approved: ${statusLine.approved}`);
-  } else if (statusLine.sessionState === "done") {
-    parts.push(`${FG.green}●${RESET} Done`);
-  } else if (statusLine.sessionState === "waiting") {
-    parts.push(`${FG.yellow}●${RESET} Waiting: ${statusLine.waitingTool || "approval"}`);
-  } else if (statusLine.sessionState === "compacting") {
-    parts.push(`${FG.yellow}●${RESET} Compacting…`);
-  }
-  if (statusLine.errors > 0) parts.push(`${FG.red}Errors: ${statusLine.errors}${RESET}`);
-  if (statusLine.apiError) parts.push(`${FG.red}${statusLine.apiError}${RESET}`);
-  if (statusLine.agentsRunning > 0) {
-    const done = statusLine.agentsTotal - statusLine.agentsRunning;
-    parts.push(`${FG.cyan}Agents: ${done > 0 ? done + "/" + statusLine.agentsTotal + " done" : statusLine.agentsRunning + " running"}${RESET}`);
-  } else if (statusLine.agentsTotal > 0) {
-    parts.push(`${FG.cyan}Agents: ${statusLine.agentsTotal}/${statusLine.agentsTotal} done${RESET}`);
-  }
-  if (statusLine.tasksCreated > 0) {
-    const allDone = statusLine.tasksCompleted >= statusLine.tasksCreated;
-    parts.push(`${FG.magenta}Tasks: ${statusLine.tasksCompleted}/${statusLine.tasksCreated}${allDone ? " ✓" : ""}${RESET}`);
-  }
-  parts.push(`${FG.gray}c${RESET}${DIM}:${RESET}${FG.cyan}${allCollapsed ? "▶ Expand" : "▼ Collapse"}${RESET}`);
+  const sep = `${DIM} · ${RESET}`;
+
+  // Collapse/expand
+  parts.push(k("c", allCollapsed ? "expand" : "ollapse"));
+
+  // Clear/delete (context-dependent)
   if (sessionFilter === "all") {
-    parts.push(clearPending ? `${FG.red}x${RESET}${DIM}:${RESET}${FG.red}Press x again to clear${RESET}` : `${FG.gray}x${RESET}${DIM}:${RESET}${FG.cyan}Clear${RESET}`);
+    parts.push(clearPending ? `${FG.red}${BOLD}x${RESET}${FG.red}clear!${RESET}` : k("x", "clear"));
   } else {
-    parts.push(deletePending ? `${FG.red}d${RESET}${DIM}:${RESET}${FG.red}Press d again to delete${RESET}` : `${FG.gray}d${RESET}${DIM}:${RESET}${FG.cyan}Delete session${RESET}`);
+    parts.push(deletePending ? `${FG.red}${BOLD}d${RESET}${FG.red}elete!${RESET}` : k("d", "elete"));
   }
-  // Calculate visible length before adding window button
-  const sep = `${DIM}  │  ${RESET}`;
-  const beforeBtn = parts.join(sep);
-  const visLen = beforeBtn.replace(/\x1b\[[0-9;]*m/g, "").length;
-  windowBtnCol = visLen + 5 + 1; // +5 for " │ " separator, +1 for 1-based
+
+  // Agents (conditional)
   if (agentTreeVisible && agentTree.length > 0) {
-    parts.push(`${FG.gray}tab${RESET}${DIM}:${RESET}${FG.cyan}Agents${RESET}`);
+    parts.push(k("tab", " agents"));
   }
-  const topicLabel = topicStatus ? `${FG.yellow}${topicStatus}${RESET}` : topicAllPending ? `${FG.red}t again for all${RESET}` : `${FG.cyan}Topics${RESET}`;
-  parts.push(`${FG.gray}t${RESET}${DIM}:${RESET}${topicLabel}`);
-  parts.push(`${FG.gray}i${RESET}${DIM}:${RESET}${FG.cyan}Island${RESET}`);
-  parts.push(`${FG.gray}w${RESET}${DIM}:${RESET}${FG.cyan}Window${RESET}`);
-  parts.push(stopPending ? `${FG.red}S${RESET}${DIM}:${RESET}${FG.red}Press S again to stop${RESET}` : `${FG.gray}S${RESET}${DIM}:${RESET}${FG.cyan}Stop${RESET}`);
-  return padLine(parts.join(sep), cols);
+
+  // Topics
+  if (topicStatus) {
+    parts.push(`${FG.yellow}${topicStatus}${RESET}`);
+  } else {
+    parts.push(topicAllPending ? `${FG.red}${BOLD}t${RESET}${FG.red}opics!${RESET}` : k("t", "opics"));
+  }
+
+  // Island
+  parts.push(k("i", "sland"));
+
+  // Load more (session-filtered only)
+  if (sessionFilter !== "all") {
+    parts.push(loadingHistory ? `${FG.yellow}${BOLD}L${RESET}${FG.yellow}oading…${RESET}` : k("L", "oad more"));
+  }
+
+  // Resume
+  parts.push(k("R", "esume"));
+
+  // Window
+  parts.push(k("w", "indow"));
+
+  // Stop
+  parts.push(stopPending ? `${FG.red}${BOLD}S${RESET}${FG.red}top!${RESET}` : k("S", "top"));
+
+  const joined = parts.join(sep);
+  const visLen = joined.replace(/\x1b\[[0-9;]*m/g, "").length;
+  windowBtnCol = visLen - 5;
+  return padLine(` ${joined}`, cols);
 }
 
 function renderAgentTree(rows) {
@@ -723,13 +1006,20 @@ function render() {
     focusIdx = latestIdx;
   }
 
+  // Event-level auto-follow: snap to newest event in focused query
+  if (eventAutoFollow && navLevel === "event" && focusIdx >= 0 && focusIdx < queries.length) {
+    const total = queryEventCount(queries[focusIdx]);
+    if (total > 0) eventFocusIdx = total - 1;
+  }
+
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
 
   // Header
   const connStr = connected ? `${FG.green}●${RESET}` : `${FG.red}●${RESET}`;
-  const phaseColor = { active: FG.green, exploring: FG.magenta, implementing: FG.blue, debugging: FG.red, testing: FG.green, planning: FG.yellow, idle: FG.gray }[phase] || FG.gray;
-  let header = `${BOLD} LOUPE ${RESET} ${connStr} ${phaseColor}${BOLD}${thinkingActive ? "thinking" : phase}${RESET}`;
+  const phaseColor = { active: FG.green, exploring: FG.magenta, implementing: FG.blue, debugging: FG.red, testing: FG.green, thinking: FG.yellow, planning: FG.yellow, orchestrating: FG.cyan, idle: FG.gray }[phase] || FG.gray;
+  const planStrikeStr = planningStrike ? ` ${DIM}${STRIKE}planning${RESET}` : "";
+  let header = `${BOLD} LOUPE ${RESET} ${connStr} ${phaseColor}${BOLD}${phase}${RESET}${planStrikeStr}`;
   if (statusLine.sessionStartTs && statusLine.sessionState === "active") {
     const secs = Math.floor((Date.now() - statusLine.sessionStartTs) / 1000);
     header += ` ${DIM}${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, "0")}s${RESET}`;
@@ -769,7 +1059,7 @@ function render() {
   // Detail view mode — show full content for selected event
   if (navLevel === "detail" && focusIdx >= 0 && focusIdx < queries.length) {
     const q = queries[focusIdx];
-    const ev = (eventFocusIdx >= 0 && eventFocusIdx < q.events.length) ? q.events[eventFocusIdx] : null;
+    const ev = (eventFocusIdx >= 0) ? queryEventAt(q, eventFocusIdx) : null;
     const detailLines = ev ? buildDetailLines(ev, cols) : [`${DIM}No event selected${RESET}`];
     const titleLine = `${FG.cyan}${BOLD}Detail${RESET}  ${DIM}Esc to close  ↑↓ scroll${RESET}`;
     output += padLine(titleLine, cols) + "\n";
@@ -800,7 +1090,7 @@ function render() {
     const chevron = q.collapsed ? "▶" : "▼";
     const fc = isFocused && navLevel === "query" ? `${BOLD}${FG.cyan}` : (isFocused ? `${BOLD}${FG.white}` : DIM);
     const queryText = q.userQuery ? q.userQuery.replace(/\n/g, " ").slice(0, 40 - pfx.length) : "(preamble)";
-    const count = q.events.length;
+    const count = queryEventCount(q);
     const time = new Date(q.startTs).toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit" });
     const cursor = isFocused && navLevel === "query" ? `${FG.cyan}▸${RESET}` : " ";
     const headerLine = `${pfx}${cursor} ${fc}${chevron}${RESET} ${fc}${queryText}${RESET}  ${DIM}${count}${RESET}  ${DIM}${time}${RESET}`;
@@ -809,10 +1099,36 @@ function render() {
     if (!q.collapsed) {
       let evIdx = 0;
       for (const ev of q.events) {
-        const isEventFocused = navLevel === "event" && realIdx === focusIdx && evIdx === eventFocusIdx;
-        const prefix = isEventFocused ? `${pfx}${FG.cyan}▸${RESET} ` : `${pfx}  `;
-        rowData.push({ text: `${prefix}${ev.line}`, isHeader: false, queryIdx: realIdx, eventIdx: evIdx });
-        evIdx++;
+        if (ev.agentEvent) {
+          // Agent container: collapsible header + indented children + result
+          const isEventFocused = navLevel === "event" && realIdx === focusIdx && evIdx === eventFocusIdx;
+          const prefix = isEventFocused ? `${pfx}  ${FG.cyan}▸${RESET} ` : `${pfx}    `;
+          const chevron = ev.collapsed ? "▶" : "▼";
+          const status = ev.resultEvent ? `${FG.green}✓${RESET}` : `${FG.cyan}…${RESET}`;
+          const childCount = ev.children.length + (ev.resultEvent ? 1 : 0);
+          const countStr = ev.collapsed && childCount > 0 ? ` ${DIM}(${childCount})${RESET}` : "";
+          rowData.push({ text: `${prefix}${FG.cyan}${chevron}${RESET} ${ev.agentEvent.line} ${status}${countStr}`, isHeader: false, queryIdx: realIdx, eventIdx: evIdx, isAgentHeader: true });
+          evIdx++;
+          if (!ev.collapsed) {
+            for (const child of ev.children) {
+              const isCFocused = navLevel === "event" && realIdx === focusIdx && evIdx === eventFocusIdx;
+              const cPrefix = isCFocused ? `${pfx}    ${FG.cyan}▸${RESET} ` : `${pfx}      `;
+              rowData.push({ text: `${cPrefix}${child.line}`, isHeader: false, queryIdx: realIdx, eventIdx: evIdx });
+              evIdx++;
+            }
+            if (ev.resultEvent) {
+              const isRFocused = navLevel === "event" && realIdx === focusIdx && evIdx === eventFocusIdx;
+              const rPrefix = isRFocused ? `${pfx}    ${FG.cyan}▸${RESET} ` : `${pfx}      `;
+              rowData.push({ text: `${rPrefix}${ev.resultEvent.line}`, isHeader: false, queryIdx: realIdx, eventIdx: evIdx });
+              evIdx++;
+            }
+          }
+        } else {
+          const isEventFocused = navLevel === "event" && realIdx === focusIdx && evIdx === eventFocusIdx;
+          const prefix = isEventFocused ? `${pfx}  ${FG.cyan}▸${RESET} ` : `${pfx}    `;
+          rowData.push({ text: `${prefix}${ev.line}`, isHeader: false, queryIdx: realIdx, eventIdx: evIdx });
+          evIdx++;
+        }
       }
     }
   }
@@ -962,6 +1278,15 @@ function render() {
   if (hasNewQueries && !autoFollow) {
     output += `${ESC}[${rows - 2};${cols - 6}H${FG.yellow}↓ new${RESET}`;
   }
+  // History loading status
+  if (historyStatus) {
+    const hLen = historyStatus.length;
+    output += `${ESC}[${rows - 2};${cols - hLen - 1}H${DIM}${historyStatus}${RESET}`;
+  }
+  // Session picker overlay
+  if (sessionPickerVisible) {
+    output += renderSessionPicker(cols, rows);
+  }
 
   process.stdout.write(output);
 }
@@ -969,6 +1294,28 @@ function render() {
 // ===== Input handling =====
 function handleInput(buf) {
   const s = buf.toString();
+
+  // Session picker — intercept all input when visible
+  if (sessionPickerVisible) {
+    if (s === "\x1b" || s === "q") { sessionPickerVisible = false; render(); return; }
+    if (s === "j" || s === "\x1b[B") { if (sessionPickerIdx < sessionPickerList.length - 1) sessionPickerIdx++; render(); return; }
+    if (s === "k" || s === "\x1b[A") { if (sessionPickerIdx > 0) sessionPickerIdx--; render(); return; }
+    if (s === "\r" || s === "\n") {
+      const selected = sessionPickerList[sessionPickerIdx];
+      if (selected && ws && ws.readyState === 1) {
+        sessionPickerVisible = false;
+        // Load session as a new tab — don't clear existing state
+        isBacklog = true;
+        loadingHistory = true;
+        historyStatus = "Loading session...";
+        // Remember which session we're loading so we can switch to it on done
+        sessionPickerLoadingId = selected.id;
+        ws.send(JSON.stringify({ type: "load_session", sessionId: selected.id }));
+      }
+      render(); return;
+    }
+    return; // swallow all other input
+  }
 
   // X10 mouse: ESC [ M <button> <col> <row>
   if (buf.length >= 6 && buf[0] === 0x1b && buf[1] === 0x5b && buf[2] === 0x4d) {
@@ -1011,6 +1358,23 @@ function handleInput(buf) {
     render(); return;
   }
   if (s === "w") { openWindow(); render(); return; }
+  if (s === "L" && !loadingHistory && sessionFilter !== "all") {
+    // Load more history — only for a specific session
+    loadingHistory = true;
+    historyStatus = "Loading...";
+    const before = earliestTs < Infinity ? earliestTs : Date.now();
+    const payload = { type: "fetch_history", before, count: 200, sessionId: sessionFilter };
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(payload));
+    render(); return;
+  }
+  if (s === "R") {
+    // Show picker immediately, request session list
+    sessionPickerVisible = true;
+    sessionPickerList = [];
+    sessionPickerIdx = 0;
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "list_sessions" }));
+    render(); return;
+  }
   if (s === "i") { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "toggle_island" })); return; }
   if (s === "t") {
     if (sessionFilter !== "all") {
@@ -1044,8 +1408,8 @@ function handleInput(buf) {
       clearPending = false;
       if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
       eventCount = 0; errorCount = 0; tokenTotal = 0;
-      fileSet.clear();
-      sessionQueries.clear(); queries = []; queryIdCounter = 0;
+      fileSet.clear(); erroredFiles.clear(); activeFile = null;
+      sessionQueries.clear(); queries = []; queryIdCounter = 0; sessionAgentStacks.clear(); tuiAgentSessionMap.clear(); tuiChildSessionMap.clear(); tuiPendingAgentSpawns.clear(); eventAutoFollow = true;
       focusIdx = -1; autoFollow = true; hasNewQueries = false; scrollOffset = 0;
       sessions.clear(); sessionFilter = "all";
       phase = "idle"; currentTool = null; thinkingActive = false;
@@ -1144,17 +1508,40 @@ function handleInput(buf) {
     const q = queries[focusIdx];
     if (!q) { navLevel = "query"; render(); return; }
 
-    if (isDown) { if (eventFocusIdx < q.events.length - 1) eventFocusIdx++; render(); return; }
-    if (isUp) { if (eventFocusIdx > 0) eventFocusIdx--; render(); return; }
-    if (isLeft) { navLevel = "query"; eventFocusIdx = -1; render(); return; }
-    if (isRight || isEnter) {
-      if (eventFocusIdx >= 0 && eventFocusIdx < q.events.length) {
-        navLevel = "detail"; detailScroll = 0;
+    const totalEvents = queryEventCount(q);
+    if (isDown) {
+      if (eventFocusIdx < totalEvents - 1) eventFocusIdx++;
+      eventAutoFollow = (eventFocusIdx === totalEvents - 1);
+      render(); return;
+    }
+    if (isUp) {
+      if (eventFocusIdx > 0) eventFocusIdx--;
+      eventAutoFollow = false;
+      render(); return;
+    }
+    if (isLeft) {
+      const ag = queryAgentAt(q, eventFocusIdx);
+      if (ag && !ag.collapsed) {
+        ag.collapsed = true;
+      } else {
+        navLevel = "query"; eventFocusIdx = -1; eventAutoFollow = true;
       }
       render(); return;
     }
-    if (s === "g") { eventFocusIdx = 0; render(); return; }
-    if (s === "G") { eventFocusIdx = q.events.length - 1; render(); return; }
+    if (isRight || isEnter) {
+      if (eventFocusIdx >= 0 && eventFocusIdx < totalEvents) {
+        // Toggle collapse if on agent header
+        const ag = queryAgentAt(q, eventFocusIdx);
+        if (ag) {
+          ag.collapsed = !ag.collapsed;
+        } else {
+          navLevel = "detail"; detailScroll = 0;
+        }
+      }
+      render(); return;
+    }
+    if (s === "g") { eventFocusIdx = 0; eventAutoFollow = false; render(); return; }
+    if (s === "G") { eventFocusIdx = totalEvents - 1; eventAutoFollow = true; render(); return; }
     return;
   }
 
@@ -1214,6 +1601,7 @@ function handleInput(buf) {
         q.collapsed = false;
         navLevel = "event";
         eventFocusIdx = 0;
+        eventAutoFollow = false;
       }
     }
     render(); return;
@@ -1299,6 +1687,93 @@ function handleMouse(button, col, row) {
       }
     }
   }
+}
+
+// ===== Session Picker =====
+function handleSessionsList(list) {
+  sessionPickerList = list;
+  sessionPickerIdx = 0;
+  sessionPickerScroll = 0;
+  sessionPickerVisible = true;
+  render();
+}
+
+function formatTimeAgo(isoStr) {
+  if (!isoStr) return "";
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min${mins > 1 ? "s" : ""} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} hour${hours > 1 ? "s" : ""} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days > 1 ? "s" : ""} ago`;
+}
+
+function formatSize(bytes) {
+  if (bytes > 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  if (bytes > 1024) return `${Math.round(bytes / 1024)}KB`;
+  return `${bytes}B`;
+}
+
+function renderSessionPicker(cols, rows) {
+  let out = `${ESC}[H`; // cursor home — full screen takeover
+
+  // Clear entire screen
+  for (let r = 1; r <= rows; r++) {
+    out += `${ESC}[${r};1H${" ".repeat(cols)}`;
+  }
+
+  // Title bar
+  const count = sessionPickerList.length;
+  const countStr = count > 0 ? ` (${sessionPickerIdx + 1} of ${count})` : "";
+  out += `${ESC}[1;1H`;
+  out += padLine(`${BOLD}${FG.cyan} Resume Session${RESET}${DIM}${countStr}${RESET}`, cols);
+  out += `${ESC}[2;1H${DIM}${"─".repeat(cols)}${RESET}`;
+
+  if (count === 0) {
+    out += `${ESC}[4;3H${DIM}Loading sessions...${RESET}`;
+    // Footer
+    out += `${ESC}[${rows};1H${DIM}Esc to cancel${RESET}`;
+    return out;
+  }
+
+  // Each entry takes 3 rows: title, metadata, blank separator
+  const entryH = 3;
+  const listStart = 3;
+  const listRows = rows - 4; // leave room for footer
+  const visibleEntries = Math.floor(listRows / entryH);
+
+  if (sessionPickerIdx < sessionPickerScroll) sessionPickerScroll = sessionPickerIdx;
+  if (sessionPickerIdx >= sessionPickerScroll + visibleEntries) sessionPickerScroll = sessionPickerIdx - visibleEntries + 1;
+
+  for (let i = 0; i < visibleEntries && (i + sessionPickerScroll) < count; i++) {
+    const s = sessionPickerList[i + sessionPickerScroll];
+    const isFocused = (i + sessionPickerScroll) === sessionPickerIdx;
+    const row = listStart + i * entryH;
+    const cursor = isFocused ? `${FG.cyan})${RESET}` : " ";
+
+    // Line 1: cursor + first query or project name (title)
+    const title = s.firstQuery || (s.cwd || "").split("/").pop() || s.id.slice(0, 8);
+    const titleColor = isFocused ? `${BOLD}${FG.white}` : FG.white;
+    const titleText = title.replace(/\n/g, " ").slice(0, cols - 4);
+    out += `${ESC}[${row};1H${cursor} ${titleColor}${titleText}${RESET}`;
+
+    // Line 2: time ago · branch · size · project
+    const timeAgo = formatTimeAgo(s.mtime);
+    const branch = s.gitBranch || "HEAD";
+    const size = formatSize(s.size || 0);
+    const project = (s.cwd || s.project || "").split("/").slice(-2).join("/");
+    const metaParts = [timeAgo, branch, size];
+    if (project) metaParts.push(project);
+    const metaColor = isFocused ? DIM : `${ESC}[2m`;
+    out += `${ESC}[${row + 1};3H${metaColor}${metaParts.join(" · ")}${RESET}`;
+  }
+
+  // Footer
+  out += `${ESC}[${rows};1H${DIM}j/k navigate · Enter to load · Esc to cancel${RESET}`;
+
+  return out;
 }
 
 // ===== Connection =====
