@@ -1169,8 +1169,7 @@ function handleInput(buf) {
     }
     if (curPos < navOrder.length - 1) {
       focusIdx = navOrder[curPos + 1];
-      autoFollow = curPos + 1 === navOrder.length - 1;
-      if (autoFollow) hasNewQueries = false;
+      autoFollow = false;
     }
     render(); return;
   }
@@ -1196,20 +1195,50 @@ function handleInput(buf) {
     render(); return;
   }
 
-  // → = enter event level (expand first if collapsed)
+  // → = for topics: expand; for queries: enter event level
   if (isRight) {
     if (focusIdx >= 0 && focusIdx < queries.length) {
-      queries[focusIdx].collapsed = false;
-      navLevel = "event";
-      eventFocusIdx = 0;
+      const q = queries[focusIdx];
+      if (q._separator) {
+        if (q.collapsed) {
+          // First right: expand topic
+          q.collapsed = false;
+        } else {
+          // Already expanded: move focus to first child query
+          const curPos = navOrder.indexOf(focusIdx);
+          if (curPos >= 0 && curPos < navOrder.length - 1) {
+            focusIdx = navOrder[curPos + 1];
+          }
+        }
+      } else {
+        q.collapsed = false;
+        navLevel = "event";
+        eventFocusIdx = 0;
+      }
     }
     render(); return;
   }
 
-  // ← = collapse query
+  // ← = collapse if expanded; if already collapsed, jump to parent topic
   if (isLeft) {
     if (focusIdx >= 0 && focusIdx < queries.length) {
-      queries[focusIdx].collapsed = true;
+      const q = queries[focusIdx];
+      if (!q.collapsed) {
+        // First left: collapse in place
+        q.collapsed = true;
+      } else if (!q._separator) {
+        // Already collapsed query — jump to parent topic
+        const curPos = navOrder.indexOf(focusIdx);
+        if (curPos > 0) {
+          for (let i = curPos - 1; i >= 0; i--) {
+            const candidate = queries[navOrder[i]];
+            if (candidate && candidate._separator && candidate._separatorCat === "topic_shift") {
+              focusIdx = navOrder[i];
+              break;
+            }
+          }
+        }
+      }
     }
     render(); return;
   }
@@ -1239,7 +1268,7 @@ function handleMouse(button, col, row) {
     if (scrollUp) {
       if (curPos > 0) { focusIdx = navOrder[curPos - 1]; autoFollow = false; }
     } else {
-      if (curPos < navOrder.length - 1) { focusIdx = navOrder[curPos + 1]; autoFollow = curPos + 1 === navOrder.length - 1; if (autoFollow) hasNewQueries = false; }
+      if (curPos < navOrder.length - 1) { focusIdx = navOrder[curPos + 1]; autoFollow = false; }
     }
     render(); return;
   }
