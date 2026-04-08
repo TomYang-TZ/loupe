@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { execFile } = require("child_process");
 const { condenseRawEntry } = require("./replay");
+const { buildReplayHtml } = require("./replay-template");
 
 function fmtDurServer(ms) {
   if (ms < 1000) return "<1s";
@@ -385,13 +386,35 @@ function createRouter(filePath, uiDir, wss, opts) {
       return;
     }
 
-    // API: Replay analysis via Claude CLI
-    if (url === "/api/replay-analysis" && req.method === "POST") {
+    // API: Serve cached replay HTML report
+    if (url === "/api/replay/report" && (req.method === "GET" || req.method === "HEAD")) {
+      const qs = fullUrl.split("?")[1] || "";
+      const params = new URLSearchParams(qs);
+      const sessionId = params.get("sessionId");
+      if (!sessionId) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "sessionId required" }));
+        return;
+      }
+      const reportPath = path.join(process.env.HOME, ".claude", "logs", `loupe-replay-${sessionId}.html`);
+      if (fs.existsSync(reportPath)) {
+        const content = fs.readFileSync(reportPath);
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(req.method === "HEAD" ? undefined : content);
+      } else {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "No replay report found for this session" }));
+      }
+      return;
+    }
+
+    // API: Generate replay report (topic classification + analysis + timeline in parallel)
+    if (url === "/api/replay/generate" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
-      req.on("end", () => {
+      req.on("end", async () => {
         try {
-          const { sessionId, behavioral } = JSON.parse(body);
+          const { sessionId } = JSON.parse(body);
           if (!sessionId) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "sessionId required" }));
@@ -418,12 +441,84 @@ function createRouter(filePath, uiDir, wss, opts) {
           }
 
           // Read the raw session transcript
-          const content = fs.readFileSync(rawSessionFile, "utf-8");
-          const lines = content.split("\n").filter(l => l.trim());
+          const fileContent = fs.readFileSync(rawSessionFile, "utf-8");
+          const rawLines = fileContent.split("\n").filter(l => l.trim());
 
-          // Condense each raw transcript entry
+          // Parse queries, tool events, timestamps for timeline + topics
+          const queries = [];
+          const toolEvents = [];
+          const timeline = [];
+          let entryNum = 0;
+          let currentQueryIdx = -1;
+          let firstTs = null;
+          let lastTs = null;
+
+          for (const line of rawLines) {
+            try {
+              const obj = JSON.parse(line);
+              entryNum++;
+              const type = obj.type;
+              const ts = obj.timestamp ? new Date(obj.timestamp).getTime() : null;
+              if (ts) {
+                if (!firstTs) firstTs = ts;
+                lastTs = ts;
+              }
+
+              if (type === "user") {
+                const c = obj.message?.content;
+                let text = typeof c === "string" ? c :
+                  Array.isArray(c) ? c.filter(b => typeof b === "string" || b.type === "text").map(b => typeof b === "string" ? b : b.text).join(" ") : "";
+                text = text.replace(/<[^>]+>/g, "").replace(/\s*\[Image #\d+\]\s*/g, " ").trim();
+                if (text && text.length >= 3 && !/^<(local-command|command-name|command-args|system-reminder)/.test(text)) {
+                  currentQueryIdx = queries.length;
+                  queries.push({ text: text.slice(0, 200), ts });
+                }
+                if (text) timeline.push({ n: entryNum, type: "user", text: text.slice(0, 200), ts });
+              }
+
+              if (type === "assistant" && obj.message?.content) {
+                for (const block of obj.message.content) {
+                  if (block.type === "thinking" && block.thinking) {
+                    timeline.push({ n: entryNum, type: "think", text: block.thinking.slice(0, 120).replace(/\n/g, " "), ts });
+                  } else if (block.type === "tool_use") {
+                    const name = block.name || "?";
+                    const input = block.input || {};
+                    let detail = input.file_path || input.command?.split("\n")[0]?.slice(0, 80) || input.pattern || input.description || "";
+                    timeline.push({ n: entryNum, type: "tool", tool: name, detail: detail.slice(0, 100), ts });
+                    if (currentQueryIdx >= 0) {
+                      let action = "read";
+                      if (name === "Edit" || name === "Write" || name === "NotebookEdit") action = "edit";
+                      else if (name === "Bash" || name === "Agent") action = "exec";
+                      toolEvents.push({ tool: name, action, ts, queryIdx: currentQueryIdx });
+                    }
+                  } else if (block.type === "text" && block.text) {
+                    timeline.push({ n: entryNum, type: "text", text: block.text.slice(0, 120).replace(/\n/g, " "), ts });
+                  }
+                }
+              }
+
+              if (type === "tool_result" || type === "tool_response") {
+                if (obj.is_error) {
+                  const c = obj.content || obj.output || "";
+                  const text = typeof c === "string" ? c : Array.isArray(c) ? c.map(b => typeof b === "string" ? b : b.text || "").join(" ") : String(c);
+                  timeline.push({ n: entryNum, type: "error", text: text.split("\n")[0].slice(0, 150), ts });
+                }
+              }
+            } catch {}
+          }
+
+          const totalDuration = (firstTs && lastTs) ? Math.max(0, lastTs - firstTs) : 0;
+
+          // --- Run 3 tasks in parallel ---
+          // 1. Topic classification (Haiku)
+          const topicDetector = require("./topic-detector");
+          const topicPromise = queries.length >= 3
+            ? topicDetector.classify(queries.map(q => q.text))
+            : Promise.resolve(null);
+
+          // 2. Analysis via Claude Sonnet
           const condensed = [];
-          for (const line of lines) {
+          for (const line of rawLines) {
             try {
               const obj = JSON.parse(line);
               const summary = condenseRawEntry(obj);
@@ -431,63 +526,40 @@ function createRouter(filePath, uiDir, wss, opts) {
             } catch {}
           }
 
+          let analysisPromise;
           if (condensed.length === 0) {
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "No entries found in session transcript" }));
-            return;
-          }
-
-          // Cap at 500 lines: keep first 100 + last 400
-          let condensedLog;
-          if (condensed.length > 500) {
-            const head = condensed.slice(0, 100);
-            const tail = condensed.slice(-400);
-            condensedLog = [...head, `\n... (${condensed.length - 500} entries omitted) ...\n`, ...tail].join("\n");
+            analysisPromise = Promise.resolve(null);
           } else {
-            condensedLog = condensed.join("\n");
-          }
+            let condensedLog;
+            if (condensed.length > 500) {
+              const head = condensed.slice(0, 100);
+              const tail = condensed.slice(-400);
+              condensedLog = [...head, `\n... (${condensed.length - 500} entries omitted) ...\n`, ...tail].join("\n");
+            } else {
+              condensedLog = condensed.join("\n");
+            }
 
-          // Build context from behavioral signatures + /insights facets
-          let contextBlock = "";
-
-          // Behavioral context from momentum.js (sent by browser)
-          if (behavioral) {
-            const b = behavioral;
-            const phases = b.phaseDist || {};
-            const phaseStr = Object.entries(phases).filter(([,v]) => v > 0).map(([k,v]) => `${k} ${Math.round(v * 100)}%`).join(", ");
-            const peaks = b.patternPeaks || {};
-            const peakStr = Object.entries(peaks).filter(([,v]) => v > 0.1).map(([k,v]) => `${k} ${v.toFixed(2)}`).join(", ");
-            const risk = b.riskHistory || [];
-            const riskStr = risk.length > 0 ? risk.slice(-5).map(r => r.toFixed(2)).join(" → ") : "n/a";
-            contextBlock += `\n## Pre-computed Behavioral Analysis (from real-time tool-action pattern tracking)
-- Archetype: ${b.archetype || "unknown"} (confidence: ${(b.archetypeConfidence || 0).toFixed(2)})
-- Risk trajectory: ${riskStr} (trend: ${b.riskTrend || "neutral"})
-- Phase distribution: ${phaseStr || "n/a"}
-- Pattern peaks: ${peakStr || "none significant"}
-- Unique files: ${b.fileDiversity || 0}, Error count: ${Math.round((b.errorRate || 0) * (b.totalSpans || 0))}, Action entropy: ${(b.actionEntropy || 0).toFixed(2)}
-- Total spans: ${b.totalSpans || 0}, Duration: ${Math.round((b.totalDuration || 0) / 1000)}s\n`;
-          }
-
-          // /insights facets (cached on disk)
-          const facetPath = path.join(process.env.HOME, ".claude", "usage-data", "facets", `${sessionId}.json`);
-          try {
-            if (fs.existsSync(facetPath)) {
-              const facet = JSON.parse(fs.readFileSync(facetPath, "utf-8"));
-              const frictions = facet.friction_counts || {};
-              const frictionStr = Object.entries(frictions).filter(([,v]) => v > 0).map(([k,v]) => `${k.replace(/_/g, " ")} (${v})`).join(", ");
-              contextBlock += `\n## Insights Facets (from Claude Code /insights — AI-extracted session summary)
+            // Build context from /insights facets
+            let contextBlock = "";
+            const facetPath = path.join(process.env.HOME, ".claude", "usage-data", "facets", `${sessionId}.json`);
+            try {
+              if (fs.existsSync(facetPath)) {
+                const facet = JSON.parse(fs.readFileSync(facetPath, "utf-8"));
+                const frictions = facet.friction_counts || {};
+                const frictionStr = Object.entries(frictions).filter(([,v]) => v > 0).map(([k,v]) => `${k.replace(/_/g, " ")} (${v})`).join(", ");
+                contextBlock += `\n## Insights Facets (from Claude Code /insights — AI-extracted session summary)
 - Goal: "${facet.underlying_goal || "unknown"}"
 - Outcome: ${facet.outcome || "unknown"}
 - Session type: ${facet.session_type || "unknown"}
 - Helpfulness: ${facet.claude_helpfulness || "unknown"}
 - Friction: ${frictionStr || "none"}
 - Summary: ${facet.brief_summary || "n/a"}\n`;
-            }
-          } catch {}
+              }
+            } catch {}
 
-          const contextInstructions = contextBlock ? `\nIMPORTANT: Use the pre-computed data above to ground your analysis. Cite the archetype, risk trajectory, and pattern peaks in your Session Profile and Anomalies sections. If /insights facets are provided, compare your findings against the stated goal and outcome.\n` : "";
+            const contextInstructions = contextBlock ? `\nIMPORTANT: Use the pre-computed data above to ground your analysis. If /insights facets are provided, compare your findings against the stated goal and outcome.\n` : "";
 
-          const prompt = `You are analyzing a Claude Code agent session transcript. Produce a structured analysis in the EXACT format below. Be specific — cite tool names, file names, and entry numbers. Be concise but insightful.
+            const analysisPrompt = `You are analyzing a Claude Code agent session transcript. Produce a structured analysis in the EXACT format below. Be specific — cite tool names, file names, and entry numbers. Be concise but insightful.
 ${contextBlock}${contextInstructions}
 
 ## Session Profile
@@ -498,11 +570,11 @@ ${contextBlock}${contextInstructions}
 
 ## Time Breakdown
 Show approximate % of session time in each phase. Use a simple bar:
-- Exploring: [██░░░░░░░░] ~20%
-- Implementing: [████░░░░░░] ~40%
-- Debugging: [██░░░░░░░░] ~20%
-- Testing: [█░░░░░░░░░] ~10%
-- Planning: [█░░░░░░░░░] ~10%
+- Exploring: [\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591] ~20%
+- Implementing: [\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591] ~40%
+- Debugging: [\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591] ~20%
+- Testing: [\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591] ~10%
+- Planning: [\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591] ~10%
 
 ## Key Phases
 Number the major phases chronologically. For each:
@@ -547,22 +619,84 @@ Rate each dimension 1-5 and briefly justify. These help the user calibrate expec
 SESSION LOG (${condensed.length} entries from raw transcript):
 ${condensedLog}`;
 
-          const child = execFile("claude", ["--print", "--model", "sonnet"], {
-              timeout: 120000,
-              encoding: "utf-8",
-              maxBuffer: 2 * 1024 * 1024,
-            }, (err, stdout, stderr) => {
-              if (err) {
-                const msg = stderr ? stderr.slice(0, 200) : err.message;
-                res.writeHead(500, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ error: `Claude CLI failed: ${msg}` }));
-              } else {
-                res.writeHead(200, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ analysis: stdout }));
-              }
+            analysisPromise = new Promise((resolve) => {
+              const child = execFile("claude", ["--print", "--model", "sonnet"], {
+                timeout: 120000,
+                encoding: "utf-8",
+                maxBuffer: 2 * 1024 * 1024,
+              }, (err, stdout, stderr) => {
+                if (err) resolve(null);
+                else resolve(stdout);
+              });
+              child.stdin.write(analysisPrompt);
+              child.stdin.end();
             });
-            child.stdin.write(prompt);
-            child.stdin.end();
+          }
+
+          // Wait for both to complete
+          const [classified, analysisText] = await Promise.all([topicPromise, analysisPromise]);
+
+          // Enrich topics with tool stats
+          const enrichedTopics = [];
+          if (classified && classified.length > 0) {
+            for (let ti = 0; ti < classified.length; ti++) {
+              const topic = classified[ti];
+              const startIdx = Math.max(0, topic.start - 1);
+              const endIdx = ti + 1 < classified.length ? Math.max(0, classified[ti + 1].start - 1) : queries.length;
+
+              let edits = 0, reads = 0, execs = 0;
+              for (const te of toolEvents) {
+                if (te.queryIdx >= startIdx && te.queryIdx < endIdx) {
+                  if (te.action === "edit") edits++;
+                  else if (te.action === "read") reads++;
+                  else if (te.action === "exec") execs++;
+                }
+              }
+
+              const startTs = queries[startIdx]?.ts || 0;
+              const endTs = endIdx < queries.length ? (queries[endIdx]?.ts || 0) : (queries[queries.length - 1]?.ts || 0);
+              const durMs = Math.max(0, endTs - startTs);
+
+              const totalTools = edits + reads + execs;
+              let mood = "smooth";
+              if (durMs < 5000) mood = "quick";
+              else if (totalTools > 15 || durMs > 600000) mood = "grindy";
+
+              enrichedTopics.push({
+                title: topic.title,
+                durMs,
+                durLabel: fmtDurServer(durMs),
+                edits, reads, execs,
+                mood,
+              });
+            }
+          }
+
+          // Get session label
+          // Try to find it from loupe JSONL (simple heuristic: use first few chars of first query)
+          const sessionLabel = queries.length > 0
+            ? queries[0].text.slice(0, 40).replace(/\s+/g, " ") + (queries[0].text.length > 40 ? "..." : "")
+            : sessionId.slice(0, 12);
+
+          // Build HTML
+          const html = buildReplayHtml({
+            sessionLabel,
+            sessionId,
+            startTime: firstTs ? new Date(firstTs).toISOString() : null,
+            endTime: lastTs ? new Date(lastTs).toISOString() : null,
+            totalDuration,
+            topics: enrichedTopics,
+            timeline,
+            analysis: analysisText || "",
+            theme: "dark", // default; iframe will override via query param
+          });
+
+          // Cache to disk
+          const reportPath = path.join(process.env.HOME, ".claude", "logs", `loupe-replay-${sessionId}.html`);
+          fs.writeFileSync(reportPath, html, "utf-8");
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ status: "done", reportExists: true }));
         } catch (err) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message }));

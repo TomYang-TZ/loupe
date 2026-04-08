@@ -439,6 +439,7 @@ function connect() {
       isBacklog = false;
       // Finalize topic splits and rebuild panes
       LoupeGrouping.finalizeTopics();
+      rebuildTabs();
       rebuildAllPaneContents();
       scrollToBottom();
       // Clear stale states from backlog replay

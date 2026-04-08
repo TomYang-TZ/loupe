@@ -159,36 +159,15 @@
     <div class="replay-popover-header">
       <span class="replay-popover-title">Session Replay</span>
       <span class="replay-popover-session" id="replay-session-label"></span>
-      <span class="replay-popover-archetype" id="replay-archetype-badge"></span>
+      <div style="flex:1"></div>
+      <button class="replay-action-btn replay-action-start" id="replay-action-btn" onclick="startReplayAnalysis()">Start</button>
+      <button class="replay-action-btn replay-action-export" id="replay-export-btn" onclick="exportReplayMd()" title="Open in browser" style="display:none">Open in Browser</button>
       <button class="replay-popover-close" onclick="closeReplayPopover()">&times;</button>
     </div>
     <div class="replay-popover-body">
-      <div class="replay-chart-panel" id="replay-chart-panel">
-        <div class="replay-timeline-header">Session Timeline</div>
-        <div class="replay-chart-row">
-          <pre class="replay-ascii-art" id="replay-ascii-art"></pre>
-          <div class="replay-narration" id="replay-narration"></div>
-        </div>
-      </div>
-      <div class="replay-popover-body-lower">
-      <div class="replay-timeline-panel" id="replay-timeline-panel">
-        <div class="replay-timeline-header">Event Log</div>
-        <div class="replay-timeline-scroll" id="replay-timeline-scroll"></div>
-      </div>
-      <div class="replay-analysis-panel" id="replay-analysis-panel">
-        <div class="replay-analysis-header">
-          <span>Analysis</span>
-          <div class="replay-analysis-header-right">
-            <div class="replay-risk-meter" id="replay-risk-meter"></div>
-            <button class="replay-action-btn replay-action-cancel" id="replay-action-btn" onclick="cancelReplayAnalysis()" title="Cancel analysis">Cancel</button>
-            <button class="replay-action-btn replay-action-export" id="replay-export-btn" onclick="exportReplayMd()" title="Export as Markdown">Export .md</button>
-          </div>
-        </div>
-        <div class="replay-analysis-scroll" id="replay-analysis-scroll">
-          <div class="replay-loading">Analyzing session...</div>
-        </div>
-      </div>
-      </div><!-- end replay-popover-body-lower -->
+      <div class="replay-idle" id="replay-idle">Press <strong>Start</strong> to generate replay</div>
+      <div class="replay-loading" id="replay-loading" style="display:none">Generating replay...</div>
+      <iframe id="replay-iframe" style="width:100%;height:100%;border:none;border-radius:6px;display:none"></iframe>
     </div>
   </div>
 </div>
