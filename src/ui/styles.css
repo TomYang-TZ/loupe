@@ -2780,9 +2780,67 @@ body.minimal .minimal-topbar { display: flex; }
 
 .replay-popover-body {
   display: flex;
+  flex-direction: column;
   flex: 1;
   overflow: hidden;
 }
+.replay-popover-body-lower {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Replay chart panel (top) */
+.replay-chart-panel {
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.08));
+  flex-shrink: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.replay-chart-row {
+  display: flex;
+  gap: 0;
+}
+.replay-ascii-art {
+  font: 400 10px "SF Mono", "JetBrains Mono", Menlo, monospace;
+  color: var(--text-muted, #71717a);
+  padding: 8px 8px 8px 12px;
+  margin: 0;
+  white-space: pre;
+  line-height: 1.3;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border, rgba(255,255,255,0.06));
+  min-width: 80px;
+}
+.replay-narration {
+  padding: 8px 12px;
+  margin: 0;
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.rn-topic { margin-bottom: 10px; }
+.rn-bar {
+  font: 400 11px "SF Mono", "JetBrains Mono", Menlo, monospace;
+  color: var(--text-muted, #71717a);
+  line-height: 1.4;
+}
+.rn-label {
+  font: 500 11px "SF Mono", "JetBrains Mono", Menlo, monospace;
+  color: var(--text, #e4e4e7);
+  line-height: 1.4;
+}
+.rn-meta {
+  font: 400 10px "SF Mono", "JetBrains Mono", Menlo, monospace;
+  color: var(--text-muted, #71717a);
+  line-height: 1.4;
+}
+.rn-comment {
+  font: italic 400 10px "SF Mono", "JetBrains Mono", Menlo, monospace;
+  color: #06b6d4;
+  margin-left: 4px;
+}
+[data-theme="light"] .rn-comment { color: #0891b2; }
 
 /* Insights popover */
 .insights-popover { max-width: 90vw; width: 900px; }

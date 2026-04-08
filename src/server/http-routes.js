@@ -4,6 +4,18 @@ const path = require("path");
 const { execFile } = require("child_process");
 const { condenseRawEntry } = require("./replay");
 
+function fmtDurServer(ms) {
+  if (ms < 1000) return "<1s";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return rs > 0 ? `${m}m${rs}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm > 0 ? `${h}h${rm}m` : `${h}h`;
+}
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -183,25 +195,26 @@ function createRouter(filePath, uiDir, wss, opts) {
               const obj = JSON.parse(line);
               entryNum++;
               const type = obj.type;
+              const ts = obj.timestamp ? new Date(obj.timestamp).getTime() : null;
 
               if (type === "user") {
                 const c = obj.message?.content;
                 let text = typeof c === "string" ? c :
                   Array.isArray(c) ? c.filter(b => typeof b === "string" || b.type === "text").map(b => typeof b === "string" ? b : b.text).join(" ") : "";
                 text = text.replace(/\s*\[Image #\d+\]\s*/g, " ").trim();
-                if (text) timeline.push({ n: entryNum, type: "user", text: text.slice(0, 200) });
+                if (text) timeline.push({ n: entryNum, type: "user", text: text.slice(0, 200), ts });
               }
 
               if (type === "assistant" && obj.message?.content) {
                 for (const block of obj.message.content) {
                   if (block.type === "thinking" && block.thinking) {
-                    timeline.push({ n: entryNum, type: "think", text: block.thinking.slice(0, 120).replace(/\n/g, " ") });
+                    timeline.push({ n: entryNum, type: "think", text: block.thinking.slice(0, 120).replace(/\n/g, " "), ts });
                   } else if (block.type === "tool_use") {
                     const input = block.input || {};
                     let detail = input.file_path || input.command?.split("\n")[0]?.slice(0, 80) || input.pattern || input.description || "";
-                    timeline.push({ n: entryNum, type: "tool", tool: block.name || "?", detail: detail.slice(0, 100) });
+                    timeline.push({ n: entryNum, type: "tool", tool: block.name || "?", detail: detail.slice(0, 100), ts });
                   } else if (block.type === "text" && block.text) {
-                    timeline.push({ n: entryNum, type: "text", text: block.text.slice(0, 120).replace(/\n/g, " ") });
+                    timeline.push({ n: entryNum, type: "text", text: block.text.slice(0, 120).replace(/\n/g, " "), ts });
                   }
                 }
                 const usage = obj.message?.usage;
@@ -215,7 +228,7 @@ function createRouter(filePath, uiDir, wss, opts) {
                 if (isError) {
                   const c = obj.content || obj.output || "";
                   const text = typeof c === "string" ? c : Array.isArray(c) ? c.map(b => typeof b === "string" ? b : b.text || "").join(" ") : String(c);
-                  timeline.push({ n: entryNum, type: "error", text: text.split("\n")[0].slice(0, 150) });
+                  timeline.push({ n: entryNum, type: "error", text: text.split("\n")[0].slice(0, 150), ts });
                 }
               }
             } catch {}
@@ -223,6 +236,147 @@ function createRouter(filePath, uiDir, wss, opts) {
 
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ timeline, totalEntries: entryNum }));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+
+    // API: Classify session topics (for replay timeline, does NOT emit topic_shift events)
+    if (url === "/api/session-topics" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", async () => {
+        try {
+          const { sessionId } = JSON.parse(body);
+          if (!sessionId) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "sessionId required" }));
+            return;
+          }
+
+          // Read session timeline to extract queries + tool stats
+          const claudeProjectsDir = path.join(process.env.HOME, ".claude", "projects");
+          let rawSessionFile = null;
+          try {
+            for (const projDir of fs.readdirSync(claudeProjectsDir)) {
+              const candidate = path.join(claudeProjectsDir, projDir, `${sessionId}.jsonl`);
+              if (fs.existsSync(candidate)) { rawSessionFile = candidate; break; }
+            }
+          } catch {}
+
+          if (!rawSessionFile) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ topics: [], error: "Session file not found" }));
+            return;
+          }
+
+          const content = fs.readFileSync(rawSessionFile, "utf-8");
+          const lines = content.split("\n").filter(l => l.trim());
+
+          // Parse queries and tool events
+          const queries = [];  // { text, ts }
+          const toolEvents = []; // { tool, action, ts, queryIdx }
+          let currentQueryIdx = -1;
+
+          for (const line of lines) {
+            try {
+              const obj = JSON.parse(line);
+              const ts = obj.timestamp ? new Date(obj.timestamp).getTime() : null;
+
+              if (obj.type === "user") {
+                const c = obj.message?.content;
+                let text = typeof c === "string" ? c :
+                  Array.isArray(c) ? c.filter(b => typeof b === "string" || b.type === "text").map(b => typeof b === "string" ? b : b.text).join(" ") : "";
+                text = text.replace(/<[^>]+>/g, "").replace(/\s*\[Image #\d+\]\s*/g, " ").trim();
+                if (text && text.length >= 3 && !/^<(local-command|command-name|command-args|system-reminder)/.test(text)) {
+                  currentQueryIdx = queries.length;
+                  queries.push({ text: text.slice(0, 200), ts });
+                }
+              }
+
+              if (obj.type === "assistant" && obj.message?.content) {
+                for (const block of obj.message.content) {
+                  if (block.type === "tool_use" && currentQueryIdx >= 0) {
+                    const name = block.name || "?";
+                    let action = "read";
+                    if (name === "Edit" || name === "Write" || name === "NotebookEdit") action = "edit";
+                    else if (name === "Bash" || name === "Agent") action = "exec";
+                    toolEvents.push({ tool: name, action, ts, queryIdx: currentQueryIdx });
+                  }
+                }
+              }
+            } catch {}
+          }
+
+          if (queries.length < 2) {
+            // Too few queries — return them as-is without classification
+            const topics = queries.map((q, i) => ({
+              title: q.text.slice(0, 50),
+              start: i + 1,
+              durMs: 0,
+              durLabel: "<1s",
+              edits: 0, reads: 0, execs: 0,
+              mood: "quick",
+            }));
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ topics }));
+            return;
+          }
+
+          // Classify via topic detector (Haiku, no side effects)
+          const topicDetector = require("./topic-detector");
+          const classified = await topicDetector.classify(queries.map(q => q.text));
+
+          if (!classified || classified.length === 0) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ topics: [], error: "Classification failed" }));
+            return;
+          }
+
+          // Enrich with tool stats per topic
+          const enriched = [];
+          for (let ti = 0; ti < classified.length; ti++) {
+            const topic = classified[ti];
+            const startIdx = Math.max(0, topic.start - 1);
+            const endIdx = ti + 1 < classified.length ? Math.max(0, classified[ti + 1].start - 1) : queries.length;
+
+            let edits = 0, reads = 0, execs = 0;
+            for (const te of toolEvents) {
+              if (te.queryIdx >= startIdx && te.queryIdx < endIdx) {
+                if (te.action === "edit") edits++;
+                else if (te.action === "read") reads++;
+                else if (te.action === "exec") execs++;
+              }
+            }
+
+            // Duration from first query ts to next topic start (or end of session)
+            const startTs = queries[startIdx]?.ts || 0;
+            const endTs = endIdx < queries.length ? (queries[endIdx]?.ts || 0) : (queries[queries.length - 1]?.ts || 0);
+            const durMs = Math.max(0, endTs - startTs);
+
+            // Mood
+            const totalTools = edits + reads + execs;
+            const hasErrors = toolEvents.some(te => te.queryIdx >= startIdx && te.queryIdx < endIdx && te.tool === "error");
+            let mood = "smooth";
+            if (durMs < 5000) mood = "quick";
+            else if (hasErrors) mood = "rough";
+            else if (totalTools > 15 || durMs > 600000) mood = "grindy";
+
+            enriched.push({
+              title: topic.title,
+              start: topic.start,
+              durMs,
+              durLabel: fmtDurServer(durMs),
+              edits, reads, execs,
+              mood,
+            });
+          }
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ topics: enriched }));
         } catch (err) {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message }));

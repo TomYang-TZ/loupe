@@ -6,6 +6,24 @@
 
 Real-time observer for Claude Code sessions. Streams tool calls, thinking blocks, approvals, errors, and agent activity into three display modes.
 
+## Features
+
+### Session Resume
+
+Sessions are persisted and can be resumed across restarts. Loupe automatically reconnects to active sessions and loads their full history, so you never lose context.
+
+### Topics
+
+User queries are grouped into topics with automatic detection. Related tool calls, thinking blocks, and agent activity are clustered under the originating query, making it easy to follow the narrative of a session.
+
+### Replay
+
+Session replay provides a condensed timeline of everything that happened in a session. Includes a time series chart showing how time was spent across topics and workflow phases (exploring, implementing, debugging, testing). Export the analysis as markdown.
+
+### Insights
+
+Launches Claude Code's built-in `/insights` command and displays the generated HTML report directly inside Loupe. Provides a high-level summary of session patterns, file activity, and behavioral analysis.
+
 ## Install
 
 ```bash
@@ -85,8 +103,8 @@ src/
     app-render.js  # DOM rendering for grouped events
     app-modal.js   # Detail modal
     app-replay.js  # Replay analysis UI
-    gravity.js     # File dependency graph
-    momentum.js    # Behavioral span graph
+    gravity.js     # File map (Files: relationship graph, History: time-series)
+    momentum.js    # Flow map (behavioral span graph)
     tiling.js      # Binary tree pane layout
 native/
   app.swift        # macOS app (island + WebView window)

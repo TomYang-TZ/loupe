@@ -627,11 +627,12 @@ function handleMessage(data) {
   let sessionId = extractSessionId(json);
   if (sessionId && deletedSessionIds.has(sessionId)) { render(); return; }
   if (sessionId && !sessions.has(sessionId)) {
-    sessions.set(sessionId, { id: sessionId, label: json?.data?.cwd?.split("/").pop() || sessionId.slice(0, 8), eventCount: 0, active: true });
+    sessions.set(sessionId, { id: sessionId, label: json?.data?.cwd?.split("/").pop() || sessionId.slice(0, 8), eventCount: 0, active: true, lastEventTs: msg.ts });
   }
   if (sessionId && sessions.has(sessionId)) {
     const sInfo = sessions.get(sessionId);
     sInfo.eventCount++;
+    sInfo.lastEventTs = msg.ts;
     if (cat === "session_end") sInfo.active = false;
     else if (cat !== "sub_agent_result") sInfo.active = true;
   }
@@ -1040,16 +1041,32 @@ function render() {
 
   // Session tabs
   if (showTabs) {
+    // Sort and filter tabs: only sessions with content
+    const sortedSessionIds = [...sessions.keys()].sort((a, b) => {
+      const aTs = sessions.get(a)?.lastEventTs || 0;
+      const bTs = sessions.get(b)?.lastEventTs || 0;
+      return aTs - bTs;
+    });
+    const tabSessionIds = sortedSessionIds.filter(sid => {
+      const sInfo = sessions.get(sid);
+      if (!sInfo || sInfo.eventCount < 3) return false;
+      const sq = sessionQueries.get(sid) || [];
+      return sq.some(q => !q._preamble && q.userQuery);
+    });
     let tabLine = " ";
     tabLine += sessionFilter === "all" ? `${BOLD}${FG.cyan}[1:All]${RESET}` : `${DIM}[1:All]${RESET}`;
-    let idx = 2;
-    for (const [sid, sInfo] of sessions) {
+    const total = tabSessionIds.length;
+    // Tabs: most recent first (left = 2), numbered 2, 3, 4...
+    for (let si = total - 1; si >= 0; si--) {
+      const sid = tabSessionIds[si];
+      const sInfo = sessions.get(sid);
+      if (!sInfo) continue;
+      const num = total - si + 1;
+      if (num > 9) continue;
       const selected = sessionFilter === sid;
       const dot = sInfo.active ? `${FG.green}●${RESET} ` : "";
-      const label = `${idx}:${sInfo.label}`;
+      const label = `${num}:${sInfo.label}`;
       tabLine += selected ? ` ${BOLD}${FG.cyan}[${dot}${label}]${RESET}` : ` ${DIM}[${dot}${label}]${RESET}`;
-      idx++;
-      if (idx > 9) break;
     }
     output += padLine(tabLine, cols) + "\n";
   }
@@ -1191,17 +1208,27 @@ function render() {
   }
 
   if (sessionFilter === "all" && sessions.size > 0) {
-    const sessionIds = [...sessions.keys()];
-    for (let si = 0; si < sessionIds.length; si++) {
-      const sid = sessionIds[si];
+    // Sort: most idle first (top), most recent last (bottom)
+    const sessionIds = [...sessions.keys()].sort((a, b) => {
+      const aTs = sessions.get(a)?.lastEventTs || 0;
+      const bTs = sessions.get(b)?.lastEventTs || 0;
+      return aTs - bTs;
+    });
+    // Filter to sessions with meaningful content
+    const contentIds = sessionIds.filter(sid => {
+      const sInfo = sessions.get(sid);
+      if (!sInfo || sInfo.eventCount < 3) return false;
+      const sq = sessionQueries.get(sid) || [];
+      return sq.some(q => !q._preamble && q.userQuery);
+    });
+    for (let si = 0; si < contentIds.length; si++) {
+      const sid = contentIds[si];
       const sInfo = sessions.get(sid);
       const sq = sessionQueries.get(sid) || [];
-      const visible = sq.filter(q => !q._preamble);
-      if (visible.length === 0) continue;
 
       const sLabel = sInfo.label || sid.slice(0, 8);
       const sCount = sInfo.eventCount || 0;
-      const sNum = si + 2;
+      const sNum = contentIds.length - si + 1; // most recent (last) = 2
       rowData.push({ text: `${sNum}:${sLabel}`, meta: `${sCount} events`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
 
       addSessionQueries(sq);
@@ -1345,9 +1372,17 @@ function handleInput(buf) {
   // Global keys — work at any level
   if (s === "1") { sessionFilter = "all"; render(); return; }
   if (s >= "2" && s <= "9") {
-    const idx = parseInt(s) - 2;
-    const sessionIds = [...sessions.keys()];
-    if (idx < sessionIds.length) sessionFilter = sessionIds[idx];
+    // Key 2 = most recent, only sessions with content
+    const num = parseInt(s);
+    const sorted = [...sessions.keys()].sort((a, b) => (sessions.get(a)?.lastEventTs || 0) - (sessions.get(b)?.lastEventTs || 0));
+    const filtered = sorted.filter(sid => {
+      const sInfo = sessions.get(sid);
+      if (!sInfo || sInfo.eventCount < 3) return false;
+      const sq = sessionQueries.get(sid) || [];
+      return sq.some(q => !q._preamble && q.userQuery);
+    });
+    const idx = filtered.length - (num - 1);
+    if (idx >= 0 && idx < filtered.length) sessionFilter = filtered[idx];
     render(); return;
   }
   if (s === "c") {

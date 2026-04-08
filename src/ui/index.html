@@ -115,6 +115,7 @@
       <div class="gravity-filter-main">
         <div class="mode-filter-bar" id="mode-filter-bar">
           <button class="mode-btn active" data-mode="files" onclick="setMapMode('files')">Files</button>
+          <button class="mode-btn" data-mode="history" onclick="setMapMode('history')">History</button>
           <button class="mode-btn" data-mode="flow" onclick="setMapMode('flow')">Flow</button>
         </div>
         <span class="filter-divider"></span>
@@ -162,8 +163,16 @@
       <button class="replay-popover-close" onclick="closeReplayPopover()">&times;</button>
     </div>
     <div class="replay-popover-body">
+      <div class="replay-chart-panel" id="replay-chart-panel">
+        <div class="replay-timeline-header">Session Timeline</div>
+        <div class="replay-chart-row">
+          <pre class="replay-ascii-art" id="replay-ascii-art"></pre>
+          <div class="replay-narration" id="replay-narration"></div>
+        </div>
+      </div>
+      <div class="replay-popover-body-lower">
       <div class="replay-timeline-panel" id="replay-timeline-panel">
-        <div class="replay-timeline-header">Timeline</div>
+        <div class="replay-timeline-header">Event Log</div>
         <div class="replay-timeline-scroll" id="replay-timeline-scroll"></div>
       </div>
       <div class="replay-analysis-panel" id="replay-analysis-panel">
@@ -179,6 +188,7 @@
           <div class="replay-loading">Analyzing session...</div>
         </div>
       </div>
+      </div><!-- end replay-popover-body-lower -->
     </div>
   </div>
 </div>

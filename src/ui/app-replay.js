@@ -45,6 +45,11 @@ const LoupeReplay = (() => {
     const scroll = document.getElementById("replay-analysis-scroll");
     scroll.innerHTML = '<div class="replay-loading">Analyzing session...</div>';
 
+    // Classify topics in parallel (Haiku, fast)
+    const narrEl = document.getElementById("replay-narration");
+    if (narrEl) narrEl.textContent = "classifying topics...";
+    fetchSessionTopics(sid);
+
     // Gather behavioral signature from Momentum (if available)
     const behavioral = (typeof Momentum !== "undefined" && Momentum.getSessionVector)
       ? Momentum.getSessionVector(sid)
@@ -159,6 +164,13 @@ const LoupeReplay = (() => {
     replayAnalyzing = false;
     timelineScroll.innerHTML = '<div class="replay-loading">Loading timeline...</div>';
     analysisScroll.innerHTML = '<div class="replay-idle">Press <strong>Start</strong> to run analysis</div>';
+    // Reset narration panel
+    const narrEl = document.getElementById("replay-narration");
+    const artEl = document.getElementById("replay-ascii-art");
+    if (narrEl) narrEl.textContent = "press Start to classify topics";
+    if (artEl) artEl.textContent = "";
+    stopAsciiArt();
+    startAsciiArt(sessionId);
     updateReplayActionBtn();
     updateExportBtn();
 
@@ -198,6 +210,7 @@ const LoupeReplay = (() => {
 
   window.closeReplayPopover = function() {
     document.getElementById("replay-popover-overlay").style.display = "none";
+    stopAsciiArt();
   };
 
   function renderReplayTimeline(timeline, totalEntries) {
@@ -420,6 +433,266 @@ const LoupeReplay = (() => {
       });
     }
   };
+
+  // --- Session Timeline: ASCII art + narrated topics ---
+
+  // Seeded PRNG from session ID
+  function seededRng(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+    let s = h >>> 0;
+    return () => { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return (s >>> 0) / 4294967296; };
+  }
+
+  function pick(rng, arr) { return arr[Math.floor(rng() * arr.length)]; }
+
+  // --- ASCII Art Animations ---
+  // Each animation is { frames: string[][], interval: ms }
+  // frames[i] is an array of lines
+
+  function getAsciiAnimations() { return [
+    // Campfire
+    { interval: 400, frames: [
+      ["     (  ","    ) ( )","   ( ) ( ","    )  ) ","   .^^^. ","   |   | ","   '---' "],
+      ["    ) ( ","   ( ) ( ","    ) )  ","   (  (  ","   .^^^. ","   |   | ","   '---' "],
+      ["   (  ) ","    )(   ","   ) ( ) ","    )(   ","   .^^^. ","   |   | ","   '---' "],
+    ]},
+    // Ocean waves
+    { interval: 500, frames: [
+      ["         ","~._.~._.~","_.~._.~._","~._.~._.~","   __/|  ","  /  __|_","_/______\\"],
+      ["         ","._.~._.~.","~._.~._.~","_.~._.~._","   __/|  ","  /  __|_","_/______\\"],
+      ["         ","_.~._.~._","~._.~._.~","._.~._.~.","   __/|  ","  /  __|_","_/______\\"],
+    ]},
+    // Cat napping
+    { interval: 800, frames: [
+      ["         ","  /\\_/\\  "," ( o.o ) ","  > ^ <  "," /|   |\\ ","(_|   |_)"],
+      ["         ","  /\\_/\\  "," ( -.- ) ","  > ^ <  "," /|   |\\ ","(_|   |_)"],
+      ["         ","  /\\_/\\  "," ( o.o ) ","  > ^ <  "," /|   |\\ ","(_|   |_)"],
+      ["         ","  /\\_/\\  "," ( -.- ) ","  > ^ <  "," /|   |\\ ","(_|   |_)"],
+      ["         ","  /\\_/\\  "," ( -.- ) ","  > ^ <  "," /|   |\\ ","(_|   |_)"],
+    ]},
+    // Spinning planet
+    { interval: 300, frames: [
+      ["  .---.  "," /  |  \\ ","|  -+-  |"," \\  |  / ","  '---'  "],
+      ["  .---.  "," / / / \\ ","|/ / /  |"," \\ / / / ","  '---'  "],
+      ["  .---.  "," /--   \\ ","|---   |"," \\--   / ","  '---'  "],
+      ["  .---.  "," / \\ \\ \\ ","|  \\ \\ \\|"," \\ \\ \\  /","  '---'  "],
+    ]},
+    // Rain on window
+    { interval: 350, frames: [
+      [" .------."," | '  ' |"," |  '   |"," |'   ' |"," | ' '  |"," '------'"],
+      [" .------."," |  ' ' |"," | '  ' |"," |  '   |"," |'   ' |"," '------'"],
+      [" .------."," |'   ' |"," |  ' ' |"," | '  ' |"," |  '   |"," '------'"],
+    ]},
+    // Pendulum clock
+    { interval: 500, frames: [
+      [" .-----. "," | 12  | "," |9  3 | "," | 6/  | "," '-----' ","   \\     ","    *    "],
+      [" .-----. "," | 12  | "," |9  3 | "," | 6|  | "," '-----' ","    |    ","    *    "],
+      [" .-----. "," | 12  | "," |9  3 | "," | 6 \\ | "," '-----' ","     /   ","    *    "],
+      [" .-----. "," | 12  | "," |9  3 | "," | 6|  | "," '-----' ","    |    ","    *    "],
+    ]},
+    // Lava lamp
+    { interval: 600, frames: [
+      ["  ____   ","  |  |   ","  | O|   ","  |  |   ","  |o |   ","  | O|   ","  |__|   "],
+      ["  ____   ","  | o|   ","  |  |   ","  |O |   ","  |  |   ","  |o |   ","  |__|   "],
+      ["  ____   ","  |  |   ","  |o |   ","  |  |   ","  | O|   ","  |  |   ","  |__|   "],
+      ["  ____   ","  |O |   ","  |  |   ","  | o|   ","  |  |   ","  | O|   ","  |__|   "],
+    ]},
+    // Windmill
+    { interval: 400, frames: [
+      ["    |    ","    |    ","----+----","    |    ","    |    ","   /|\\   ","  / | \\  "],
+      ["  \\ | /  ","   \\|/   ","    +    ","   /|\\   ","  / | \\  ","   /|\\   ","  / | \\  "],
+      ["    |    ","    |    ","----+----","    |    ","    |    ","   /|\\   ","  / | \\  "],
+      ["  / | \\  ","   /|\\   ","    +    ","   \\|/   ","  \\ | /  ","   /|\\   ","  / | \\  "],
+    ]},
+    // Fish tank
+    { interval: 500, frames: [
+      [" .-------."," |  ><>  |"," |       |"," | <><   |"," |    ~~ |"," '-------'"],
+      [" .-------."," |   ><> |"," |       |"," |  <><  |"," |   ~~  |"," '-------'"],
+      [" .-------."," |    ><>|"," |       |"," |   <>< |"," |  ~~   |"," '-------'"],
+      [" .-------."," |   ><> |"," |       |"," |  <><  |"," |   ~~  |"," '-------'"],
+    ]},
+    // Constellation
+    { interval: 700, frames: [
+      ["  *   .  ","    .    "," .    *  ","   *     ","      .  "," .  *    ","    .   *"],
+      ["  .   *  ","    .    "," *    .  ","   .     ","      *  "," *  .    ","    *   ."],
+      ["  *   .  ","    *    "," .    *  ","   *     ","      .  "," .  *    ","    .   *"],
+    ]},
+    // Music notes
+    { interval: 450, frames: [
+      ["    \u266A    ","  \u266B     ","      \u266A  "," \u266A      ","         ","   \u266B    ","         "],
+      ["         ","    \u266A    ","  \u266B     ","      \u266A  "," \u266A      ","         ","   \u266B    "],
+      ["   \u266B    ","         ","    \u266A    ","  \u266B     ","      \u266A  "," \u266A      ","         "],
+    ]},
+    // Steam from mug
+    { interval: 500, frames: [
+      ["  )  )   ","   (  (  ","  )  )   ","         ","  .---. /"," |     | ","  '---'  "],
+      ["   (  (  ","  )  )   ","   (  (  ","         ","  .---. /"," |     | ","  '---'  "],
+      ["  )  )   ","   ) )   ","  (  (   ","         ","  .---. /"," |     | ","  '---'  "],
+    ]},
+  ]; }
+
+  let artInterval = null;
+
+  function startAsciiArt(sessionId) {
+    const el = document.getElementById("replay-ascii-art");
+    if (!el) return;
+    if (artInterval) { clearInterval(artInterval); artInterval = null; }
+
+    const rng = seededRng(sessionId || "default");
+    const animations = getAsciiAnimations();
+    const anim = animations[Math.floor(rng() * animations.length)];
+
+    let frame = 0;
+    function draw() {
+      el.textContent = anim.frames[frame].join("\n");
+      frame = (frame + 1) % anim.frames.length;
+    }
+    draw();
+    artInterval = setInterval(draw, anim.interval);
+  }
+
+  function stopAsciiArt() {
+    if (artInterval) { clearInterval(artInterval); artInterval = null; }
+  }
+
+  // --- Narration engine ---
+
+  // Phrase banks keyed by mood
+  const OPENERS = [
+    "okay so first we dove into",
+    "started off with",
+    "right, so first thing \u2014",
+    "jumped straight into",
+    "alright so we kicked off with",
+    "first up was",
+  ];
+  const MIDDLES = [
+    "then we got into",
+    "after that, moved on to",
+    "next thing you know we're doing",
+    "then pivoted to",
+    "okay then we tackled",
+    "cool, then shifted to",
+    "from there went into",
+    "then it was time for",
+  ];
+  const CLOSERS = [
+    "and to wrap it all up,",
+    "last stretch \u2014",
+    "and finally,",
+    "finished strong with",
+    "home stretch:",
+    "one more thing before done \u2014",
+  ];
+  const SMOOTH = [
+    "Smooth sailing.",
+    "No issues, just vibes.",
+    "Clean run.",
+    "Went like butter.",
+    "No drama.",
+    "Textbook.",
+  ];
+  const GRINDY = [
+    "This one took a minute ngl.",
+    "Lot of back and forth here.",
+    "Bit of a grind.",
+    "Really had to dig in.",
+    "Put in the work on this one.",
+    "Kept at it.",
+  ];
+  const ROUGH = [
+    "Hit some errors along the way.",
+    "Bumpy ride, had to debug.",
+    "Ran into trouble on this one.",
+    "Things got spicy.",
+    "Had to fight through errors.",
+  ];
+  const QUICK = [
+    "Quick one.",
+    "In and out.",
+    "Done in a flash.",
+    "Barely blinked.",
+  ];
+
+  function narrateFromTopics(topics, sessionId) {
+    const rng = seededRng(sessionId || "x");
+    const maxDur = Math.max(...topics.map(t => t.durMs || 1));
+    const barMax = 20;
+    let html = "";
+
+    for (let i = 0; i < topics.length; i++) {
+      const t = topics[i];
+      const dur = t.durMs || 1;
+      const barLen = maxDur > 0 ? Math.max(1, Math.round((dur / maxDur) * barMax)) : 1;
+      const bar = "\u2588".repeat(barLen) + "\u2591".repeat(barMax - barLen);
+
+      const stats = [];
+      if (t.edits) stats.push(`${t.edits}e`);
+      if (t.reads) stats.push(`${t.reads}r`);
+      if (t.execs) stats.push(`${t.execs}x`);
+      const statStr = stats.join(" ");
+
+      const m = (t.mood || "").trim();
+      const icon = m === "rough" ? " \u26A1" : m === "grindy" ? " \u2026" : "";
+      let comment = "";
+      if (m === "rough") comment = pick(rng, ROUGH);
+      else if (m === "grindy") comment = pick(rng, GRINDY);
+      else if (m === "quick") comment = pick(rng, QUICK);
+
+      const durStr = (t.durLabel || "").padStart(5);
+
+      html += `<div class="rn-topic">`;
+      html += `<div class="rn-bar">${bar} ${durStr}${icon}</div>`;
+      html += `<div class="rn-label">${esc(t.label)}</div>`;
+      if (statStr || comment) {
+        html += `<div class="rn-meta">${statStr}${comment ? `<span class="rn-comment">${esc(comment)}</span>` : ""}</div>`;
+      }
+      html += `</div>`;
+    }
+
+    return html;
+  }
+
+  async function fetchSessionTopics(sessionId) {
+    const narrEl = document.getElementById("replay-narration");
+    try {
+      const resp = await fetch("/api/session-topics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      const data = await resp.json();
+      if (data.topics && data.topics.length > 0) {
+        const topics = data.topics.map(t => ({
+          label: t.title,
+          durLabel: t.durLabel || "",
+          durMs: t.durMs || 0,
+          edits: t.edits || 0,
+          reads: t.reads || 0,
+          execs: t.execs || 0,
+          mood: t.mood || "smooth",
+        }));
+        if (narrEl) narrEl.innerHTML = narrateFromTopics(topics, sessionId);
+      } else {
+        if (narrEl) narrEl.textContent = data.error || "no topics found";
+      }
+    } catch (err) {
+      if (narrEl) narrEl.textContent = "failed to classify topics";
+    }
+  }
+
+  function fmtDur(ms) {
+    if (ms < 1000) return "<1s";
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + "s";
+    const m = Math.floor(s / 60);
+    const rs = s % 60;
+    if (m < 60) return rs > 0 ? `${m}m${rs}s` : `${m}m`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return rm > 0 ? `${h}h${rm}m` : `${h}h`;
+  }
 
   function init({ sessions, getActiveSession }) {
     _sessions = sessions;

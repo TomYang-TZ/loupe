@@ -16,6 +16,18 @@ const Gravity = (() => {
   let activeFiles = new Map();
   let labelCounts = new Map();
 
+  // Canonical data (one-per-file, always maintained by processEntry)
+  const canonNodes = new Map();
+  const canonEdges = new Map();
+  const accessLog = []; // every tool access event, chronological
+  const fileAccessCounts = new Map(); // filepath -> total access count
+
+  // Layout mode: "files" (force-directed relationship) or "history" (time-series multi-instance)
+  let layoutMode = "history";
+
+  // History mode tracking
+  const historyFileLatest = new Map(); // filepath -> node id
+
   // Camera
   let camX = 0, camY = 0, camZoom = 0.85;
   let targetCamX = 0, targetCamY = 0;
@@ -39,6 +51,8 @@ const Gravity = (() => {
   const WARM_DURATION = 7 * 60000;
   const STALE_CUTOFF = 60 * 60 * 1000;
   const NODE_FIXED_R = 5;
+  const NODE_MIN_R = 3;
+  const NODE_MAX_R = 18;
 
   // Lane mode: "action" (read/edit/exec), "phase" (exploring/implementing/testing/debugging)
   // Both are always rendered stacked; laneMode controls which one the camera focuses on
@@ -196,25 +210,25 @@ const Gravity = (() => {
 
   // --- Graph building ---
   function getOrCreateNode(fp, nearFp) {
-    if (nodes.has(fp)) return nodes.get(fp);
+    if (canonNodes.has(fp)) return canonNodes.get(fp);
     // Place new node near its connected neighbor (if known) for smooth introduction
     let startX = width / 2 + (Math.random() - 0.5) * 100;
     let startY = height / 2 + (Math.random() - 0.5) * 100;
-    if (nearFp && nodes.has(nearFp)) {
-      const near = nodes.get(nearFp);
+    if (nearFp && canonNodes.has(nearFp)) {
+      const near = canonNodes.get(nearFp);
       startX = near.x + (Math.random() - 0.5) * 60;
       startY = near.y + (Math.random() - 0.5) * 60;
     }
-    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, firstAccessTs: Date.now(), accessOrder: nodes.size, sessions: new Set(), createdAt: Date.now(), x: startX, y: startY, vx: 0, vy: 0, fx: null, fy: null };
-    nodes.set(fp, n);
+    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, firstAccessTs: Date.now(), accessOrder: canonNodes.size, sessions: new Set(), createdAt: Date.now(), x: startX, y: startY, vx: 0, vy: 0, fx: null, fy: null };
+    canonNodes.set(fp, n);
     return n;
   }
 
   function getOrCreateEdge(src, dst, type) {
     const key = `${src}|${dst}|${type}`;
-    if (edges.has(key)) return edges.get(key);
+    if (canonEdges.has(key)) return canonEdges.get(key);
     const e = { key, source: src, target: dst, type, weight: 0, lastTs: 0, sessions: new Set() };
-    edges.set(key, e);
+    canonEdges.set(key, e);
     return e;
   }
 
@@ -278,6 +292,10 @@ const Gravity = (() => {
     // Track Claude's presence
     claudeCurrentFiles.clear();
     claudeCurrentFiles.add(fp);
+
+    // Track for history mode
+    accessLog.push({ filepath: fp, label: shortName(fp), dir: dirGroup(fp), action, displayAction, ts, sessionId });
+    fileAccessCounts.set(fp, (fileAccessCounts.get(fp) || 0) + 1);
 
     return true;
   }
@@ -390,12 +408,106 @@ const Gravity = (() => {
     }
   }
 
+  // --- Populate display maps from canonical/accessLog based on mode ---
+  function populateFilesDisplay() {
+    nodes.clear();
+    edges.clear();
+    for (const [k, v] of canonNodes) nodes.set(k, v);
+    for (const [k, v] of canonEdges) edges.set(k, v);
+  }
+
+  function populateHistoryDisplay() {
+    nodes.clear();
+    edges.clear();
+    historyFileLatest.clear();
+    activeFiles.clear();
+
+    const now = Date.now();
+    let seqId = 0;
+    const sessionLastNode = new Map();
+    // Running per-file counters so each node captures importance at its point in time
+    const runningRead = new Map();
+    const runningEdit = new Map();
+    const runningExec = new Map();
+
+    for (const entry of accessLog) {
+      const age = now - entry.ts;
+      if (age > STALE_CUTOFF) continue;
+
+      const fp = entry.filepath;
+      // Increment running counters
+      if (entry.action === "read") runningRead.set(fp, (runningRead.get(fp) || 0) + 1);
+      else if (entry.action === "edit") runningEdit.set(fp, (runningEdit.get(fp) || 0) + 1);
+      else if (entry.action === "exec") runningExec.set(fp, (runningExec.get(fp) || 0) + 1);
+
+      const nodeId = `${fp}::${seqId++}`;
+
+      const n = {
+        id: nodeId,
+        filepath: fp,
+        label: entry.label,
+        dir: entry.dir,
+        // Baked importance: captures cumulative counts at this point in time
+        accessCount: (runningRead.get(fp) || 0) + (runningEdit.get(fp) || 0) + (runningExec.get(fp) || 0),
+        readCount: runningRead.get(fp) || 0,
+        editCount: runningEdit.get(fp) || 0,
+        execCount: runningExec.get(fp) || 0,
+        lastAction: entry.displayAction,
+        lastAccessTs: entry.ts,
+        firstAccessTs: entry.ts,
+        accessOrder: seqId,
+        sessions: new Set([entry.sessionId]),
+        createdAt: entry.ts,
+        x: 0, y: 0, vx: 0, vy: 0, fx: null, fy: null,
+        _isLatest: false,
+        _totalFileAccesses: fileAccessCounts.get(fp) || 1,
+      };
+
+      nodes.set(nodeId, n);
+      historyFileLatest.set(entry.filepath, nodeId);
+      activeFiles.set(nodeId, entry.ts);
+
+      // Sequential edge within session
+      const prevId = sessionLastNode.get(entry.sessionId);
+      if (prevId && nodes.has(prevId) && (entry.ts - nodes.get(prevId).lastAccessTs) < 60000) {
+        const edgeKey = `${prevId}|${nodeId}|sequence`;
+        edges.set(edgeKey, {
+          key: edgeKey,
+          source: prevId,
+          target: nodeId,
+          type: "sequence",
+          weight: 1,
+          lastTs: entry.ts,
+          sessions: new Set([entry.sessionId]),
+        });
+      }
+      sessionLastNode.set(entry.sessionId, nodeId);
+    }
+
+    // Mark latest nodes
+    for (const [, nodeId] of historyFileLatest) {
+      const n = nodes.get(nodeId);
+      if (n) n._isLatest = true;
+    }
+  }
+
   // --- Force simulation ---
   let isFirstBuild = true;
 
   function rebuildSimulation() {
+    if (layoutMode === "files") {
+      populateFilesDisplay();
+    } else {
+      populateHistoryDisplay();
+    }
     rebuildLabelCounts();
 
+    if (layoutMode === "files") {
+      rebuildFilesLayout();
+      return;
+    }
+
+    // --- History mode layout (time-series) ---
     const nodeArray = [...nodes.values()];
     const edgeArray = [...edges.values()].map(e => ({
       source: nodes.get(e.source), target: nodes.get(e.target), weight: e.weight, type: e.type,
@@ -567,6 +679,71 @@ const Gravity = (() => {
     }
   }
 
+  // --- Files mode: force-directed relationship layout ---
+  function rebuildFilesLayout() {
+    const nodeArray = [...nodes.values()].filter(n => {
+      if (!sessionFilters.has("all") && ![...n.sessions].some(s => sessionFilters.has(s))) return false;
+      return (Date.now() - n.lastAccessTs) <= STALE_CUTOFF;
+    });
+    const edgeArray = [...edges.values()]
+      .map(e => ({ source: nodes.get(e.source), target: nodes.get(e.target), weight: e.weight, type: e.type }))
+      .filter(e => e.source && e.target && e.weight >= EDGE_MIN_WEIGHT);
+
+    if (simulation) simulation.stop();
+    if (nodeArray.length === 0) { simulation = null; return; }
+
+    const cx = (width || 600) / 2;
+    const cy = (height || 400) / 2;
+
+    // Build adjacency for angular separation
+    const adjacency = new Map();
+    for (const e of edgeArray) {
+      if (!adjacency.has(e.source)) adjacency.set(e.source, []);
+      adjacency.get(e.source).push(e.target);
+      if (!adjacency.has(e.target)) adjacency.set(e.target, []);
+      adjacency.get(e.target).push(e.source);
+    }
+
+    for (const n of nodeArray) {
+      if (n._filesX != null) { n.x = n._filesX; n.y = n._filesY; }
+      else if (n.x == null || n.x === 0) {
+        n.x = cx + (Math.random() - 0.5) * 200;
+        n.y = cy + (Math.random() - 0.5) * 200;
+      }
+      n.fx = null;
+      n.fy = null;
+    }
+
+    simulation = d3.forceSimulation(nodeArray)
+      .force("charge", d3.forceManyBody().strength(-120).distanceMax(400))
+      .force("link", d3.forceLink(edgeArray)
+        .distance(d => {
+          // Longer edges for larger nodes so they don't crowd
+          const sr = nodeRadius(d.source);
+          const tr = nodeRadius(d.target);
+          return 50 + (sr + tr) * 2.5;
+        })
+        .strength(0.08))
+      .force("center", d3.forceCenter(cx, cy).strength(0.03))
+      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 8).strength(0.8))
+      .force("angular", angularSeparationForce(adjacency, 0.4))
+      .velocityDecay(0.4)
+      .alphaDecay(0.05);
+
+    for (let i = 0; i < 60; i++) simulation.tick();
+    simulation.on("tick", () => {
+      for (const n of nodeArray) { n._filesX = n.x; n._filesY = n.y; }
+    });
+
+    // Store positions
+    for (const n of nodeArray) { n._filesX = n.x; n._filesY = n.y; }
+
+    if (!userDragged) {
+      targetCamX = cx - width / (2 * camZoom);
+      targetCamY = cy - height / (2 * camZoom);
+    }
+  }
+
   function clusterForce(dirGroups, strength) {
     return function(alpha) {
       for (const [, group] of dirGroups) {
@@ -628,6 +805,10 @@ const Gravity = (() => {
   }
 
   function nodeRadius(node) {
+    if (layoutMode === "files") {
+      const imp = getImportance(node);
+      return Math.max(NODE_MIN_R, Math.min(NODE_MAX_R, 3 + Math.log2(1 + imp) * 3)) * nodeSizeScale * mapScale;
+    }
     return NODE_FIXED_R * nodeSizeScale * mapScale;
   }
 
@@ -651,11 +832,21 @@ const Gravity = (() => {
     }
     if (tw > 0 && !userDragged) {
       targetCamX = cx / tw - width / (2 * camZoom);
+      if (layoutMode === "files") {
+        // Files mode: center on activity centroid (Y too)
+        let ty = 0, tw2 = 0;
+        for (const n of nodes.values()) {
+          if (!nodeVisible(n)) continue;
+          ty += n.y; tw2++;
+        }
+        if (tw2 > 0) targetCamY = ty / tw2 - height / (2 * camZoom);
+      } else {
       // Y: center on the focused section
       const focusTop = laneMode === "phase" ? phaseSectionTop : actionSectionTop;
       const focusBot = laneMode === "phase" ? phaseSectionBot : actionSectionBot;
       const laneCenterY = (focusTop + focusBot) / 2;
       targetCamY = laneCenterY - height / (2 * camZoom);
+      }
     }
     if (!isDragging) {
       camX += (targetCamX - camX) * 0.2;
@@ -666,6 +857,8 @@ const Gravity = (() => {
   // --- Semantic zoom ---
   function nodeVisible(node) {
     if (node === hoveredNode || node === selectedNode) return true;
+    // History mode: all non-expired nodes are visible (already filtered during populate)
+    if (layoutMode === "history") return true;
     // Session filter: hide nodes not in selected session
     if (!sessionFilters.has("all") && ![...node.sessions].some(s => sessionFilters.has(s))) return false;
     const age = Date.now() - node.lastAccessTs;
@@ -1246,7 +1439,10 @@ const Gravity = (() => {
     }
     if (spreadCount > 0) { spreadCX /= spreadCount; spreadCY /= spreadCount; }
 
-    function sp(node) { return { x: spX(node), y: node._actionTargetY != null ? node._actionTargetY : spY(node) }; }
+    function sp(node) {
+      if (layoutMode === "files") return { x: spX(node), y: spY(node) };
+      return { x: spX(node), y: node._actionTargetY != null ? node._actionTargetY : spY(node) };
+    }
 
     // --- Edges: consolidate per node-pair, use most recent direction ---
     // Group edges by unordered node pair, pick the most recent for arrow direction
@@ -1273,7 +1469,9 @@ const Gravity = (() => {
         bestAge = Math.min(bestAge, now - e.lastTs);
       }
 
-      const lw = Math.min(EDGE_MAX_W, EDGE_MIN_W + totalWeight * 0.5) * mapScale;
+      const lw = layoutMode === "history"
+        ? 1 * mapScale  // fixed width for history
+        : Math.min(EDGE_MAX_W, EDGE_MIN_W + totalWeight * 0.5) * mapScale;
       let opacity = bestAge < GLOW_DURATION ? 1.0 : bestAge < WARM_DURATION ? 0.8 : 0.6;
 
       // Arrow direction from most recent edge
@@ -1351,21 +1549,23 @@ const Gravity = (() => {
     // --- Edge type label: only on the single closest edge to cursor ---
     // (Showing all edge labels at once creates overlapping noise)
 
-    // --- Nodes (drawn twice: once in action section, once in phase section) ---
+    // --- Nodes ---
     const placedLabels = [];
-    const renderPasses = ["action", "phase"];
+    const renderPasses = layoutMode === "files" ? ["single"] : ["action", "phase"];
     for (const _pass of renderPasses) {
     for (const node of nodes.values()) {
       if (!nodeVisible(node)) continue;
       const x = spX(node);
-      const y = _pass === "phase" ? node._phaseTargetY : node._actionTargetY;
+      const y = _pass === "single" ? spY(node) : (_pass === "phase" ? node._phaseTargetY : node._actionTargetY);
       // Temporarily set lane key for semantic coloring
       const _savedLaneKey = node._laneKey;
-      node._laneKey = _pass === "phase" ? node._phaseLaneKey : node._actionLaneKey;
+      if (_pass !== "single") {
+        node._laneKey = _pass === "phase" ? node._phaseLaneKey : node._actionLaneKey;
+      }
       const baseR = nodeRadius(node);
       const age = now - node.lastAccessTs;
-      const isGlowing = age < GLOW_DURATION;
-      const isWarm = age < WARM_DURATION;
+      let isGlowing = age < GLOW_DURATION;
+      let isWarm = age < WARM_DURATION;
       const isHovered = hoveredNode === node;
       const isSelected = selectedNode === node;
       const isNeighbor = hoverNeighbors.has(node.id);
@@ -1373,6 +1573,10 @@ const Gravity = (() => {
       const dimmed = hasFocus && !isNeighbor;
       const imp = getImportance(node);
       const impNorm = Math.min(1, imp / 30);
+
+      // History mode: only the latest node for each file gets glow
+      const historyDimmed = layoutMode === "history" && !node._isLatest;
+      if (historyDimmed) { isGlowing = false; isWarm = false; }
 
       // New node intro glow (fades over 5 seconds)
       const NEW_GLOW_DURATION = 5000;
@@ -1385,6 +1589,14 @@ const Gravity = (() => {
       if (!activeFilters.has("all") && !filterMatchAction(node)) alpha = 0.15;
       if (dimmed) alpha *= 0.2;
       if (isHovered || isSelected) alpha = 1;
+
+      // History mode: dim non-latest nodes, boost latest based on access count
+      if (historyDimmed) {
+        alpha = 0.12;
+      } else if (layoutMode === "history" && node._isLatest && node._totalFileAccesses > 1) {
+        const boost = Math.min(1, Math.log2(node._totalFileAccesses) / 4);
+        alpha = Math.min(1, alpha + boost * 0.4);
+      }
 
       ctx.globalAlpha = alpha;
 
@@ -1400,7 +1612,20 @@ const Gravity = (() => {
         const rgb = parseRgb(color);
 
         // Soft halo — size and intensity driven by importance (color depth shows importance)
-        if (!dimmed && rgb) {
+        // History mode latest nodes: boost halo based on access count
+        if (!dimmed && !historyDimmed && rgb && layoutMode === "history" && node._isLatest && node._totalFileAccesses > 1) {
+          const accessBoost = Math.min(1, Math.log2(node._totalFileAccesses) / 4);
+          const boostR = coreR + (4 + accessBoost * 12) * mapScale;
+          const boostAlpha = 0.1 + accessBoost * 0.25;
+          const grad = ctx.createRadialGradient(x, y, coreR, x, y, boostR);
+          grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${boostAlpha})`);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(x, y, boostR, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        if (!dimmed && !historyDimmed && rgb) {
           const haloR = coreR + (3 + impNorm * 6 + introBoost * 2) * mapScale;
           const haloAlpha = isNewNode ? (0.15 + introGlow * 0.3) : (isHovered ? 0.12 : (0.03 + impNorm * 0.08));
           const grad = ctx.createRadialGradient(x, y, coreR, x, y, haloR);
@@ -1585,12 +1810,19 @@ const Gravity = (() => {
       ctx.globalAlpha = 1;
 
       // --- Labels ---
-      const effectiveR = NODE_FIXED_R;
+      const effectiveR = layoutMode === "files" ? nodeRadius(node) / mapScale : NODE_FIXED_R;
       if (shouldShowLabel(node, effectiveR, isGlowing, isWarm, isHovered, isSelected)) {
         const dl = disambiguatedLabel(node);
-        // Match Y-axis label size (screen-space → world-space conversion)
-        const screenFsz = isHovered || isSelected ? 11 : 8;
-        const fsz = Math.min(18, Math.max(4, screenFsz / Math.max(0.3, camZoom)));
+        // Dynamic font size: scales with camera zoom
+        let fsz;
+        if (layoutMode === "files") {
+          // Files mode: font scales smoothly with zoom, proportional to node size
+          const baseFsz = isHovered || isSelected ? 11 : Math.max(6, 5 + effectiveR * 0.4);
+          fsz = Math.min(20, Math.max(3, baseFsz / Math.max(0.2, camZoom)));
+        } else {
+          const screenFsz = isHovered || isSelected ? 11 : 8;
+          fsz = Math.min(18, Math.max(4, screenFsz / Math.max(0.3, camZoom)));
+        }
         ctx.font = `${isHovered || isSelected ? "600" : "400"} ${fsz}px "SF Mono","JetBrains Mono",Menlo,monospace`;
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
@@ -1609,7 +1841,7 @@ const Gravity = (() => {
         }
 
         // Stagger: check if this label would overlap a previously placed one
-        const labelX = x + effectiveR + 8;
+        const labelX = x + (layoutMode === "files" ? nodeRadius(node) + 4 : effectiveR + 8);
         let labelY = y;
         const labelW = dl.length * fsz * 0.6;
         const labelH = fsz + 2;
@@ -1648,23 +1880,23 @@ const Gravity = (() => {
 
     ctx.restore();
 
-    // --- Fixed axes (screen space overlays) ---
-    drawLaneBackgrounds(dark);  // semi-transparent lane bands
-    drawLaneLabels(dark);       // fixed Y-axis gutter with labels
-    drawTimeAxis(dark);         // fixed X-axis time strip
+    // --- Fixed axes (screen space overlays — history mode only) ---
+    if (layoutMode === "history") {
+      drawLaneBackgrounds(dark);
+      drawLaneLabels(dark);
+      drawTimeAxis(dark);
+    }
 
     // --- HUD elements ---
+    if (layoutMode === "files") drawMinimap(dark);
     drawMiniCard(dark);
     drawStats(dark, now);
-    // minimap removed — both sections visible, no need for overview
   }
 
   function drawMinimap(dark) {
     if (nodes.size === 0) { miniRect = null; return; }
     const mw = 80 * mapScale, mh = 60 * mapScale;
-    const axisLeftW = Math.round(AXIS_LEFT_W * mapScale);
-    const axisBottomH = Math.round(AXIS_BOTTOM_H * mapScale);
-    const mx = axisLeftW + 4, my = height - axisBottomH - 4 - mh;
+    const mx = 8, my = height - 8 - mh;
 
     // Compute bounding box of all nodes
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -2088,7 +2320,7 @@ const Gravity = (() => {
           processEntry({ json, sessionId: json.data?.session_id || null, ts: json._ts ? new Date(json._ts).getTime() : Date.now() });
         } catch {}
       }
-      if (nodes.size > 0) rebuildSimulation();
+      if (canonNodes.size > 0) rebuildSimulation();
     } catch (err) { console.error("Gravity: failed to load history", err); }
   }
 
@@ -2114,6 +2346,8 @@ const Gravity = (() => {
 
   function reset() {
     nodes.clear(); edges.clear(); lastToolBySession.clear(); activeFiles.clear();
+    canonNodes.clear(); canonEdges.clear(); accessLog.length = 0;
+    fileAccessCounts.clear(); historyFileLatest.clear();
     labelCounts.clear(); hoveredNode = null; selectedNode = null; infoCard = null;
     if (simulation) simulation.stop(); simulation = null;
   }
@@ -2187,12 +2421,24 @@ const Gravity = (() => {
     knownSessions.delete(id);
     sessionFilters.delete(id);
     if (sessionFilters.size === 0) sessionFilters.add("all");
-    // Remove nodes that only belong to this session, clean others
+    // Remove canonical nodes that only belong to this session, clean others
+    for (const [fp, node] of canonNodes) {
+      node.sessions.delete(id);
+      if (node.sessions.size === 0) canonNodes.delete(fp);
+    }
+    for (const [key, edge] of canonEdges) {
+      edge.sessions.delete(id);
+      if (edge.sessions.size === 0 || !canonNodes.has(edge.source) || !canonNodes.has(edge.target)) canonEdges.delete(key);
+    }
+    // Remove accessLog entries for this session
+    for (let i = accessLog.length - 1; i >= 0; i--) {
+      if (accessLog[i].sessionId === id) accessLog.splice(i, 1);
+    }
+    // Remove display nodes/edges
     for (const [fp, node] of nodes) {
       node.sessions.delete(id);
       if (node.sessions.size === 0) nodes.delete(fp);
     }
-    // Remove edges that reference deleted nodes
     for (const [key, edge] of edges) {
       edge.sessions.delete(id);
       if (edge.sessions.size === 0 || !nodes.has(edge.source) || !nodes.has(edge.target)) edges.delete(key);
@@ -2300,5 +2546,14 @@ const Gravity = (() => {
     if (cn > 0) { targetCamX = cx / cn - width / (2 * camZoom); camX = targetCamX; }
   }
 
-  return { init, addEntry, addEntries, destroy, reset, getTooltip, getStats, zoom, deselect, getNodes, getEdges, setFilter, setRecencyFilter, setSessionFilter, registerSession, unregisterSession, setNodeSizeScale, setYSpread, setOnSessionFilterChange, setLaneMode };
+  function setLayoutMode(mode) {
+    if (mode === layoutMode) return;
+    layoutMode = mode;
+    isFirstBuild = true;
+    userDragged = false;
+    camZoom = 0.85;
+    rebuildSimulation();
+  }
+
+  return { init, addEntry, addEntries, destroy, reset, getTooltip, getStats, zoom, deselect, getNodes, getEdges, setFilter, setRecencyFilter, setSessionFilter, registerSession, unregisterSession, setNodeSizeScale, setYSpread, setOnSessionFilterChange, setLaneMode, setLayoutMode };
 })();

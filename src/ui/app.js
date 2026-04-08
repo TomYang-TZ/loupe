@@ -247,6 +247,9 @@ function signalActivity() {
   setTimeout(() => connDot.classList.remove("active"), 2000);
 }
 
+// ===== Session Order =====
+let sessionOrder = [];
+
 // ===== Panes =====
 function formatInactive(ts) {
   if (!ts) return "";
@@ -338,9 +341,12 @@ Tiling.init(paneContainer, (sessionId) => {
   const info = sessions.get(sessionId);
   if (!info) return null;
   if (!info.color) info.color = nextSessionColor();
-  // Number sessions: 2:xxx, 3:xxx (1=All)
-  const sessionIds = [...sessions.keys()];
-  const sNum = sessionIds.indexOf(sessionId) + 2;
+  // Number visible sessions: most recent = 2
+  syncSessionOrder();
+  const allIds = sessionOrder.filter(id => sessions.has(id));
+  const visibleOrder = allIds.length <= 1 ? allIds : sessionOrder.filter(sessionHasContent);
+  const vi = visibleOrder.indexOf(sessionId);
+  const sNum = vi >= 0 ? visibleOrder.length - vi + 1 : 0;
   const p = createPane(sessionId, `${sNum}:${info.label}`, info.color);
   panes.set(sessionId, p);
   return p.el;
@@ -354,8 +360,8 @@ function rebuildPanes() {
   panes.clear();
   mainContainer = null;
 
-  if (activeSession !== "all" || sessions.size <= 1) {
-    // Single session or single-session All: one pane
+  if (activeSession !== "all" || sessions.size === 0) {
+    // Viewing a specific session or no sessions yet: one pane
     paneContainer.classList.remove("multi-pane");
     paneContainer.classList.remove("grid-layout");
     paneContainer.style.removeProperty("grid-template-columns");
@@ -367,20 +373,16 @@ function rebuildPanes() {
     Tiling.clear();
   } else {
     // Multi-session All: use Tiling with vertical splits (stacked)
+    // Only include sessions with content, in sorted order
     syncSessionOrder();
     paneContainer.classList.remove("grid-layout");
 
-    const tilingIds = Tiling.getSessionIds();
-    const currentIds = new Set(sessionOrder.filter(id => sessions.has(id)));
-    const tilingSet = new Set(tilingIds);
-
-    for (const id of currentIds) {
-      if (!tilingSet.has(id)) Tiling.addSession(id, false, "v");
+    Tiling.clear();
+    const onlyOne = sessionOrder.filter(id => sessions.has(id)).length <= 1;
+    for (const id of sessionOrder) {
+      // With 1 session, always show it; with multiple, filter out empty ones
+      if (sessions.has(id) && (onlyOne || sessionHasContent(id))) Tiling.addSession(id, false, "v");
     }
-    for (const id of tilingIds) {
-      if (!currentIds.has(id)) Tiling.removeSession(id, false);
-    }
-
     Tiling.rebuild();
   }
 
@@ -399,14 +401,14 @@ function updateGridControlsVisibility() {
 }
 
 function getContainerFor(entry) {
-  if (activeSession !== "all" || sessions.size <= 1) return panes.get("main")?.scrollEl || null;
+  if (activeSession !== "all") return panes.get("main")?.scrollEl || null;
   if (entry.sessionId && panes.has(entry.sessionId)) return panes.get(entry.sessionId).scrollEl;
   const first = panes.values().next().value;
   return first?.scrollEl || null;
 }
 
 function shouldAutoScroll(entry) {
-  if (activeSession !== "all" || sessions.size <= 1) return panes.get("main")?.autoScroll ?? true;
+  if (activeSession !== "all") return panes.get("main")?.autoScroll ?? true;
   if (entry.sessionId && panes.has(entry.sessionId)) return panes.get(entry.sessionId).autoScroll;
   return true;
 }
@@ -632,7 +634,7 @@ function handleLine(msg) {
 
   const streamHidden = LoupeGrouping.streamHiddenCategories.has(entry.category) || LoupeGrouping.streamNoRenderCategories.has(entry.category);
 
-  if (newSession && activeSession === "all" && sessions.size > 1) {
+  if (newSession && activeSession === "all") {
     rebuildPanes();
     rebuildAllPaneContents();
   } else if (entry.category === "topic_clear" || entry.category === "topic_shift") {
@@ -807,14 +809,6 @@ function rebuildAllPaneContents() {
       const r = LoupeRender.renderGroupedEntries(container, activeSession, 0);
       matchCount = r.matchCount;
     }
-  } else if (sessions.size <= 1) {
-    // Single session in "all" mode
-    const sid = sessions.keys().next().value || "default";
-    const container = panes.get("main")?.scrollEl;
-    if (container) {
-      const r = LoupeRender.renderGroupedEntries(container, sid, 0);
-      matchCount = r.matchCount;
-    }
   } else {
     // Multi-session "All": render per pane (Tiling handles layout)
     let topicOffset = 0;
@@ -829,7 +823,18 @@ function rebuildAllPaneContents() {
   }
 
   for (const p of panes.values()) {
-    if (p.scrollEl.children.length === 0) p.scrollEl.appendChild(makeEmptyState());
+    if (p.scrollEl.children.length === 0) {
+      // In multi-session All mode, hide sessions without meaningful content
+      if (activeSession === "all" && sessions.size > 1 && p.id !== "main") {
+        p.el.style.display = "none";
+      } else {
+        p.scrollEl.appendChild(makeEmptyState());
+      }
+    } else if (activeSession === "all" && sessions.size > 1 && p.id !== "main" && !sessionHasContent(p.id)) {
+      p.el.style.display = "none";
+    } else {
+      p.el.style.display = "";
+    }
     p.scrollEl.scrollTop = p.scrollEl.scrollHeight;
   }
 
@@ -837,11 +842,23 @@ function rebuildAllPaneContents() {
 }
 
 // ===== Session Tabs =====
-let sessionOrder = [];
+
+// Returns true if a session has meaningful content worth displaying
+function sessionHasContent(sid) {
+  const info = sessions.get(sid);
+  if (!info) return false;
+  return info.count >= 3;
+}
 
 function syncSessionOrder() {
   for (const id of sessions.keys()) { if (!sessionOrder.includes(id)) sessionOrder.push(id); }
   sessionOrder = sessionOrder.filter(id => sessions.has(id));
+  // Sort: most idle (oldest lastEventTs) first, most recent last (bottom)
+  sessionOrder.sort((a, b) => {
+    const aTs = sessions.get(a)?.lastEventTs || 0;
+    const bTs = sessions.get(b)?.lastEventTs || 0;
+    return aTs - bTs;
+  });
 }
 
 function rebuildTabs() {
@@ -856,18 +873,8 @@ function rebuildTabs() {
     tabBar.appendChild(brand);
   }
 
-  // Single session: just show its name (brand already shows in minimal mode)
-  if (sessions.size <= 1) {
-    if (sessions.size === 1) {
-      const [id, info] = [...sessions.entries()][0];
-      const tab = document.createElement("div");
-      tab.className = "session-tab active";
-      tab.dataset.session = id;
-      tab.innerHTML = `<span class="tab-label">${LoupeUtils.esc(info.label)}</span>`;
-      tabBar.appendChild(tab);
-    }
-    return;
-  }
+  // No sessions at all: nothing to show
+  if (sessions.size === 0) return;
 
   {
     const allTab = document.createElement("div");
@@ -878,11 +885,16 @@ function rebuildTabs() {
     tabBar.appendChild(allTab);
   }
 
-  let tabIdx = 2;
   const now = Date.now();
-  for (const id of sessionOrder) {
+  // Show tabs: with 1 session always show it, with multiple filter empty ones
+  const allIds = sessionOrder.filter(id => sessions.has(id));
+  const visibleOrder = allIds.length <= 1 ? allIds : sessionOrder.filter(sessionHasContent);
+  const vtotal = visibleOrder.length;
+  for (let si = vtotal - 1; si >= 0; si--) {
+    const id = visibleOrder[si];
     const info = sessions.get(id);
     if (!info) continue;
+    const tabIdx = vtotal - si + 1; // most recent (last in sorted) = 2
     const staleMinutes = info.lastEventTs ? Math.floor((now - info.lastEventTs) / 60000) : 0;
     const isStale = staleMinutes >= 2;
 
@@ -913,11 +925,18 @@ function rebuildTabs() {
     });
 
     tabBar.appendChild(tab);
-    tabIdx++;
   }
 
   // In minimal mode, no extra buttons in tab bar (they're in topbar)
   if (isMinimalMode()) {}
+  updateReplayInsightsVisibility();
+}
+
+function updateReplayInsightsVisibility() {
+  const replayBtn = document.getElementById("replay-btn");
+  const insightsBtn = document.getElementById("insights-btn");
+  if (replayBtn) replayBtn.style.display = activeSession !== "all" ? "" : "none";
+  if (insightsBtn) insightsBtn.style.display = activeSession === "all" ? "" : "none";
 }
 
 function switchSession(id) {
@@ -1222,7 +1241,14 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "g") { jumpToBottom(); }
   if (e.key === "1") { switchSession("all"); }
-  if (e.key >= "2" && e.key <= "9") { const idx = parseInt(e.key) - 2; const ids = sessionOrder; if (idx < ids.length) switchSession(ids[idx]); }
+  if (e.key >= "2" && e.key <= "9") {
+    // Key 2 = most recent (last in visible order), 3 = next, etc.
+    const num = parseInt(e.key);
+    const allIds = sessionOrder.filter(id => sessions.has(id));
+    const visibleOrder = allIds.length <= 1 ? allIds : sessionOrder.filter(sessionHasContent);
+    const idx = visibleOrder.length - (num - 1);
+    if (idx >= 0 && idx < visibleOrder.length) switchSession(visibleOrder[idx]);
+  }
 });
 
 function focusEntry(visible, idx) {
@@ -1297,8 +1323,8 @@ function onModeChange() {
 // Watch for body class changes (Swift toggles 'minimal')
 new MutationObserver(() => onModeChange()).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
-// ===== Map Mode (Files / Flow) =====
-let mapMode = "files"; // "files" | "flow"
+// ===== Map Mode (Files / History / Flow) =====
+let mapMode = "files"; // "files" | "history" | "flow"
 let momentumInitialized = false;
 const momentumCanvas = document.getElementById("momentum-canvas");
 
@@ -1309,23 +1335,25 @@ window.setMapMode = (mode) => {
   document.querySelectorAll(".mode-btn").forEach(b =>
     b.classList.toggle("active", b.dataset.mode === mode)
   );
-  if (mode === "files") {
+  const filterBar = document.getElementById("universe-filter-bar");
+  const recencyBar = document.querySelector(".recency-filter-bar");
+  const gravSliders = document.getElementById("gravity-sliders");
+  const momSliders = document.getElementById("momentum-sliders");
+
+  if (mode === "files" || mode === "history") {
     gravityCanvas.style.display = "";
     momentumCanvas.style.display = "none";
-    // Show gravity-specific UI
-    const filterBar = document.getElementById("universe-filter-bar");
-    const recencyBar = document.querySelector(".recency-filter-bar");
-    const gravSliders = document.getElementById("gravity-sliders");
-    const momSliders = document.getElementById("momentum-sliders");
     if (filterBar) filterBar.style.display = "";
-    if (recencyBar) recencyBar.style.display = "";
-    if (gravSliders) gravSliders.style.display = "";
+    if (recencyBar) recencyBar.style.display = mode === "history" ? "" : "";
+    if (gravSliders) gravSliders.style.display = mode === "history" ? "" : "none";
     if (momSliders) momSliders.style.display = "none";
+    // Switch gravity layout mode
+    if (Gravity.setLayoutMode) Gravity.setLayoutMode(mode === "history" ? "history" : "files");
   } else {
+    // Flow mode (Momentum)
     // Initialize momentum on first use
     if (!momentumInitialized) {
       Momentum.init(momentumCanvas);
-      // Register all known sessions before processing entries
       for (const [id, info] of sessions) {
         Momentum.registerSession(id, info.label, info.color);
       }
@@ -1334,19 +1362,13 @@ window.setMapMode = (mode) => {
       Momentum.setOnSessionFilterChange((id) => { switchSession(id); });
       Momentum.setOnClickSpan((entryId) => { LoupeModal.openModal(entryId); });
     }
-    // Sync momentum session filter with current active session
     Momentum.setSessionFilter(activeSession === "all" ? "all" : activeSession);
     gravityCanvas.style.display = "none";
     momentumCanvas.style.display = "";
-    // Hide gravity-specific UI, show momentum UI
-    const filterBar2 = document.getElementById("universe-filter-bar");
-    const recencyBar2 = document.querySelector(".recency-filter-bar");
-    const gravSliders2 = document.getElementById("gravity-sliders");
-    const momSliders2 = document.getElementById("momentum-sliders");
-    if (filterBar2) filterBar2.style.display = "none";
-    if (recencyBar2) recencyBar2.style.display = "none";
-    if (gravSliders2) gravSliders2.style.display = "none";
-    if (momSliders2) momSliders2.style.display = "";
+    if (filterBar) filterBar.style.display = "none";
+    if (recencyBar) recencyBar.style.display = "none";
+    if (gravSliders) gravSliders.style.display = "none";
+    if (momSliders) momSliders.style.display = "";
   }
 };
 
