@@ -344,7 +344,7 @@ Tiling.init(paneContainer, (sessionId) => {
   // Number visible sessions: most recent = 2
   syncSessionOrder();
   const allIds = sessionOrder.filter(id => sessions.has(id));
-  const visibleOrder = allIds.length <= 1 ? allIds : sessionOrder.filter(sessionHasContent);
+  const visibleOrder = allIds;
   const vi = visibleOrder.indexOf(sessionId);
   const sNum = vi >= 0 ? visibleOrder.length - vi + 1 : 0;
   const p = createPane(sessionId, `${sNum}:${info.label}`, info.color);
@@ -848,7 +848,7 @@ function rebuildAllPaneContents() {
 function sessionHasContent(sid) {
   const info = sessions.get(sid);
   if (!info) return false;
-  return info.count >= 3;
+  return info.count >= 1;
 }
 
 function syncSessionOrder() {
@@ -889,7 +889,7 @@ function rebuildTabs() {
   const now = Date.now();
   // Show tabs: with 1 session always show it, with multiple filter empty ones
   const allIds = sessionOrder.filter(id => sessions.has(id));
-  const visibleOrder = allIds.length <= 1 ? allIds : sessionOrder.filter(sessionHasContent);
+  const visibleOrder = allIds;
   const vtotal = visibleOrder.length;
   for (let si = vtotal - 1; si >= 0; si--) {
     const id = visibleOrder[si];
@@ -1246,7 +1246,7 @@ document.addEventListener("keydown", (e) => {
     // Key 2 = most recent (last in visible order), 3 = next, etc.
     const num = parseInt(e.key);
     const allIds = sessionOrder.filter(id => sessions.has(id));
-    const visibleOrder = allIds.length <= 1 ? allIds : sessionOrder.filter(sessionHasContent);
+    const visibleOrder = allIds;
     const idx = visibleOrder.length - (num - 1);
     if (idx >= 0 && idx < visibleOrder.length) switchSession(visibleOrder[idx]);
   }

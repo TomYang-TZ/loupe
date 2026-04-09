@@ -2177,12 +2177,11 @@ const Gravity = (() => {
 
       const hit = nodeAt(mx, my);
       hoveredNode = hit;
-      hoveredEdge = hit ? null : findEdgeAtMouse(mx, my);
-      // Pointer cursor on nodes and on pinned mini card
+      hoveredEdge = null; // edge hover disabled
       const overMiniCard = miniCardRect && infoCard &&
         mx >= miniCardRect.x && mx <= miniCardRect.x + miniCardRect.w &&
         my >= miniCardRect.y && my <= miniCardRect.y + miniCardRect.h;
-      canvas.style.cursor = (hit || overMiniCard) ? "pointer" : hoveredEdge ? "crosshair" : "grab";
+      canvas.style.cursor = (hit || overMiniCard) ? "pointer" : "grab";
     });
 
     function releaseNode() {

@@ -692,11 +692,26 @@ function handleMessage(data) {
     sessionId = tuiChildSessionMap.get(sessionId);
   } else if (!sessionQueries.has(sessionId) && sessionId !== "_default") {
     // Unknown session — check if it's a child of a parent with pending agent spawns
+    let remapped = false;
     for (const [parentSid, info] of tuiPendingAgentSpawns) {
       if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
         tuiChildSessionMap.set(sessionId, parentSid);
         sessionId = parentSid;
+        remapped = true;
         break;
+      }
+    }
+    // Heuristic 2: if session ID or label looks like a sub-agent, map to most recent parent
+    if (!remapped) {
+      const sid = (sessionId || "").toLowerCase();
+      const sInfo = sessions.get(sessionId);
+      const slbl = sInfo ? (sInfo.label || "").toLowerCase() : "";
+      if (sid.startsWith("agent-") || sid.startsWith("agent_") || slbl.startsWith("agent-") || slbl.startsWith("agent_")) {
+        let bestParent = null, bestTs = 0;
+        for (const [parentSid, sInfo] of sessions) {
+          if (parentSid !== sessionId && (sInfo.lastEventTs || 0) > bestTs) { bestTs = sInfo.lastEventTs || 0; bestParent = parentSid; }
+        }
+        if (bestParent) { tuiChildSessionMap.set(sessionId, bestParent); sessionId = bestParent; }
       }
     }
   }
@@ -1049,9 +1064,7 @@ function render() {
     });
     const tabSessionIds = sortedSessionIds.filter(sid => {
       const sInfo = sessions.get(sid);
-      if (!sInfo || sInfo.eventCount < 3) return false;
-      const sq = sessionQueries.get(sid) || [];
-      return sq.some(q => !q._preamble && q.userQuery);
+      return sInfo && sInfo.eventCount >= 1 && !tuiChildSessionMap.has(sid);
     });
     let tabLine = " ";
     tabLine += sessionFilter === "all" ? `${BOLD}${FG.cyan}[1:All]${RESET}` : `${DIM}[1:All]${RESET}`;
@@ -1372,14 +1385,12 @@ function handleInput(buf) {
   // Global keys — work at any level
   if (s === "1") { sessionFilter = "all"; render(); return; }
   if (s >= "2" && s <= "9") {
-    // Key 2 = most recent, only sessions with content
+    // Key 2 = most recent, matching tab order
     const num = parseInt(s);
     const sorted = [...sessions.keys()].sort((a, b) => (sessions.get(a)?.lastEventTs || 0) - (sessions.get(b)?.lastEventTs || 0));
     const filtered = sorted.filter(sid => {
       const sInfo = sessions.get(sid);
-      if (!sInfo || sInfo.eventCount < 3) return false;
-      const sq = sessionQueries.get(sid) || [];
-      return sq.some(q => !q._preamble && q.userQuery);
+      return sInfo && sInfo.eventCount >= 1 && !tuiChildSessionMap.has(sid);
     });
     const idx = filtered.length - (num - 1);
     if (idx >= 0 && idx < filtered.length) sessionFilter = filtered[idx];
@@ -1633,10 +1644,15 @@ function handleInput(buf) {
           }
         }
       } else {
-        q.collapsed = false;
-        navLevel = "event";
-        eventFocusIdx = 0;
-        eventAutoFollow = false;
+        if (q.collapsed) {
+          // First right: expand query
+          q.collapsed = false;
+        } else {
+          // Already expanded: enter event level
+          navLevel = "event";
+          eventFocusIdx = 0;
+          eventAutoFollow = false;
+        }
       }
     }
     render(); return;
