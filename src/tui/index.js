@@ -25,6 +25,8 @@ const HIDE_CURSOR = `${ESC}[?25l`;
 const SHOW_CURSOR = `${ESC}[?25h`;
 const ENABLE_MOUSE = `${ESC}[?1000h`;
 const DISABLE_MOUSE = `${ESC}[?1000l`;
+const ALT_SCREEN_ON = `${ESC}[?1049h`;
+const ALT_SCREEN_OFF = `${ESC}[?1049l`;
 
 const FG = {
   black: `${ESC}[30m`, red: `${ESC}[31m`, green: `${ESC}[32m`,
@@ -691,25 +693,29 @@ function handleMessage(data) {
   if (tuiChildSessionMap.has(sessionId)) {
     sessionId = tuiChildSessionMap.get(sessionId);
   } else if (!sessionQueries.has(sessionId) && sessionId !== "_default") {
-    // Unknown session — check if it's a child of a parent with pending agent spawns
-    let remapped = false;
-    for (const [parentSid, info] of tuiPendingAgentSpawns) {
-      if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
-        tuiChildSessionMap.set(sessionId, parentSid);
-        sessionId = parentSid;
-        remapped = true;
-        break;
+    // Only remap sessions that look like agent sub-sessions
+    const sid = (sessionId || "").toLowerCase();
+    const sInfo = sessions.get(sessionId);
+    const slbl = sInfo ? (sInfo.label || "").toLowerCase() : "";
+    const looksLikeAgent = sid.startsWith("agent-") || sid.startsWith("agent_") ||
+                           slbl.startsWith("agent-") || slbl.startsWith("agent_");
+
+    if (looksLikeAgent) {
+      // Heuristic 1: match pending agent spawns (within 60s)
+      let remapped = false;
+      for (const [parentSid, info] of tuiPendingAgentSpawns) {
+        if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
+          tuiChildSessionMap.set(sessionId, parentSid);
+          sessionId = parentSid;
+          remapped = true;
+          break;
+        }
       }
-    }
-    // Heuristic 2: if session ID or label looks like a sub-agent, map to most recent parent
-    if (!remapped) {
-      const sid = (sessionId || "").toLowerCase();
-      const sInfo = sessions.get(sessionId);
-      const slbl = sInfo ? (sInfo.label || "").toLowerCase() : "";
-      if (sid.startsWith("agent-") || sid.startsWith("agent_") || slbl.startsWith("agent-") || slbl.startsWith("agent_")) {
+      // Heuristic 2: map to most recent parent
+      if (!remapped) {
         let bestParent = null, bestTs = 0;
-        for (const [parentSid, sInfo] of sessions) {
-          if (parentSid !== sessionId && (sInfo.lastEventTs || 0) > bestTs) { bestTs = sInfo.lastEventTs || 0; bestParent = parentSid; }
+        for (const [parentSid, pInfo] of sessions) {
+          if (parentSid !== sessionId && (pInfo.lastEventTs || 0) > bestTs) { bestTs = pInfo.lastEventTs || 0; bestParent = parentSid; }
         }
         if (bestParent) { tuiChildSessionMap.set(sessionId, bestParent); sessionId = bestParent; }
       }
@@ -1035,7 +1041,10 @@ function render() {
   const connStr = connected ? `${FG.green}●${RESET}` : `${FG.red}●${RESET}`;
   const phaseColor = { active: FG.green, exploring: FG.magenta, implementing: FG.blue, debugging: FG.red, testing: FG.green, thinking: FG.yellow, planning: FG.yellow, orchestrating: FG.cyan, idle: FG.gray }[phase] || FG.gray;
   const planStrikeStr = planningStrike ? ` ${DIM}${STRIKE}planning${RESET}` : "";
-  let header = `${BOLD} LOUPE ${RESET} ${connStr} ${phaseColor}${BOLD}${phase}${RESET}${planStrikeStr}`;
+  const headerLabel = sessionFilter !== "all" && sessions.has(sessionFilter)
+    ? (sessions.get(sessionFilter).label || sessionFilter.slice(0, 12)).toUpperCase()
+    : "LOUPE";
+  let header = `${BOLD} ${headerLabel} ${RESET} ${connStr} ${phaseColor}${BOLD}${phase}${RESET}${planStrikeStr}`;
   if (statusLine.sessionStartTs && statusLine.sessionState === "active") {
     const secs = Math.floor((Date.now() - statusLine.sessionStartTs) / 1000);
     header += ` ${DIM}${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, "0")}s${RESET}`;
@@ -1227,12 +1236,9 @@ function render() {
       const bTs = sessions.get(b)?.lastEventTs || 0;
       return aTs - bTs;
     });
-    // Filter to sessions with meaningful content
     const contentIds = sessionIds.filter(sid => {
       const sInfo = sessions.get(sid);
-      if (!sInfo || sInfo.eventCount < 3) return false;
-      const sq = sessionQueries.get(sid) || [];
-      return sq.some(q => !q._preamble && q.userQuery);
+      return sInfo && sInfo.eventCount >= 1 && !tuiChildSessionMap.has(sid);
     });
     for (let si = 0; si < contentIds.length; si++) {
       const sid = contentIds[si];
@@ -1247,6 +1253,12 @@ function render() {
       addSessionQueries(sq);
     }
   } else if (sessionFilter !== "all") {
+    const sInfo = sessions.get(sessionFilter);
+    if (sInfo) {
+      const sLabel = sInfo.label || sessionFilter.slice(0, 8);
+      const sCount = sInfo.eventCount || 0;
+      rowData.push({ text: `${sLabel}`, meta: `${sCount} events`, isHeader: false, queryIdx: -1, eventIdx: -1, isSessionHeader: true });
+    }
     addSessionQueries(sessionQueries.get(sessionFilter) || []);
   } else {
     addSessionQueries(queries);
@@ -1848,7 +1860,7 @@ function scheduleReconnect() {
 const fs = require("fs");
 const TUI_PID_FILE = path.join(process.env.HOME, ".claude/logs/loupe-tui.pid");
 fs.writeFileSync(TUI_PID_FILE, String(process.pid));
-process.stdout.write(HIDE_CURSOR + CLEAR_SCREEN + ENABLE_MOUSE);
+process.stdout.write(ALT_SCREEN_ON + HIDE_CURSOR + CLEAR_SCREEN + ENABLE_MOUSE);
 
 if (process.stdin.isTTY) {
   process.stdin.setRawMode(true);
@@ -1857,7 +1869,7 @@ if (process.stdin.isTTY) {
 }
 
 function cleanup() {
-  process.stdout.write(DISABLE_MOUSE + SHOW_CURSOR);
+  process.stdout.write(DISABLE_MOUSE + SHOW_CURSOR + ALT_SCREEN_OFF);
   if (process.stdin.isTTY) process.stdin.setRawMode(false);
   try { fs.unlinkSync(TUI_PID_FILE); } catch {}
 }

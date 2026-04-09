@@ -207,7 +207,7 @@ const Gravity = (() => {
       startX = near.x + (Math.random() - 0.5) * 60;
       startY = near.y + (Math.random() - 0.5) * 60;
     }
-    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, firstAccessTs: Date.now(), accessOrder: canonNodes.size, sessions: new Set(), createdAt: Date.now(), x: startX, y: startY, vx: 0, vy: 0, fx: null, fy: null };
+    const n = { id: fp, label: shortName(fp), dir: dirGroup(fp), accessCount: 0, readCount: 0, editCount: 0, execCount: 0, lastAction: "read", lastAccessTs: 0, firstAccessTs: 0, accessOrder: canonNodes.size, sessions: new Set(), createdAt: 0, x: startX, y: startY, vx: 0, vy: 0, fx: null, fy: null };
     canonNodes.set(fp, n);
     return n;
   }
@@ -250,12 +250,16 @@ const Gravity = (() => {
       }
     }
     const sessionId = entry.sessionId || "default";
-    const ts = entry.ts || Date.now();
+    let ts = entry.ts || 1;
+    // In batch mode (backlog), reject timestamps suspiciously close to "now" —
+    // these are server-injected Date.now() defaults, not real event timestamps
+    if (batchMode && ts > batchStartTs - 5000) ts = 1;
     const prev = lastToolBySession.get(sessionId);
     const node = getOrCreateNode(fp, prev?.file);
     node.accessCount++;
     node.lastAction = displayAction;
-    node.lastAccessTs = ts;
+    if (ts > node.lastAccessTs) node.lastAccessTs = ts; // only advance, never go backwards
+    if (!node.firstAccessTs || (ts > 0 && ts < node.firstAccessTs)) { node.firstAccessTs = ts; node.createdAt = ts; }
     node.sessions.add(sessionId);
     if (action === "read") node.readCount++;
     else if (action === "edit") node.editCount++;
@@ -407,8 +411,19 @@ const Gravity = (() => {
   function populateFilesDisplay() {
     nodes.clear();
     edges.clear();
-    for (const [k, v] of canonNodes) nodes.set(k, v);
-    for (const [k, v] of canonEdges) edges.set(k, v);
+    const now = Date.now();
+    for (const [k, v] of canonNodes) {
+      // Only include non-expired nodes in display
+      if ((now - v.lastAccessTs) <= STALE_CUTOFF || v.lastAccessTs === 0) {
+        nodes.set(k, v);
+      }
+    }
+    for (const [k, v] of canonEdges) {
+      // Only include edges where both endpoints are in display
+      if (nodes.has(v.source) && nodes.has(v.target)) {
+        edges.set(k, v);
+      }
+    }
   }
 
   function populateHistoryDisplay() {
@@ -720,7 +735,19 @@ const Gravity = (() => {
           return 120 + (sr + tr) * 3;
         })
         .strength(0.05))
-      .force("center", d3.forceCenter(cx, cy).strength(0.02))
+      .force("center", d3.forceCenter(cx, cy).strength(0.05))
+      .force("gravity", function(alpha) {
+        // Pull disconnected nodes toward center so they don't fly off from charge repulsion
+        for (const n of nodeArray) {
+          const dx = cx - n.x, dy = cy - n.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist > 300) {
+            const pull = 0.1 * alpha;
+            n.vx += dx * pull;
+            n.vy += dy * pull;
+          }
+        }
+      })
       .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 20).strength(0.9))
       .force("angular", angularSeparationForce(adjacency, 0.4))
       .force("edgeAvoid", edgeAvoidanceForce(nodeArray, edgeArray, 0.5))
@@ -909,24 +936,15 @@ const Gravity = (() => {
       const isStale = age >= WARM_DURATION;
       if (!((recencyFilters.has("active") && isActive) || (recencyFilters.has("warm") && isWarm) || (recencyFilters.has("stale") && isStale))) return false;
     }
-    if (camZoom < 0.5) return node.accessCount >= 5;
-    if (camZoom < 0.8) return node.accessCount >= 2;
     return true;
   }
 
   function edgeVisible(edge) {
-    if (camZoom < 0.5) return edge.weight >= 5;
-    if (camZoom < 0.8) return edge.weight >= EDGE_MIN_WEIGHT;
     return edge.weight >= EDGE_MIN_WEIGHT || edge.type !== "sequence";
   }
 
   function shouldShowLabel(node, r, isGlowing, isWarm, isHovered, isSelected) {
     if (isHovered || isSelected) return true;
-    // Progressively hide labels as we zoom out
-    if (camZoom < 0.3) return false;
-    if (camZoom < 0.5) return (isGlowing || isWarm) && node.accessCount >= 8;
-    if (camZoom < 0.7) return (isGlowing && node.accessCount >= 5) || node.accessCount >= 10;
-    if (isGlowing || isWarm) return node.accessCount >= 3;
     return node.accessCount >= LABEL_MIN_ACCESS;
   }
 
@@ -1410,8 +1428,27 @@ const Gravity = (() => {
 
   // --- Rendering ---
   function render() {
-    if (!canvas || !ctx) return;
     animFrame = requestAnimationFrame(render);
+    if (!canvas || !ctx) return;
+
+    // Draw background even while loading (before ready)
+    if (!ready) {
+      const theme = document.documentElement.dataset.theme || "dark";
+      const dark = theme === "dark";
+      const rect = canvas.parentElement.getBoundingClientRect();
+      if (Math.round(rect.width) !== Math.round(width) || Math.round(rect.height) !== Math.round(height)) resizeCanvas();
+      if (dark) {
+        const bgGrad = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, Math.max(width, height) * 0.7);
+        bgGrad.addColorStop(0, "#1a1e2e");
+        bgGrad.addColorStop(1, "#0c0f18");
+        ctx.fillStyle = bgGrad;
+      } else {
+        ctx.fillStyle = "#f4f3f0";
+      }
+      ctx.fillRect(0, 0, width, height);
+      drawBackground(dark);
+      return;
+    }
     const now = Date.now();
     if (now - lastRenderTime < 16) return;
     lastRenderTime = now;
@@ -2062,7 +2099,6 @@ const Gravity = (() => {
     for (const node of nodes.values()) {
       const age = now - node.lastAccessTs;
       if (age > STALE_CUTOFF) continue;
-      // Session filter still applies
       if (!sessionFilters.has("all") && ![...node.sessions].some(s => sessionFilters.has(s))) continue;
       vn++;
       if (age < GLOW_DURATION) ac++;
@@ -2288,6 +2324,7 @@ const Gravity = (() => {
 
   // --- Public API ---
   let dirty = false, rebuildTimer = null;
+  let ready = false; // don't render until initial addEntries completes
 
   function init(el) {
     canvas = el; ctx = canvas.getContext("2d");
@@ -2312,17 +2349,23 @@ const Gravity = (() => {
   }
 
   async function loadFullHistory() {
+    ready = false; // suppress rendering until history is fully loaded
     try {
       const resp = await fetch("/api/file-accesses");
       const lines = await resp.json();
+      batchMode = true;
+      batchStartTs = Date.now();
       for (const line of lines) {
         try {
           const json = JSON.parse(line);
-          processEntry({ json, sessionId: json.data?.session_id || null, ts: json._ts ? new Date(json._ts).getTime() : Date.now() });
+          const ts = json._ts ? new Date(json._ts).getTime() : 0;
+          if (ts > 0) processEntry({ json, sessionId: json.data?.session_id || null, ts });
         } catch {}
       }
+      batchMode = false;
       if (canonNodes.size > 0) rebuildSimulation();
     } catch (err) { console.error("Gravity: failed to load history", err); }
+    ready = true;
   }
 
   function addEntry(entry) {
@@ -2333,9 +2376,15 @@ const Gravity = (() => {
     }
   }
 
+  let batchMode = false;
+  let batchStartTs = 0;
+
   function addEntries(list) {
+    batchMode = true;
+    batchStartTs = Date.now();
     let changed = false;
     for (const e of list) { if (processEntry(e)) changed = true; }
+    batchMode = false;
     if (changed) rebuildSimulation();
   }
 
