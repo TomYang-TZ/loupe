@@ -50,9 +50,9 @@ const Gravity = (() => {
   const GLOW_DURATION = 3 * 60000;
   const WARM_DURATION = 7 * 60000;
   const STALE_CUTOFF = 60 * 60 * 1000;
-  const NODE_FIXED_R = 5;
-  const NODE_MIN_R = 3;
-  const NODE_MAX_R = 18;
+  const NODE_FIXED_R = 3.5;
+  const NODE_MIN_R = 2;
+  const NODE_MAX_R = 12;
 
   // Lane mode: "action" (read/edit/exec), "phase" (exploring/implementing/testing/debugging)
   // Both are always rendered stacked; laneMode controls which one the camera focuses on
@@ -72,7 +72,7 @@ const Gravity = (() => {
   function spY(node) { return node.y; }
   const EDGE_MIN_W = 0.8;
   const EDGE_MAX_W = 4;
-  const LABEL_MIN_ACCESS = 3;
+  const LABEL_MIN_ACCESS = 5;
   const EDGE_MIN_WEIGHT = 1;
 
   // Tool classification — delegated to LoupeUtils (shared with momentum.js)
@@ -82,16 +82,10 @@ const Gravity = (() => {
 
   function classifyEdge(prevAction, prevFile, currAction, currFile) {
     const sameFile = prevFile === currFile;
-    // Same-file patterns
     if (sameFile && prevAction === "edit" && currAction === "read") return "review";
     if (sameFile && prevAction === "edit" && currAction === "edit") return "iteration";
-    // Cross-file patterns
-    if (prevAction === "read" && currAction === "edit") return "prerequisite";
-    if (prevAction === "edit" && currAction === "edit") return "coupling";
-    if (prevAction === "edit" && currAction === "exec") return "validation";
-    if (prevAction === "exec" && currAction === "edit") return "test-driven";
-    if (prevAction === "read" && currAction === "read") return "reference";
-    return "sequence";
+    // Cross-file: use the raw action pair as the type
+    return `${prevAction}\u2192${currAction}`;
   }
 
   // --- Importance ---
@@ -145,16 +139,10 @@ const Gravity = (() => {
   }
 
   function getEdgeColor(edge, dark, solid) {
-    // Use semantic edge colors based on edge type → action semantics
-    const edgeSemanticMap = {
-      prerequisite:  "read",       // read → edit
-      coupling:      "edit",       // edit → edit
-      validation:    "exec",       // edit → exec
-      reference:     "read",       // read → read
-      "test-driven": "exec",       // exec → edit
-    };
-    const semanticKey = edgeSemanticMap[edge.type];
-    const lc = semanticKey && LANE_SEMANTIC_COLORS[semanticKey];
+    // Derive semantic color from the action pair — use the target (right-side) action
+    const parts = edge.type.split("\u2192");
+    const semanticKey = parts.length === 2 ? parts[1] : (parts[0] || "read");
+    const lc = LANE_SEMANTIC_COLORS[semanticKey];
 
     if (lc && solid) {
       const c = dark ? lc.dark : lc.light;
@@ -236,12 +224,19 @@ const Gravity = (() => {
   const extractFilePath = LoupeUtils.extractFilePath;
   const extractToolName = LoupeUtils.extractToolName;
 
+  const processedKeys = new Set();
+
   function processEntry(entry) {
     const json = entry.json; if (!json) return false;
     if (json._logstream_type !== "PreToolUse") return false;
     const toolName = extractToolName(entry);
     const fp = extractFilePath(entry);
     if (!fp || !toolName || !fp.startsWith("/") || fp.includes("/node_modules/") || fp.includes("/.git/")) return false;
+
+    // Deduplicate: use timestamp+filepath+tool as key (stable across reconnects)
+    const dedupKey = `${entry.ts || 0}|${fp}|${toolName}`;
+    if (processedKeys.has(dedupKey)) return false;
+    processedKeys.add(dedupKey);
 
     let action = TOOL_ACTIONS[toolName] || "read";
     let displayAction = action;
@@ -579,10 +574,12 @@ const Gravity = (() => {
     }
 
     // Store time range + axis geometry for drawTimeAxis (visible nodes only)
-    let minTs = count > 0 ? sorted[0].lastAccessTs : 0;
-    let maxTs = count > 0 ? sorted[count - 1].lastAccessTs : 1;
+    // Snapshot timestamps so axis labels don't drift as nodes get updated live
+    const sortedSnapshot = sorted.map(n => ({ lastAccessTs: n.lastAccessTs }));
+    let minTs = count > 0 ? sortedSnapshot[0].lastAccessTs : 0;
+    let maxTs = count > 0 ? sortedSnapshot[count - 1].lastAccessTs : 1;
     if (minTs === maxTs) maxTs = minTs + 1;
-    timeAxisState = { minTs, maxTs, padLeft, usableW: effectiveW, sorted };
+    timeAxisState = { minTs, maxTs, padLeft, usableW: effectiveW, sorted: sortedSnapshot };
 
     // Compute Y targets based on lane mode (visible nodes only)
     computeLanes(visibleForLayout, dirGroups, usableH, padTop);
@@ -715,18 +712,18 @@ const Gravity = (() => {
     }
 
     simulation = d3.forceSimulation(nodeArray)
-      .force("charge", d3.forceManyBody().strength(-120).distanceMax(400))
+      .force("charge", d3.forceManyBody().strength(-300).distanceMax(600))
       .force("link", d3.forceLink(edgeArray)
         .distance(d => {
-          // Longer edges for larger nodes so they don't crowd
           const sr = nodeRadius(d.source);
           const tr = nodeRadius(d.target);
-          return 50 + (sr + tr) * 2.5;
+          return 120 + (sr + tr) * 3;
         })
-        .strength(0.08))
-      .force("center", d3.forceCenter(cx, cy).strength(0.03))
-      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 8).strength(0.8))
+        .strength(0.05))
+      .force("center", d3.forceCenter(cx, cy).strength(0.02))
+      .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 20).strength(0.9))
       .force("angular", angularSeparationForce(adjacency, 0.4))
+      .force("edgeAvoid", edgeAvoidanceForce(nodeArray, edgeArray, 0.5))
       .velocityDecay(0.4)
       .alphaDecay(0.05);
 
@@ -738,7 +735,7 @@ const Gravity = (() => {
     // Store positions
     for (const n of nodeArray) { n._filesX = n.x; n._filesY = n.y; }
 
-    if (!userDragged) {
+    if (!userDragged && !cameraInitialized) {
       targetCamX = cx - width / (2 * camZoom);
       targetCamY = cy - height / (2 * camZoom);
     }
@@ -800,6 +797,32 @@ const Gravity = (() => {
     };
   }
 
+  // Edge avoidance: push nodes away from non-adjacent edge segments
+  function edgeAvoidanceForce(nodeArray, edgeArray, strength) {
+    const minDist = 20; // min distance from node center to edge segment
+    return function(alpha) {
+      for (const node of nodeArray) {
+        for (const edge of edgeArray) {
+          const src = edge.source, tgt = edge.target;
+          if (src === node || tgt === node) continue;
+          // Point-to-segment distance
+          const ex = tgt.x - src.x, ey = tgt.y - src.y;
+          const len2 = ex * ex + ey * ey;
+          if (len2 < 1) continue;
+          const t = Math.max(0, Math.min(1, ((node.x - src.x) * ex + (node.y - src.y) * ey) / len2));
+          const px = src.x + t * ex, py = src.y + t * ey;
+          const ddx = node.x - px, ddy = node.y - py;
+          const d = Math.sqrt(ddx * ddx + ddy * ddy);
+          if (d < minDist && d > 0.1) {
+            const push = (minDist - d) / d * strength * alpha;
+            node.vx += ddx * push;
+            node.vy += ddy * push;
+          }
+        }
+      }
+    };
+  }
+
   function nodeImportance(node) {
     return node.editCount * 3 + node.execCount * 2 + node.readCount;
   }
@@ -807,13 +830,14 @@ const Gravity = (() => {
   function nodeRadius(node) {
     if (layoutMode === "files") {
       const imp = getImportance(node);
-      return Math.max(NODE_MIN_R, Math.min(NODE_MAX_R, 3 + Math.log2(1 + imp) * 3)) * nodeSizeScale * mapScale;
+      return Math.max(NODE_MIN_R, Math.min(NODE_MAX_R, 2 + Math.log2(1 + imp) * 1.2)) * nodeSizeScale * mapScale;
     }
     return NODE_FIXED_R * nodeSizeScale * mapScale;
   }
 
   // --- Camera ---
   let userDragged = false;
+  let cameraInitialized = false; // first frame snaps instead of lerping
 
   function updateCamera() {
     const now = Date.now();
@@ -831,26 +855,41 @@ const Gravity = (() => {
       }
     }
     if (tw > 0 && !userDragged) {
-      targetCamX = cx / tw - width / (2 * camZoom);
+      const newTargetX = cx / tw - width / (2 * camZoom);
+      let newTargetY = targetCamY;
       if (layoutMode === "files") {
-        // Files mode: center on activity centroid (Y too)
         let ty = 0, tw2 = 0;
         for (const n of nodes.values()) {
           if (!nodeVisible(n)) continue;
           ty += n.y; tw2++;
         }
-        if (tw2 > 0) targetCamY = ty / tw2 - height / (2 * camZoom);
+        if (tw2 > 0) newTargetY = ty / tw2 - height / (2 * camZoom);
       } else {
-      // Y: center on the focused section
-      const focusTop = laneMode === "phase" ? phaseSectionTop : actionSectionTop;
-      const focusBot = laneMode === "phase" ? phaseSectionBot : actionSectionBot;
-      const laneCenterY = (focusTop + focusBot) / 2;
-      targetCamY = laneCenterY - height / (2 * camZoom);
+        const focusTop = laneMode === "phase" ? phaseSectionTop : actionSectionTop;
+        const focusBot = laneMode === "phase" ? phaseSectionBot : actionSectionBot;
+        const laneCenterY = (focusTop + focusBot) / 2;
+        newTargetY = laneCenterY - height / (2 * camZoom);
+      }
+      // Only update target if centroid shifted significantly (>30px world space)
+      // This prevents jittery camera when simulation settles
+      const driftX = Math.abs(newTargetX - targetCamX);
+      const driftY = Math.abs(newTargetY - targetCamY);
+      if (!cameraInitialized || driftX > 30 || driftY > 30) {
+        targetCamX = newTargetX;
+        targetCamY = newTargetY;
       }
     }
     if (!isDragging) {
-      camX += (targetCamX - camX) * 0.2;
-      camY += (targetCamY - camY) * 0.2;
+      if (!cameraInitialized && nodes.size > 0) {
+        // First frame: snap instantly instead of lerping
+        camX = targetCamX;
+        camY = targetCamY;
+        cameraInitialized = true;
+      } else {
+        // Slow lerp so camera doesn't chase every simulation tick
+        camX += (targetCamX - camX) * 0.05;
+        camY += (targetCamY - camY) * 0.05;
+      }
     }
   }
 
@@ -885,9 +924,9 @@ const Gravity = (() => {
     if (isHovered || isSelected) return true;
     // Progressively hide labels as we zoom out
     if (camZoom < 0.3) return false;
-    if (camZoom < 0.5) return (isGlowing || isWarm) && node.accessCount >= 6;
-    if (camZoom < 0.7) return (isGlowing && node.accessCount >= 3) || node.accessCount >= 8;
-    if (isGlowing || isWarm) return node.accessCount >= 2;
+    if (camZoom < 0.5) return (isGlowing || isWarm) && node.accessCount >= 8;
+    if (camZoom < 0.7) return (isGlowing && node.accessCount >= 5) || node.accessCount >= 10;
+    if (isGlowing || isWarm) return node.accessCount >= 3;
     return node.accessCount >= LABEL_MIN_ACCESS;
   }
 
@@ -1131,20 +1170,14 @@ const Gravity = (() => {
     return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
   }
 
-  const EDGE_TYPE_LABELS = {
-    prerequisite: "read → edit",
-    coupling: "edit → edit",
-    validation: "edit → run",
-    reference: "read → read",
-    "test-driven": "run → edit",
-    sequence: "→",
-  };
+  // Edge type IS the label now (e.g. "read→edit") — no lookup needed
+  // Only sequence (history mode) has no label
 
   function drawEdgeLabel(edge, dark, mx, my) {
     const srcN = nodes.get(edge.source);
     const dstN = nodes.get(edge.target);
     if (!srcN || !dstN) return;
-    const label = EDGE_TYPE_LABELS[edge.type] || edge.type;
+    const label = edge.type;
     const x = mx !== undefined ? mx : (srcN.x + dstN.x) / 2;
     const y = my !== undefined ? my : (srcN.y + dstN.y) / 2;
 
@@ -1231,7 +1264,7 @@ const Gravity = (() => {
       edgeInfos.push({
         label: `${dir} ${other}`,
         type: e.type,
-        typeLabel: EDGE_TYPE_LABELS[e.type] || e.type,
+        typeLabel: e.type,
         actionArrow,
       });
     }
@@ -1317,17 +1350,6 @@ const Gravity = (() => {
     if (!cardEl || !miniCardRect) return;
 
     const info = buildInfoCard(node);
-    const NAMES = {
-      prerequisite: "prerequisite",
-      coupling: "coupling",
-      validation: "validation",
-      reference: "reference",
-      "test-driven": "test-driven",
-      iteration: "iteration",
-      review: "review",
-      sequence: "other",
-    };
-
     let html = `<div class="gc-file">${esc(info.file)}</div>`;
     html += `<div class="gc-action">${esc(info.lastAction)}</div>`;
 
@@ -1336,18 +1358,13 @@ const Gravity = (() => {
     if (hasPatterns) {
       html += `<div class="gc-section"><div class="gc-label">Behavior</div>`;
       if (node.iterationCount) {
-        html += `<div class="gc-edge">↻ ${node.iterationCount}× <span class="gc-type">Edit → Edit</span></div>`;
+        html += `<div class="gc-edge">\u21BB ${node.iterationCount}\u00D7 <span class="gc-type">edit\u2192edit</span></div>`;
       }
       if (node.reviewCount) {
-        html += `<div class="gc-edge">↩ ${node.reviewCount}× <span class="gc-type">Edit → Read</span></div>`;
+        html += `<div class="gc-edge">\u21A9 ${node.reviewCount}\u00D7 <span class="gc-type">edit\u2192read</span></div>`;
       }
       for (const ei of info.edgeInfos) {
-        if (ei.type === "sequence") {
-          const arrow = ei.actionArrow || "→";
-          html += `<div class="gc-edge">${esc(ei.label)} <span class="gc-type">${esc(arrow)}</span></div>`;
-        } else {
-          html += `<div class="gc-edge">${esc(ei.label)} <span class="gc-type">${esc(ei.typeLabel)}</span></div>`;
-        }
+        html += `<div class="gc-edge">${esc(ei.label)} <span class="gc-type">${esc(ei.type)}</span></div>`;
       }
       html += `</div>`;
     }
@@ -1518,29 +1535,45 @@ const Gravity = (() => {
       ctx.lineCap = "round";
       ctx.stroke();
 
-      // Single direction arrow at midpoint of curve/line
-      if (connected || (!hasFocus && opacity > 0.2)) {
-        // For curves, tangent at t=0.5 of quadratic bezier
-        const mx = cpx;
-        const my = sameRow ? (sSrc.y + 2 * cpy + sDst.y) / 4 : (sSrc.y + sDst.y) / 2;
-        const tx = sameRow ? sDst.x - sSrc.x : dx;
-        const ty = sameRow ? sDst.y - sSrc.y : dy;
-        const angle = Math.atan2(ty, tx);
+      // Edge label embedded inline — clears a gap in the line and draws text inside
+      if (dist > 60 * mapScale && (connected || (!hasFocus && opacity > 0.15))) {
+        // History mode: use arrow glyph; files mode: use type label (skip empty)
+        const edgeLabel = layoutMode === "history" ? "\u25B8" : (newest.type === "sequence" ? "" : newest.type);
+        if (!edgeLabel) { /* skip sequence edges in files mode */ }
+        else {
+        const emx = cpx;
+        const emy = sameRow ? (sSrc.y + 2 * cpy + sDst.y) / 4 : (sSrc.y + sDst.y) / 2;
+        // Tangent direction for angle
+        const etx = sameRow ? sDst.x - sSrc.x : dx;
+        const ety = sameRow ? sDst.y - sSrc.y : dy;
+        const rawAngle = Math.atan2(ety, etx);
+        // For text labels, keep readable (never upside-down)
+        let angle = rawAngle;
+        if (layoutMode !== "history") {
+          if (angle > Math.PI / 2) angle -= Math.PI;
+          if (angle < -Math.PI / 2) angle += Math.PI;
+        }
+        const eFsz = layoutMode === "history"
+          ? Math.max(6, 10 / Math.max(0.3, camZoom))
+          : Math.max(5, 7 / Math.max(0.3, camZoom));
         ctx.save();
-        ctx.translate(mx, my);
+        ctx.globalAlpha = 1;
+        ctx.translate(emx, emy);
         ctx.rotate(angle);
-        ctx.beginPath();
-        const as = 5 * mapScale;
-        const ah = 2.5 * mapScale;
-        ctx.moveTo(as, 0);
-        ctx.lineTo(-ah, -ah);
-        ctx.lineTo(-ah, ah);
-        ctx.closePath();
-        ctx.fillStyle = connected
-          ? getEdgeColor(newest, dark, true)
-          : (dark ? `rgba(120,140,170,${opacity * 0.5})` : `rgba(50,70,90,${opacity * 0.5})`);
-        ctx.fill();
+        ctx.font = `500 ${eFsz}px "SF Mono",Menlo,monospace`;
+        const tw = ctx.measureText(edgeLabel).width;
+        const pad = eFsz * 0.5;
+        // Clear a gap in the edge line behind the text
+        ctx.fillStyle = dark ? "rgb(15,17,21)" : "rgb(244,243,240)";
+        ctx.fillRect(-tw / 2 - pad, -eFsz * 0.6, tw + pad * 2, eFsz * 1.2);
+        // Draw label
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const labelAlpha = connected ? 0.8 : Math.max(0.35, opacity * 0.7);
+        ctx.fillStyle = dark ? `rgba(180,195,220,${labelAlpha})` : `rgba(40,55,75,${labelAlpha})`;
+        ctx.fillText(edgeLabel, 0, 0);
         ctx.restore();
+        } // end else (non-empty label)
       }
 
       ctx.globalAlpha = 1;
@@ -1584,7 +1617,7 @@ const Gravity = (() => {
       const isNewNode = introAge < NEW_GLOW_DURATION;
       const introGlow = isNewNode ? 1 - (introAge / NEW_GLOW_DURATION) : 0;
 
-      let alpha = isGlowing ? 1.0 : isWarm ? 0.8 : 0.5;
+      let alpha = isGlowing ? 1.0 : isWarm ? 0.8 : 0.65;
       if (isNewNode) alpha = Math.max(alpha, 0.7 + introGlow * 0.3);
       if (!activeFilters.has("all") && !filterMatchAction(node)) alpha = 0.15;
       if (dimmed) alpha *= 0.2;
@@ -1714,8 +1747,8 @@ const Gravity = (() => {
         ctx.arc(x, y, r, 0, Math.PI * 2);
 
         // Importance via fill opacity — deeper color = more important
-        const fillA = dimmed ? 0.02 + impNorm * 0.06 : 0.05 + impNorm * 0.25;
-        const strokeA = dimmed ? 0.12 + impNorm * 0.08 : 0.3 + impNorm * 0.5;
+        const fillA = dimmed ? 0.1 + impNorm * 0.1 : 0.3 + impNorm * 0.3;
+        const strokeA = dimmed ? 0.3 + impNorm * 0.15 : 0.6 + impNorm * 0.35;
         if (isActive || isGlowing) {
           ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},${Math.min(0.6, fillA + 0.1)})`;
           ctx.fill();
@@ -1812,16 +1845,17 @@ const Gravity = (() => {
       // --- Labels ---
       const effectiveR = layoutMode === "files" ? nodeRadius(node) / mapScale : NODE_FIXED_R;
       if (shouldShowLabel(node, effectiveR, isGlowing, isWarm, isHovered, isSelected)) {
-        const dl = disambiguatedLabel(node);
+        let dl = disambiguatedLabel(node);
+        // Truncate long labels to prevent text walls (keep full on hover)
+        if (!(isHovered || isSelected) && dl.length > 20) dl = dl.slice(0, 18) + "\u2026";
         // Dynamic font size: scales with camera zoom
         let fsz;
         if (layoutMode === "files") {
-          // Files mode: font scales smoothly with zoom, proportional to node size
-          const baseFsz = isHovered || isSelected ? 11 : Math.max(6, 5 + effectiveR * 0.4);
-          fsz = Math.min(20, Math.max(3, baseFsz / Math.max(0.2, camZoom)));
+          const baseFsz = isHovered || isSelected ? 11 : Math.max(5, 4 + effectiveR * 0.3);
+          fsz = Math.min(16, Math.max(3, baseFsz / Math.max(0.3, camZoom)));
         } else {
-          const screenFsz = isHovered || isSelected ? 11 : 8;
-          fsz = Math.min(18, Math.max(4, screenFsz / Math.max(0.3, camZoom)));
+          const screenFsz = isHovered || isSelected ? 11 : 7;
+          fsz = Math.min(14, Math.max(4, screenFsz / Math.max(0.3, camZoom)));
         }
         ctx.font = `${isHovered || isSelected ? "600" : "400"} ${fsz}px "SF Mono","JetBrains Mono",Menlo,monospace`;
         ctx.textAlign = "left";
@@ -1829,13 +1863,13 @@ const Gravity = (() => {
 
         let la;
         if (dark) {
-          la = isGlowing ? 0.7 : isWarm ? 0.45 : (0.15 + impNorm * 0.2);
-          if (dimmed) la *= 0.2;
+          la = isGlowing ? 0.6 : isWarm ? 0.35 : (0.1 + impNorm * 0.15);
+          if (dimmed) la *= 0.15;
           if (isHovered || isSelected) la = 0.9;
           ctx.fillStyle = `rgba(200,215,240,${la})`;
         } else {
-          la = isGlowing ? 0.7 : isWarm ? 0.5 : (0.2 + impNorm * 0.25);
-          if (dimmed) la *= 0.2;
+          la = isGlowing ? 0.6 : isWarm ? 0.4 : (0.15 + impNorm * 0.2);
+          if (dimmed) la *= 0.15;
           if (isHovered || isSelected) la = 0.85;
           ctx.fillStyle = `rgba(30,40,50,${la})`;
         }
@@ -2028,9 +2062,12 @@ const Gravity = (() => {
     const visibleAxisW = screenRight - screenLeft;
     if (visibleAxisW < 50) return;
 
-    const tickCount = Math.min(6, Math.max(2, Math.floor(visibleAxisW / 110)));
     const fg = dark ? "rgba(200,215,240,0.4)" : "rgba(50,70,90,0.4)";
     const n = axisSorted.length;
+    // Count distinct formatted time labels to avoid duplicates
+    const fmtOpts = { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" };
+    const distinctLabels = new Set(axisSorted.map(s => new Date(s.lastAccessTs).toLocaleTimeString("en-US", fmtOpts))).size;
+    const tickCount = Math.min(distinctLabels, Math.min(6, Math.max(2, Math.floor(visibleAxisW / 110))));
 
     ctx.save();
     ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`;
@@ -2038,6 +2075,7 @@ const Gravity = (() => {
     ctx.textBaseline = "top";
     ctx.fillStyle = fg;
 
+    let lastLabel = null;
     for (let i = 0; i <= tickCount; i++) {
       const t = i / tickCount;
       // Map evenly-spaced tick to a rank index, then get that node's timestamp
@@ -2049,6 +2087,12 @@ const Gravity = (() => {
 
       if (sx < axisLeftW - 10 || sx > width + 10) continue;
 
+      // Time label — skip duplicates
+      const d = new Date(tickTs);
+      const label = d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      if (label === lastLabel) continue;
+      lastLabel = label;
+
       // Tick mark
       ctx.beginPath();
       ctx.moveTo(sx, axisY);
@@ -2057,9 +2101,6 @@ const Gravity = (() => {
       ctx.lineWidth = 0.8;
       ctx.stroke();
 
-      // Time label
-      const d = new Date(tickTs);
-      const label = d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
       ctx.fillText(label, sx, axisY + 7);
     }
 
@@ -2070,11 +2111,14 @@ const Gravity = (() => {
     const fg = dark ? "rgba(200,215,240,0.3)" : "rgba(50,70,90,0.3)";
     ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`; ctx.textAlign = "right"; ctx.textBaseline = "top";
 
+    // Count all non-expired nodes by recency (independent of recency filter visibility)
     let ac = 0, wc = 0, sc = 0, vn = 0;
     for (const node of nodes.values()) {
-      if (!nodeVisible(node)) continue;
-      vn++;
       const age = now - node.lastAccessTs;
+      if (age > STALE_CUTOFF) continue;
+      // Session filter still applies
+      if (!sessionFilters.has("all") && ![...node.sessions].some(s => sessionFilters.has(s))) continue;
+      vn++;
       if (age < GLOW_DURATION) ac++;
       else if (age < WARM_DURATION) wc++;
       else sc++;
@@ -2139,7 +2183,8 @@ const Gravity = (() => {
       mouseDownPos = { x: e.clientX, y: e.clientY, hit, mx, my };
 
       if (hit) {
-        // Node clicked — don't drag, let mouseup handle selection
+        draggingNode = hit;
+        canvas.style.cursor = "grabbing";
         return;
       }
 
@@ -2165,7 +2210,18 @@ const Gravity = (() => {
         return;
       }
 
-      // Node dragging disabled — positions are deterministic
+      if (draggingNode) {
+        // Only start moving if past click threshold (avoid jitter on click)
+        if (mouseDownPos && Math.abs(e.clientX - mouseDownPos.x) < CLICK_THRESHOLD &&
+            Math.abs(e.clientY - mouseDownPos.y) < CLICK_THRESHOLD) return;
+        // Convert screen to world coordinates and set node position directly
+        const wx = mx / camZoom + camX, wy = my / camZoom + camY;
+        draggingNode.x = wx;
+        draggingNode.y = wy;
+        draggingNode.vx = 0;
+        draggingNode.vy = 0;
+        return;
+      }
 
       if (isDragging) {
         camX = dragCamX - (e.clientX - dragStartX) / camZoom;
@@ -2275,7 +2331,7 @@ const Gravity = (() => {
       userDragged = true; // stop auto-tracking so zoom spread is visible
     }, { passive: false });
 
-    canvas.addEventListener("dblclick", () => { dismissAll(); userDragged = false; targetCamX = 0; targetCamY = 0; camZoom = 1; });
+    canvas.addEventListener("dblclick", () => { dismissAll(); userDragged = false; cameraInitialized = false; targetCamX = 0; targetCamY = 0; camZoom = 1; });
   }
 
   function getTooltip() {
@@ -2346,7 +2402,7 @@ const Gravity = (() => {
 
   function reset() {
     nodes.clear(); edges.clear(); lastToolBySession.clear(); activeFiles.clear();
-    canonNodes.clear(); canonEdges.clear(); accessLog.length = 0;
+    canonNodes.clear(); canonEdges.clear(); accessLog.length = 0; processedKeys.clear();
     fileAccessCounts.clear(); historyFileLatest.clear();
     labelCounts.clear(); hoveredNode = null; selectedNode = null; infoCard = null;
     if (simulation) simulation.stop(); simulation = null;
@@ -2551,6 +2607,7 @@ const Gravity = (() => {
     layoutMode = mode;
     isFirstBuild = true;
     userDragged = false;
+    cameraInitialized = false;
     camZoom = 0.85;
     rebuildSimulation();
   }

@@ -186,15 +186,13 @@ const Momentum = (() => {
     const action = classifyAction(entry);
     const isError = entry.category === "error";
 
-    span.actions.push({ toolName, filePath, action, ts: entry.ts || Date.now(), isError });
+    const bashCmd = toolName === "Bash" ? (extractBashCommand(entry) || "") : "";
+    span.actions.push({ toolName, filePath, action, ts: entry.ts || Date.now(), isError, bashCmd });
     if (filePath) span.files.add(filePath);
     span.endTs = entry.ts || Date.now();
 
     // Track bash commands for test detection
-    if (toolName === "Bash") {
-      const cmd = extractBashCommand(entry);
-      if (cmd) span.bashCommands.push(cmd);
-    }
+    if (bashCmd) span.bashCommands.push(bashCmd);
 
     if (isError) {
       span.hasError = true;
@@ -272,27 +270,28 @@ const Momentum = (() => {
 
   // =====================
   // PHASE CLASSIFIER (Layer 1)
+  // Mirrors detectPhaseFromTool from shared/tool-detail.js — per-tool classification
+  // with span-level error/debugging detection on top.
   // =====================
 
+  function detectPhaseFromTool(toolName, command, currentPhase) {
+    if (!toolName) return null;
+    if (["Read", "Glob", "Grep", "LSP"].some(t => toolName.includes(t))) return "exploring";
+    if (["TodoWrite", "TaskCreate", "TaskUpdate", "EnterPlanMode"].some(t => toolName.includes(t))) return "planning";
+    if (["Edit", "Write", "NotebookEdit"].some(t => toolName.includes(t))) return "implementing";
+    if (toolName.includes("Bash")) {
+      if (/test|jest|pytest|cargo test|npm test/.test(command || "")) return "testing";
+      if (currentPhase === "idle" || currentPhase === "starting") return "implementing";
+      return null;
+    }
+    if (toolName.includes("Agent")) return "orchestrating";
+    return null;
+  }
+
   function classifyPhase(state, span) {
-    const total = span.actions.length;
-    if (total === 0) {
-      // Thinking-only span with long text = planning
-      if (span.thinkingText.length > 500) return "planning";
-      return "exploring";
-    }
-
-    let reads = 0, edits = 0, execs = 0;
-    for (const a of span.actions) {
-      if (a.action === "read") reads++;
-      else if (a.action === "edit") edits++;
-      else if (a.action === "exec") execs++;
-    }
-
-    // Priority cascade: debugging > testing > orchestrating > implementing > planning > exploring
-    // Debugging: error in span OR revisiting errored files
+    // Debugging: error in span OR revisiting errored files (span-level, not per-tool)
     if (span.hasError) return "debugging";
-    if (state.erroredFiles.size > 0) {
+    if (state.erroredFiles.size > 0 && span.files.size > 0) {
       let revisiting = 0;
       for (const f of span.files) {
         if (state.erroredFiles.has(f)) revisiting++;
@@ -300,23 +299,17 @@ const Momentum = (() => {
       if (revisiting > 0 && revisiting / span.files.size > 0.3) return "debugging";
     }
 
-    // Testing: exec actions with test-like commands
-    if (execs / total >= 0.3) {
-      const hasTestCmd = span.bashCommands.some(cmd => TEST_CMD_RE.test(cmd));
-      if (hasTestCmd) return "testing";
+    // Use per-tool classification (same as shared/tool-detail.js detectPhaseFromTool)
+    // Last tool wins — matches island/TUI behavior
+    let phase = null;
+    for (const a of span.actions) {
+      const p = detectPhaseFromTool(a.toolName, a.bashCmd || "", phase || "exploring");
+      if (p) phase = p;
     }
+    if (phase) return phase;
 
-    // Orchestrating: Agent tool usage
-    const hasAgent = span.actions.some(a => a.toolName && a.toolName.includes("Agent"));
-    if (hasAgent) return "orchestrating";
-
-    // Implementing: edit-heavy
-    if (edits / total >= 0.4) return "implementing";
-
-    // Planning: long thinking, few actions
-    if (span.thinkingText.length > 500 && total <= 2) return "planning";
-
-    // Exploring: default
+    // No tool actions — thinking-only span
+    if (span.thinkingText.length > 500) return "planning";
     return "exploring";
   }
 
