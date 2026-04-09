@@ -70,8 +70,8 @@ const Gravity = (() => {
   // Direct mapping: sim space = world space (no spread compression)
   function spX(node) { return node.x; }
   function spY(node) { return node.y; }
-  const EDGE_MIN_W = 0.8;
-  const EDGE_MAX_W = 4;
+  const EDGE_MIN_W = 0.5;
+  const EDGE_MAX_W = 2.5;
   const LABEL_MIN_ACCESS = 5;
   const EDGE_MIN_WEIGHT = 1;
 
@@ -1510,70 +1510,70 @@ const Gravity = (() => {
       ctx.globalAlpha = opacity;
       const sSrc = sp(srcN), sDst = sp(dstN);
 
-      // Arc edges when nodes are nearly colinear (same lane) to avoid striking through intermediate nodes
       const dx = sDst.x - sSrc.x;
       const dy = sDst.y - sSrc.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
-      const sameRow = Math.abs(dy) < 15 * mapScale && dist > 30 * mapScale;
-      // Arc height proportional to distance, alternating up/down by pair hash
+
+      // Always curved — arc height from pair hash, proportional to distance
       const pairHash = (srcN.id + dstN.id).split("").reduce((h, c) => h + c.charCodeAt(0), 0);
       const arcSign = pairHash % 2 === 0 ? -1 : 1;
-      const arcH = sameRow ? arcSign * Math.min(40, dist * 0.15) * mapScale : 0;
-      const cpx = (sSrc.x + sDst.x) / 2;
+      const arcH = arcSign * Math.min(50, dist * 0.12) * mapScale;
+      const cpx = (sSrc.x + sDst.x) / 2 + (dy * 0.1 * arcSign);
       const cpy = (sSrc.y + sDst.y) / 2 + arcH;
+
+      // Dashed for weak edges (weight <= 2), solid for strong
+      const isWeakEdge = totalWeight <= 2 && !connected;
+      ctx.save();
+      if (isWeakEdge && layoutMode === "files") {
+        ctx.setLineDash([4 * mapScale, 4 * mapScale]);
+      }
 
       ctx.beginPath();
       ctx.moveTo(sSrc.x, sSrc.y);
-      if (sameRow) {
-        ctx.quadraticCurveTo(cpx, cpy, sDst.x, sDst.y);
-      } else {
-        ctx.lineTo(sDst.x, sDst.y);
-      }
+      ctx.quadraticCurveTo(cpx, cpy, sDst.x, sDst.y);
 
       ctx.strokeStyle = connected ? getEdgeColor(newest, dark, true) : getEdgeColor(newest, dark, false);
       ctx.lineWidth = connected ? lw * 1.5 : lw;
       ctx.lineCap = "round";
       ctx.stroke();
+      ctx.restore();
 
-      // Edge label embedded inline — clears a gap in the line and draws text inside
+      // Edge label embedded inline — clears a gap in the curve with text inside
       if (dist > 60 * mapScale && (connected || (!hasFocus && opacity > 0.15))) {
-        // History mode: use arrow glyph; files mode: use type label (skip empty)
         const edgeLabel = layoutMode === "history" ? "\u25B8" : (newest.type === "sequence" ? "" : newest.type);
-        if (!edgeLabel) { /* skip sequence edges in files mode */ }
-        else {
-        const emx = cpx;
-        const emy = sameRow ? (sSrc.y + 2 * cpy + sDst.y) / 4 : (sSrc.y + sDst.y) / 2;
-        // Tangent direction for angle
-        const etx = sameRow ? sDst.x - sSrc.x : dx;
-        const ety = sameRow ? sDst.y - sSrc.y : dy;
-        const rawAngle = Math.atan2(ety, etx);
-        // For text labels, keep readable (never upside-down)
-        let angle = rawAngle;
-        if (layoutMode !== "history") {
-          if (angle > Math.PI / 2) angle -= Math.PI;
-          if (angle < -Math.PI / 2) angle += Math.PI;
+        if (edgeLabel) {
+          // Midpoint of quadratic bezier at t=0.5
+          const emx = 0.25 * sSrc.x + 0.5 * cpx + 0.25 * sDst.x;
+          const emy = 0.25 * sSrc.y + 0.5 * cpy + 0.25 * sDst.y;
+          // Tangent at t=0.5: derivative of quadratic bezier
+          const etx = (sDst.x - sSrc.x);
+          const ety = (sDst.y - sSrc.y);
+          let angle = Math.atan2(ety, etx);
+          // For text labels, keep readable; for history arrows, follow direction
+          if (layoutMode !== "history") {
+            if (angle > Math.PI / 2) angle -= Math.PI;
+            if (angle < -Math.PI / 2) angle += Math.PI;
+          }
+          const eFsz = layoutMode === "history"
+            ? Math.max(6, 10 / Math.max(0.3, camZoom))
+            : Math.max(4, 6 / Math.max(0.3, camZoom));
+          ctx.save();
+          ctx.globalAlpha = 1;
+          ctx.translate(emx, emy);
+          ctx.rotate(angle);
+          ctx.font = `400 ${eFsz}px "SF Mono",Menlo,monospace`;
+          const tw = ctx.measureText(edgeLabel).width;
+          const pad = eFsz * 0.4;
+          // Clear gap behind text
+          ctx.fillStyle = dark ? "rgb(15,17,21)" : "rgb(244,243,240)";
+          ctx.fillRect(-tw / 2 - pad, -eFsz * 0.55, tw + pad * 2, eFsz * 1.1);
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          const labelAlpha = connected ? 0.7 : Math.max(0.25, opacity * 0.5);
+          ctx.fillStyle = dark ? `rgba(180,195,220,${labelAlpha})` : `rgba(60,70,85,${labelAlpha})`;
+          ctx.fillText(edgeLabel, 0, 0);
+          ctx.restore();
         }
-        const eFsz = layoutMode === "history"
-          ? Math.max(6, 10 / Math.max(0.3, camZoom))
-          : Math.max(5, 7 / Math.max(0.3, camZoom));
-        ctx.save();
-        ctx.globalAlpha = 1;
-        ctx.translate(emx, emy);
-        ctx.rotate(angle);
-        ctx.font = `500 ${eFsz}px "SF Mono",Menlo,monospace`;
-        const tw = ctx.measureText(edgeLabel).width;
-        const pad = eFsz * 0.5;
-        // Clear a gap in the edge line behind the text
-        ctx.fillStyle = dark ? "rgb(15,17,21)" : "rgb(244,243,240)";
-        ctx.fillRect(-tw / 2 - pad, -eFsz * 0.6, tw + pad * 2, eFsz * 1.2);
-        // Draw label
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        const labelAlpha = connected ? 0.8 : Math.max(0.35, opacity * 0.7);
-        ctx.fillStyle = dark ? `rgba(180,195,220,${labelAlpha})` : `rgba(40,55,75,${labelAlpha})`;
-        ctx.fillText(edgeLabel, 0, 0);
-        ctx.restore();
-        } // end else (non-empty label)
       }
 
       ctx.globalAlpha = 1;
@@ -1633,172 +1633,117 @@ const Gravity = (() => {
 
       ctx.globalAlpha = alpha;
 
-      if (dark) {
-        // === OBSERVATORY: fixed-size core, importance via color depth + halo ===
+      // --- Unified node rendering (dark + light) ---
+      {
         const introBoost = isNewNode ? introGlow * 3 : 0;
         const coreR = (baseR + introBoost) * mapScale;
         const laneKey = node._laneKey;
-        const introLc = (laneKey && LANE_SEMANTIC_COLORS[laneKey]) ? LANE_SEMANTIC_COLORS[laneKey].dark : { r: 200, g: 220, b: 255 };
-        const color = isNewNode
-          ? `rgb(${Math.round(introLc.r + introGlow * (255 - introLc.r) * 0.5)},${Math.round(introLc.g + introGlow * (255 - introLc.g) * 0.3)},${Math.round(introLc.b + introGlow * (255 - introLc.b) * 0.2)})`
-          : getNodeColor(node, true);
-        const rgb = parseRgb(color);
+        const lc = (laneKey && LANE_SEMANTIC_COLORS[laneKey])
+          ? (dark ? LANE_SEMANTIC_COLORS[laneKey].dark : LANE_SEMANTIC_COLORS[laneKey].light)
+          : (dark ? { r: 200, g: 220, b: 255 } : { r: 50, g: 70, b: 90 });
 
-        // Soft halo — size and intensity driven by importance (color depth shows importance)
-        // History mode latest nodes: boost halo based on access count
-        if (!dimmed && !historyDimmed && rgb && layoutMode === "history" && node._isLatest && node._totalFileAccesses > 1) {
-          const accessBoost = Math.min(1, Math.log2(node._totalFileAccesses) / 4);
-          const boostR = coreR + (4 + accessBoost * 12) * mapScale;
-          const boostAlpha = 0.1 + accessBoost * 0.25;
-          const grad = ctx.createRadialGradient(x, y, coreR, x, y, boostR);
-          grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${boostAlpha})`);
-          grad.addColorStop(1, "rgba(0,0,0,0)");
-          ctx.fillStyle = grad;
-          ctx.beginPath();
-          ctx.arc(x, y, boostR, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        const color = isNewNode
+          ? `rgb(${Math.round(lc.r + introGlow * (255 - lc.r) * 0.4)},${Math.round(lc.g + introGlow * (255 - lc.g) * 0.3)},${Math.round(lc.b + introGlow * (255 - lc.b) * 0.2)})`
+          : (dark ? getNodeColor(node, true) : `rgba(${lc.r},${lc.g},${lc.b},${dimmed ? 0.3 : 0.5 + impNorm * 0.4})`);
+        const rgb = parseRgb(color) || lc;
+
+        // --- Outer glow halo (radial gradient) ---
         if (!dimmed && !historyDimmed && rgb) {
-          const haloR = coreR + (3 + impNorm * 6 + introBoost * 2) * mapScale;
-          const haloAlpha = isNewNode ? (0.15 + introGlow * 0.3) : (isHovered ? 0.12 : (0.03 + impNorm * 0.08));
-          const grad = ctx.createRadialGradient(x, y, coreR, x, y, haloR);
+          const haloR = coreR + (5 + impNorm * 10 + introBoost * 2) * mapScale;
+          const haloAlpha = isNewNode ? (0.2 + introGlow * 0.4)
+            : isHovered ? 0.15
+            : isGlowing ? (0.08 + impNorm * 0.12)
+            : (0.02 + impNorm * 0.06);
+          const grad = ctx.createRadialGradient(x, y, coreR * 0.5, x, y, haloR);
           grad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${haloAlpha})`);
-          grad.addColorStop(1, "rgba(0,0,0,0)");
+          grad.addColorStop(1, dark ? "rgba(0,0,0,0)" : "rgba(255,255,255,0)");
           ctx.fillStyle = grad;
           ctx.beginPath();
           ctx.arc(x, y, haloR, 0, Math.PI * 2);
           ctx.fill();
         }
 
-        // Core dot — fixed size, color encodes importance
+        // --- Concentric importance rings (like orbits — only for important nodes) ---
+        if (!dimmed && !historyDimmed && impNorm > 0.3) {
+          const ringCount = impNorm > 0.7 ? 3 : impNorm > 0.5 ? 2 : 1;
+          for (let ri = 1; ri <= ringCount; ri++) {
+            const ringR = coreR + (3 + ri * 4) * mapScale;
+            const ringA = (dark ? 0.06 : 0.08) * (1 - ri * 0.25) * (isGlowing ? 2 : 1);
+            ctx.beginPath();
+            ctx.arc(x, y, ringR, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${ringA})`;
+            ctx.lineWidth = 0.5 * mapScale;
+            ctx.stroke();
+          }
+        }
+
+        // --- Core dot ---
         ctx.beginPath();
         ctx.arc(x, y, coreR, 0, Math.PI * 2);
-        ctx.fillStyle = color;
-        ctx.fill();
+        if (dark) {
+          ctx.fillStyle = color;
+          ctx.fill();
+        } else {
+          // Light mode: filled circle with stroke
+          const fillA = dimmed ? 0.15 : 0.35 + impNorm * 0.35;
+          const strokeA = dimmed ? 0.3 : 0.6 + impNorm * 0.35;
+          ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},${fillA})`;
+          ctx.fill();
+          ctx.strokeStyle = `rgba(${lc.r},${lc.g},${lc.b},${strokeA})`;
+          ctx.lineWidth = (1 + (isNewNode ? introGlow * 1.5 : 0)) * mapScale;
+          ctx.stroke();
+        }
 
-        // Active file: subtle breathing pulse ring
-        if (isGlowing && !dimmed && rgb) {
+        // --- Active file: breathing pulse ring ---
+        if (isGlowing && !dimmed) {
           const pulseT = ((now % 3000) / 3000);
           const ringR = coreR + (3 + pulseT * 5) * mapScale;
           const ringAlpha = (1 - pulseT) * 0.2 * alpha;
           ctx.beginPath();
           ctx.arc(x, y, ringR, 0, Math.PI * 2);
           ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${ringAlpha})`;
-          ctx.lineWidth = 1;
+          ctx.lineWidth = 0.8;
           ctx.stroke();
         }
 
-        // New node intro glow (expanding ring that fades)
-        if (isNewNode && !dimmed && rgb) {
+        // --- New node intro glow ---
+        if (isNewNode && !dimmed) {
           const expandT = introAge / NEW_GLOW_DURATION;
           const glowR = coreR + (6 + expandT * 14) * mapScale;
-          const glowAlpha = introGlow * 0.7;
+          const glowAlpha = introGlow * 0.6;
           ctx.beginPath();
           ctx.arc(x, y, glowR, 0, Math.PI * 2);
           ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${glowAlpha})`;
-          ctx.lineWidth = 2 * mapScale;
+          ctx.lineWidth = 1.5 * mapScale;
           ctx.stroke();
-          // Inner bright flash
-          if (introGlow > 0.3) {
-            const flashAlpha = (introGlow - 0.3) * 1.4 * 0.4;
-            const flashGrad = ctx.createRadialGradient(x, y, coreR, x, y, coreR + 6 * mapScale);
-            flashGrad.addColorStop(0, `rgba(${rgb.r},${rgb.g},${rgb.b},${flashAlpha})`);
-            flashGrad.addColorStop(1, "rgba(0,0,0,0)");
-            ctx.fillStyle = flashGrad;
-            ctx.beginPath();
-            ctx.arc(x, y, coreR + 6 * mapScale, 0, Math.PI * 2);
-            ctx.fill();
-          }
         }
 
-        // Hover/select ring
+        // --- Hover/select ring ---
         if (isHovered || isSelected) {
           ctx.beginPath();
           ctx.arc(x, y, coreR + 2 * mapScale, 0, Math.PI * 2);
-          ctx.strokeStyle = "rgba(200,215,240,0.5)";
+          ctx.strokeStyle = dark ? "rgba(200,215,240,0.5)" : `rgba(${lc.r},${lc.g},${lc.b},0.4)`;
           ctx.lineWidth = mapScale;
           ctx.stroke();
         }
 
-        // Claude presence beacon
+        // --- Claude presence beacon ---
         if (claudeCurrentFiles.has(node.id) && !dimmed) {
           const beaconT = ((now % 2000) / 2000);
           const beaconR = coreR + (4 + beaconT * 8) * mapScale;
           const beaconAlpha = (1 - beaconT) * 0.3;
           ctx.beginPath();
           ctx.arc(x, y, beaconR, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(200,215,240,${beaconAlpha})`;
+          ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${beaconAlpha})`;
           ctx.lineWidth = 1;
           ctx.stroke();
         }
 
-      } else {
-        // === BLUEPRINT: fixed-size hollow circles, importance via color depth ===
-        const introBoostL = isNewNode ? introGlow * 3 : 0;
-        const r = (baseR + introBoostL) * mapScale;
-        const strokeW = (1.2 + (isNewNode ? introGlow * 2 : 0)) * mapScale;
-        const isActive = claudeCurrentFiles.has(node.id);
-
-        // Get lane-aware color for light mode
-        const laneKey = node._laneKey;
-        const lc = (laneKey && LANE_SEMANTIC_COLORS[laneKey]) ? LANE_SEMANTIC_COLORS[laneKey].light : { r: 50, g: 70, b: 90 };
-
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-
-        // Importance via fill opacity — deeper color = more important
-        const fillA = dimmed ? 0.1 + impNorm * 0.1 : 0.3 + impNorm * 0.3;
-        const strokeA = dimmed ? 0.3 + impNorm * 0.15 : 0.6 + impNorm * 0.35;
-        if (isActive || isGlowing) {
-          ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},${Math.min(0.6, fillA + 0.1)})`;
-          ctx.fill();
-          ctx.strokeStyle = dimmed ? `rgba(${lc.r},${lc.g},${lc.b},0.2)` : `rgba(${lc.r},${lc.g},${lc.b},0.8)`;
-        } else {
-          ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},${fillA})`;
-          ctx.fill();
-          ctx.strokeStyle = `rgba(${lc.r},${lc.g},${lc.b},${strokeA})`;
-        }
-        ctx.lineWidth = strokeW;
-        ctx.stroke();
-
-        // Active file: subtle breathing pulse
-        if (isGlowing && !dimmed) {
-          const pulseT = ((now % 3000) / 3000);
-          const ringR = r + 3 + pulseT * 4;
-          const ringAlpha = (1 - pulseT) * 0.15;
-          ctx.beginPath();
-          ctx.arc(x, y, ringR, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(${lc.r},${lc.g},${lc.b},${ringAlpha})`;
-          ctx.lineWidth = 0.8;
-          ctx.stroke();
-        }
-
-        // New node intro glow
-        if (isNewNode && !dimmed) {
-          const expandT = introAge / NEW_GLOW_DURATION;
-          const glowR = r + (5 + expandT * 12) * mapScale;
-          const glowAlpha = introGlow * 0.6;
-          ctx.beginPath();
-          ctx.arc(x, y, glowR, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(${lc.r},${lc.g},${lc.b},${glowAlpha})`;
-          ctx.lineWidth = 2 * mapScale;
-          ctx.stroke();
-        }
-
-        // Hover/select: thicker ring
-        if (isHovered || isSelected) {
-          ctx.beginPath();
-          ctx.arc(x, y, r + 2, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(${lc.r},${lc.g},${lc.b},0.4)`;
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-        }
-
-        // Recently warm: small center dot
+        // Warm center dot
         if (isWarm && !isGlowing && !dimmed) {
           ctx.beginPath();
           ctx.arc(x, y, 1.5, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},0.25)`;
+          ctx.fillStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},0.25)`;
           ctx.fill();
         }
       }
@@ -1842,60 +1787,61 @@ const Gravity = (() => {
 
       ctx.globalAlpha = 1;
 
-      // --- Labels ---
+      // --- Labels — always horizontal, centered below node ---
       const effectiveR = layoutMode === "files" ? nodeRadius(node) / mapScale : NODE_FIXED_R;
       if (shouldShowLabel(node, effectiveR, isGlowing, isWarm, isHovered, isSelected)) {
         let dl = disambiguatedLabel(node);
-        // Truncate long labels to prevent text walls (keep full on hover)
         if (!(isHovered || isSelected) && dl.length > 20) dl = dl.slice(0, 18) + "\u2026";
-        // Dynamic font size: scales with camera zoom
         let fsz;
         if (layoutMode === "files") {
           const baseFsz = isHovered || isSelected ? 11 : Math.max(5, 4 + effectiveR * 0.3);
-          fsz = Math.min(16, Math.max(3, baseFsz / Math.max(0.3, camZoom)));
+          fsz = Math.min(14, Math.max(3, baseFsz / Math.max(0.3, camZoom)));
         } else {
           const screenFsz = isHovered || isSelected ? 11 : 7;
           fsz = Math.min(14, Math.max(4, screenFsz / Math.max(0.3, camZoom)));
         }
         ctx.font = `${isHovered || isSelected ? "600" : "400"} ${fsz}px "SF Mono","JetBrains Mono",Menlo,monospace`;
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
 
         let la;
         if (dark) {
-          la = isGlowing ? 0.6 : isWarm ? 0.35 : (0.1 + impNorm * 0.15);
+          la = isGlowing ? 0.7 : isWarm ? 0.4 : (0.12 + impNorm * 0.18);
           if (dimmed) la *= 0.15;
           if (isHovered || isSelected) la = 0.9;
           ctx.fillStyle = `rgba(200,215,240,${la})`;
         } else {
-          la = isGlowing ? 0.6 : isWarm ? 0.4 : (0.15 + impNorm * 0.2);
+          la = isGlowing ? 0.65 : isWarm ? 0.45 : (0.18 + impNorm * 0.22);
           if (dimmed) la *= 0.15;
           if (isHovered || isSelected) la = 0.85;
           ctx.fillStyle = `rgba(30,40,50,${la})`;
         }
 
-        // Stagger: check if this label would overlap a previously placed one
-        const labelX = x + (layoutMode === "files" ? nodeRadius(node) + 4 : effectiveR + 8);
-        let labelY = y;
-        const labelW = dl.length * fsz * 0.6;
+        // Position below node
+        const labelX = x;
+        const labelY = y + (baseR + 4) * mapScale;
+        const labelW = ctx.measureText(dl).width;
         const labelH = fsz + 2;
+
+        // Overlap check — skip if would collide with a previously placed label
+        let overlaps = false;
         for (const prev of placedLabels) {
-          // Check overlap: same horizontal region AND same vertical region
           if (Math.abs(labelY - prev.y) < labelH &&
-              labelX < prev.x + prev.w && labelX + labelW > prev.x) {
-            // Nudge below the conflicting label
-            labelY = prev.y + labelH;
+              Math.abs(labelX - prev.x) < (labelW + prev.w) / 2 + 4) {
+            overlaps = true;
+            break;
           }
         }
-        placedLabels.push({ x: labelX, y: labelY, w: labelW, h: labelH });
+        if (!overlaps || isHovered || isSelected) {
+          placedLabels.push({ x: labelX, y: labelY, w: labelW, h: labelH });
+          ctx.fillText(dl, labelX, labelY);
 
-        ctx.fillText(dl, labelX, labelY);
-
-        // Dir path on hover/select
-        if (isHovered || isSelected) {
-          ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`;
-          ctx.fillStyle = dark ? "rgba(200,215,240,0.35)" : "rgba(50,70,90,0.4)";
-          ctx.fillText(node.dir, labelX, labelY + 13);
+          // Dir path on hover/select
+          if (isHovered || isSelected) {
+            ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`;
+            ctx.fillStyle = dark ? "rgba(200,215,240,0.35)" : "rgba(50,70,90,0.4)";
+            ctx.fillText(node.dir, labelX, labelY + fsz + 2);
+          }
         }
       }
       node._laneKey = _savedLaneKey;
