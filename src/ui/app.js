@@ -532,7 +532,7 @@ function handleLine(msg) {
     const looksLikeAgent = lbl.startsWith("agent-") || lbl.startsWith("agent_") ||
                            sid.startsWith("agent-") || sid.startsWith("agent_");
 
-    if (!sessions.has(sessionId)) {
+    if (!sessions.has(sessionId) && looksLikeAgent) {
       // Heuristic 1: match against pending agent spawns (within 60s)
       for (const [parentSid, info] of pendingAgentSpawns) {
         if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
@@ -541,8 +541,8 @@ function handleLine(msg) {
         }
       }
     }
-    // Heuristic 2: if session ID or label looks like a sub-agent (e.g., "agent-a1"),
-    // map to the most recently active parent session (works during backlog too)
+    // Heuristic 2: if session ID or label looks like a sub-agent,
+    // map to the most recently active parent session
     if (!childSessionMap.has(sessionId) && looksLikeAgent) {
       let bestParent = null, bestTs = 0;
       for (const [parentId, info] of sessions) {

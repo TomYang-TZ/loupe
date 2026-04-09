@@ -588,7 +588,17 @@ function handleMessage(data) {
   } else if (cat === "error") {
     line += `${FG.red}${String(json?.data?.tool_result || json?.data?.error || "error").split("\n")[0].slice(0, 60)}${RESET}`;
   } else if (cat === "user_query") {
-    line += `${FG.yellow}${(json?.data?.user_query || json?.data?.prompt || "").slice(0, 60)}${RESET}`;
+    let qText = json?.data?.user_query || json?.data?.prompt || "";
+    // Clean up system notifications — extract readable content
+    if (qText.includes("<task-notification>")) {
+      const taskMatch = qText.match(/<task-id>[^<]*<\/task-id>\s*([\s\S]*)/);
+      qText = taskMatch ? `[task] ${taskMatch[1].replace(/<[^>]+>/g, "").trim()}` : "[task notification]";
+    } else if (qText.includes("<system-reminder>")) {
+      qText = "[system reminder]";
+    }
+    // Strip any remaining XML tags
+    qText = qText.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+    line += `${FG.yellow}${qText.slice(0, 60)}${RESET}`;
   } else if (cat === "post_tool") {
     line += `${FG.green}${json?.data?.tool_name || ""} ✓${RESET}`;
   } else if (cat === "session_start") {
@@ -736,14 +746,9 @@ function handleMessage(data) {
     if (lastQ && lastQ.userQuery === userQuery && (msg.ts - lastQ.startTs < 5000)) {
       render(); return;
     }
-    // Absorb preamble events into this query
-    let preambleEvents = [];
-    if (sq.length > 0 && sq[sq.length - 1]._preamble) {
-      preambleEvents = sq.pop().events;
-    }
-    // Auto-collapse previous query in this session
+    // Auto-collapse previous query/preamble in this session
     if (sq.length > 0) sq[sq.length - 1].collapsed = true;
-    const q = { id: ++queryIdCounter, userQuery, sessionId, startTs: msg.ts, endTs: msg.ts, events: preambleEvents, collapsed: !autoFollow };
+    const q = { id: ++queryIdCounter, userQuery, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: !autoFollow };
     sq.push(q);
     if (sq.length > MAX_QUERIES_PER_SESSION) sq.shift();
     hasNewQueries = true;
@@ -1018,11 +1023,11 @@ function render() {
     for (const q of sq) queries.push(q);
   }
 
-  // Auto-follow: focus on latest query
+  // Auto-follow: focus on latest query (respects session filter)
   if (autoFollow && queries.length > 0) {
-    // Find the most recent query across all sessions
     let latestIdx = 0, latestTs = 0;
     for (let i = 0; i < queries.length; i++) {
+      if (sessionFilter !== "all" && queries[i].sessionId !== sessionFilter) continue;
       if (queries[i].endTs >= latestTs) { latestTs = queries[i].endTs; latestIdx = i; }
     }
     focusIdx = latestIdx;
@@ -1395,9 +1400,8 @@ function handleInput(buf) {
   }
 
   // Global keys — work at any level
-  if (s === "1") { sessionFilter = "all"; render(); return; }
+  if (s === "1") { sessionFilter = "all"; navLevel = "query"; focusIdx = 0; eventFocusIdx = -1; autoFollow = true; eventAutoFollow = true; render(); return; }
   if (s >= "2" && s <= "9") {
-    // Key 2 = most recent, matching tab order
     const num = parseInt(s);
     const sorted = [...sessions.keys()].sort((a, b) => (sessions.get(a)?.lastEventTs || 0) - (sessions.get(b)?.lastEventTs || 0));
     const filtered = sorted.filter(sid => {
@@ -1406,6 +1410,7 @@ function handleInput(buf) {
     });
     const idx = filtered.length - (num - 1);
     if (idx >= 0 && idx < filtered.length) sessionFilter = filtered[idx];
+    navLevel = "query"; focusIdx = 0; eventFocusIdx = -1; autoFollow = true; eventAutoFollow = true;
     render(); return;
   }
   if (s === "c") {
@@ -1588,10 +1593,15 @@ function handleInput(buf) {
     }
     if (isRight || isEnter) {
       if (eventFocusIdx >= 0 && eventFocusIdx < totalEvents) {
-        // Toggle collapse if on agent header
         const ag = queryAgentAt(q, eventFocusIdx);
         if (ag) {
-          ag.collapsed = !ag.collapsed;
+          if (ag.collapsed) {
+            // First right: expand agent children
+            ag.collapsed = false;
+          } else {
+            // Already expanded: enter detail view for agent
+            navLevel = "detail"; detailScroll = 0;
+          }
         } else {
           navLevel = "detail"; detailScroll = 0;
         }

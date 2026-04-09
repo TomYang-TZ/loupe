@@ -1152,7 +1152,7 @@ const Gravity = (() => {
       ctx.font = `700 ${headerFontSize}px "SF Mono", monospace`;
       ctx.textAlign = "left";
       ctx.textBaseline = "bottom";
-      ctx.fillStyle = dark ? "rgba(200,215,240,0.25)" : "rgba(50,70,90,0.2)";
+      ctx.fillStyle = dark ? "rgba(220,230,245,0.4)" : "rgba(30,40,50,0.35)";
       ctx.fillText(label, 6, sy);
       ctx.restore();
     }
@@ -1225,7 +1225,7 @@ const Gravity = (() => {
     ctx.lineWidth = 0.5;
     ctx.stroke();
 
-    ctx.fillStyle = dark ? "rgba(200,215,240,0.75)" : "rgba(50,70,90,0.7)";
+    ctx.fillStyle = dark ? "rgba(220,230,245,0.85)" : "rgba(20,30,40,0.8)";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(label, x, y);
@@ -1349,12 +1349,12 @@ const Gravity = (() => {
     ctx.fillStyle = dark ? "rgba(200,215,240,0.9)" : "rgba(30,40,50,0.9)";
     ctx.fillText(label, cx + 10, cy + 6);
     ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`;
-    ctx.fillStyle = dark ? "rgba(200,215,240,0.4)" : "rgba(50,70,90,0.4)";
+    ctx.fillStyle = dark ? "rgba(220,230,245,0.55)" : "rgba(30,40,50,0.5)";
     ctx.fillText(sub, cx + 10, cy + 20);
 
     // Pin indicator + expand hint
     if (isPinned) {
-      ctx.fillStyle = dark ? "rgba(200,215,240,0.25)" : "rgba(50,70,90,0.2)";
+      ctx.fillStyle = dark ? "rgba(220,230,245,0.4)" : "rgba(30,40,50,0.35)";
       ctx.textAlign = "right";
       ctx.fillText(detailOpen ? "▾" : "▸", cx + cardW - 8, cy + 12);
     }
@@ -1431,7 +1431,7 @@ const Gravity = (() => {
     animFrame = requestAnimationFrame(render);
     if (!canvas || !ctx) return;
 
-    // Draw background even while loading (before ready)
+    // Draw background + loading animation while initializing
     if (!ready) {
       const theme = document.documentElement.dataset.theme || "dark";
       const dark = theme === "dark";
@@ -1447,6 +1447,36 @@ const Gravity = (() => {
       }
       ctx.fillRect(0, 0, width, height);
       drawBackground(dark);
+
+      // ASCII loading animation — colored orbiting dots
+      const t = Date.now();
+      const cx = width / 2, cy = height / 2;
+      const ms = mapScale || 1;
+      const colors = dark
+        ? ["rgba(139,92,246,0.6)", "rgba(6,182,212,0.5)", "rgba(34,197,94,0.5)", "rgba(249,115,22,0.4)", "rgba(236,72,153,0.4)"]
+        : ["rgba(109,40,217,0.5)", "rgba(14,116,144,0.45)", "rgba(22,163,74,0.45)", "rgba(194,65,12,0.35)", "rgba(190,24,93,0.35)"];
+
+      // Orbiting particles
+      for (let i = 0; i < 8; i++) {
+        const angle = (t / (1200 + i * 200)) + (i * Math.PI * 2 / 8);
+        const r = (30 + i * 12) * ms;
+        const px = cx + Math.cos(angle) * r;
+        const py = cy + Math.sin(angle) * r * 0.6;
+        const sz = (2 + (i % 3)) * ms;
+        ctx.beginPath();
+        ctx.arc(px, py, sz, 0, Math.PI * 2);
+        ctx.fillStyle = colors[i % colors.length];
+        ctx.fill();
+      }
+
+      // Center text
+      const dots = ".".repeat(Math.floor((t / 400) % 4));
+      ctx.font = `500 ${Math.round(10 * ms)}px "SF Mono",Menlo,monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = dark ? "rgba(139,92,246,0.6)" : "rgba(109,40,217,0.5)";
+      ctx.fillText(`mapping${dots}`, cx, cy);
+
       return;
     }
     const now = Date.now();
@@ -1606,8 +1636,8 @@ const Gravity = (() => {
           ctx.fillRect(-tw / 2 - pad, -eFsz * 0.55, tw + pad * 2, eFsz * 1.1);
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          const labelAlpha = connected ? 0.7 : Math.max(0.25, opacity * 0.5);
-          ctx.fillStyle = dark ? `rgba(180,195,220,${labelAlpha})` : `rgba(60,70,85,${labelAlpha})`;
+          const labelAlpha = connected ? 0.85 : Math.max(0.4, opacity * 0.6);
+          ctx.fillStyle = dark ? `rgba(210,220,240,${labelAlpha})` : `rgba(30,40,55,${labelAlpha})`;
           ctx.fillText(edgeLabel, 0, 0);
           ctx.restore();
         }
@@ -1843,15 +1873,15 @@ const Gravity = (() => {
 
         let la;
         if (dark) {
-          la = isGlowing ? 0.7 : isWarm ? 0.4 : (0.12 + impNorm * 0.18);
-          if (dimmed) la *= 0.15;
-          if (isHovered || isSelected) la = 0.9;
-          ctx.fillStyle = `rgba(200,215,240,${la})`;
+          la = isGlowing ? 0.85 : isWarm ? 0.6 : (0.3 + impNorm * 0.2);
+          if (dimmed) la *= 0.2;
+          if (isHovered || isSelected) la = 1;
+          ctx.fillStyle = `rgba(220,230,245,${la})`;
         } else {
-          la = isGlowing ? 0.65 : isWarm ? 0.45 : (0.18 + impNorm * 0.22);
-          if (dimmed) la *= 0.15;
-          if (isHovered || isSelected) la = 0.85;
-          ctx.fillStyle = `rgba(30,40,50,${la})`;
+          la = isGlowing ? 0.85 : isWarm ? 0.65 : (0.35 + impNorm * 0.2);
+          if (dimmed) la *= 0.2;
+          if (isHovered || isSelected) la = 1;
+          ctx.fillStyle = `rgba(20,30,40,${la})`;
         }
 
         // Position below node
@@ -1876,7 +1906,7 @@ const Gravity = (() => {
           // Dir path on hover/select
           if (isHovered || isSelected) {
             ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`;
-            ctx.fillStyle = dark ? "rgba(200,215,240,0.35)" : "rgba(50,70,90,0.4)";
+            ctx.fillStyle = dark ? "rgba(220,230,245,0.5)" : "rgba(30,40,50,0.5)";
             ctx.fillText(node.dir, labelX, labelY + fsz + 2);
           }
         }
@@ -2045,7 +2075,7 @@ const Gravity = (() => {
     const visibleAxisW = screenRight - screenLeft;
     if (visibleAxisW < 50) return;
 
-    const fg = dark ? "rgba(200,215,240,0.4)" : "rgba(50,70,90,0.4)";
+    const fg = dark ? "rgba(220,230,245,0.55)" : "rgba(30,40,50,0.5)";
     const n = axisSorted.length;
     // Count distinct formatted time labels to avoid duplicates
     const fmtOpts = { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" };
@@ -2091,7 +2121,7 @@ const Gravity = (() => {
   }
 
   function drawStats(dark, now) {
-    const fg = dark ? "rgba(200,215,240,0.3)" : "rgba(50,70,90,0.3)";
+    const fg = dark ? "rgba(220,230,245,0.5)" : "rgba(30,40,50,0.45)";
     ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`; ctx.textAlign = "right"; ctx.textBaseline = "top";
 
     // Count all non-expired nodes by recency (independent of recency filter visibility)
