@@ -35,12 +35,25 @@ function truncateDeep(obj, depth) {
 async function sendBacklog(ws, filePath, opts) {
   const { buildMessage, isReplayAnalysisLine, trackSession, getSessionsList } = opts;
   try {
-    const content = fs.readFileSync(filePath, "utf-8");
+    // Read only the tail of the file to avoid OOM on large logs
+    const stat = fs.statSync(filePath);
+    const TAIL_BYTES = 2 * 1024 * 1024; // 2MB for recent events across sessions
+    const start = Math.max(0, stat.size - TAIL_BYTES);
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(Math.min(TAIL_BYTES, stat.size));
+    fs.readSync(fd, buf, 0, buf.length, start);
+    fs.closeSync(fd);
+    let content = buf.toString("utf-8");
+    // Drop partial first line if we started mid-file
+    if (start > 0) {
+      const nl = content.indexOf("\n");
+      if (nl >= 0) content = content.slice(nl + 1);
+    }
     const allLines = content.split("\n").filter((l) => l.trim() !== "");
 
     // Scan backwards to find query boundaries (UserPromptSubmit/user_query)
     // Send only events that belong to queries from the last 200 lines
-    const tail = allLines.slice(-200);
+    const tail = allLines.slice(-1000);
     let firstQueryIdx = -1;
     for (let i = 0; i < tail.length; i++) {
       try {

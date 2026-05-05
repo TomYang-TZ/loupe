@@ -193,18 +193,45 @@ const LoupeRender = (() => {
     const wrap = document.createElement("div");
     wrap.className = "query-group";
 
+    // Search filtering: check if this query or any of its items match
+    const searchActive = _matchesSearch && !_matchesSearch({ raw: "", title: "", summary: "", userQuery: "" });
+    let queryHit = false;
+    if (searchActive) {
+      // Check query text
+      if (query.userQuery && _matchesSearch({ raw: "", title: "", summary: "", userQuery: query.userQuery })) queryHit = true;
+      // Check items (title = tool name, summary = file/command)
+      if (!queryHit) {
+        for (const item of query.items) {
+          if (item.agentEntry) {
+            if (item.children.some(c => _matchesSearch(c))) { queryHit = true; break; }
+          } else {
+            if (_matchesSearch(item)) { queryHit = true; break; }
+          }
+        }
+      }
+    }
+
+    // When search is active, hide non-matching queries entirely
+    if (searchActive && !queryHit) {
+      wrap.style.display = "none";
+      query.el = wrap; query.actionsEl = null; query.headerEl = null;
+      return wrap;
+    }
+
+    const isCollapsed = query.collapsed !== false;
+
     const header = renderQueryHeader(query);
     wrap.appendChild(header);
 
     const actionsEl = document.createElement("div");
-    actionsEl.className = query.collapsed === false ? "query-actions" : "query-actions collapsed";
+    actionsEl.className = isCollapsed ? "query-actions collapsed" : "query-actions";
 
     for (const item of query.items) {
       if (item.agentEntry) {
-        const agEl = renderAgentGroup(item, matchFn);
+        const agEl = renderAgentGroup(item, queryHit ? null : matchFn);
         if (agEl) actionsEl.appendChild(agEl);
       } else {
-        if (matchFn && !matchFn(item)) continue;
+        if (!queryHit && matchFn && !matchFn(item)) continue;
         const el = renderEntry(item);
         actionsEl.appendChild(el);
         item.el = el;
@@ -213,11 +240,12 @@ const LoupeRender = (() => {
 
     wrap.appendChild(actionsEl);
 
+
     header.addEventListener("click", (e) => {
       e.stopPropagation();
-      const isCollapsed = actionsEl.classList.toggle("collapsed");
-      header.querySelector(".query-chevron").textContent = isCollapsed ? "\u25B6" : "\u25BC";
-      query.collapsed = isCollapsed;
+      const nowCollapsed = actionsEl.classList.toggle("collapsed");
+      header.querySelector(".query-chevron").textContent = nowCollapsed ? "\u25B6" : "\u25BC";
+      query.collapsed = nowCollapsed;
     });
 
     // Double-click opens thinking entry modal
@@ -290,7 +318,20 @@ const LoupeRender = (() => {
       const prevTask = i > 0 ? gs.tasks[i - 1] : null;
       const taskEl = renderTaskGroup(task, matchFn, prevTask);
       container.appendChild(taskEl);
-      taskEl.querySelectorAll(".log-entry").forEach(() => matchCount++);
+      // Count matching queries
+      if (_matchesSearch) {
+        for (const query of task.queries) {
+          let hit = false;
+          if (query.userQuery && _matchesSearch({ raw: "", title: "", summary: "", userQuery: query.userQuery })) hit = true;
+          if (!hit) {
+            for (const item of query.items) {
+              if (item.agentEntry) { if (item.children.some(c => _matchesSearch(c))) { hit = true; break; } }
+              else { if (_matchesSearch(item)) { hit = true; break; } }
+            }
+          }
+          if (hit) matchCount++;
+        }
+      }
     }
 
     return { matchCount, topicCount: gs.tasks.length };

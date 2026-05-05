@@ -85,6 +85,11 @@ function processFile(filePath) {
     return;
   }
 
+  if (stat.size < pos) {
+    // File was truncated/compacted — reset position to read from the tail
+    pos = Math.max(0, stat.size - 50000);
+    filePositions.set(filePath, pos);
+  }
   if (stat.size <= pos) return;
   if (pos === 0 && stat.size > 50000) {
     // For large existing files, only read the last 50KB on first encounter

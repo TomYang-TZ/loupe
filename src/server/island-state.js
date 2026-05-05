@@ -9,6 +9,7 @@ const sessions = new Map(); // sessionId → { label, color }
 const islandSessions = new Map(); // sessionId → per-session state
 let colorIdx = 0;
 let onUpdate = null; // callback: (state) => void
+let pinnedSessionId = null; // when set, getState() returns this session's data
 
 function init(callback) {
   onUpdate = callback;
@@ -25,7 +26,7 @@ function getSession(sid) {
       startTs: null, denied: null, rejected: null, denials: 0,
       agentsRunning: 0, agentsTotal: 0, apiError: null,
       pulsing: false, _lastActivityTs: 0,
-      _fileSet: new Set(), _totalTokens: 0,
+      _fileSet: new Set(), _totalTokens: 0, _tokIn: 0, _tokOut: 0, _tokCacheRead: 0, _tokCacheCreate: 0,
       _pendingToolName: null, _pendingToolTs: null,
       _pulseTimer: null, _idleTimer: null,
       _stopFailureTs: null, _agentClearTimer: null, _color: null,
@@ -187,10 +188,15 @@ function processEvent(json, ts) {
     s._planningStrikeTimer = setTimeout(() => { s.planningStrike = false; emit(); }, 1500);
   }
 
-  // Tokens
-  const usage = data?.message?.usage;
+  // Tokens — watcher emits token data under data.meta, not data.message.usage
+  const usage = data?.meta || data?.message?.usage;
   if (usage) {
-    s._totalTokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
+    const inT = usage.input_tokens || 0;
+    const outT = usage.output_tokens || 0;
+    const cacheR = usage.cache_read || usage.cache_read_input_tokens || 0;
+    s._totalTokens += inT + outT;
+    const cacheC = usage.cache_create || usage.cache_creation_input_tokens || 0;
+    s._tokIn += inT; s._tokOut += outT; s._tokCacheRead += cacheR; s._tokCacheCreate += cacheC;
     s.tokens = s._totalTokens;
   }
 
@@ -302,11 +308,21 @@ function normalizeAfterBacklog() {
   emit();
 }
 
+function pinSession(sessionId) {
+  pinnedSessionId = sessionId || null;
+  emit();
+}
+
 function getState() {
   let active = null, latestTs = 0;
-  for (const [, s] of islandSessions) {
-    const t = s._lastActivityTs || s.startTs || 0;
-    if (t > latestTs) { latestTs = t; active = s; }
+  if (pinnedSessionId && islandSessions.has(pinnedSessionId)) {
+    active = islandSessions.get(pinnedSessionId);
+  } else {
+    pinnedSessionId = null;
+    for (const [, s] of islandSessions) {
+      const t = s._lastActivityTs || s.startTs || 0;
+      if (t > latestTs) { latestTs = t; active = s; }
+    }
   }
   if (!active) {
     return { phase: "idle", progress: null, tool: null, toolDetail: null,
@@ -337,7 +353,8 @@ function getState() {
     phase: active.phase, progress: active.progress,
     tool: active.tool, toolDetail: active.toolDetail,
     files: active.files, sessions: islandSessions.size,
-    tokens: active.tokens, errors: active.errors,
+    tokens: active.tokens, tokIn: active._tokIn, tokOut: active._tokOut, tokCacheRead: active._tokCacheRead, tokCacheCreate: active._tokCacheCreate,
+    errors: active.errors,
     thinking: active.thinking, waiting: active.waiting,
     pulsing: active.pulsing || false, waitingTool: active.waitingTool,
     approved: active.approved, denied: active.denied || null,
@@ -352,6 +369,7 @@ function getState() {
     planningStrike: active.planningStrike || false,
     sessionDots, activeSessionColor: active._color || null,
     activeSessionId: active.id || null,
+    pinnedSessionId: pinnedSessionId || null,
   };
 }
 
@@ -359,4 +377,4 @@ function emit() {
   if (onUpdate) onUpdate(getState());
 }
 
-module.exports = { init, processEvent, normalizeAfterBacklog, getState };
+module.exports = { init, processEvent, normalizeAfterBacklog, getState, pinSession };

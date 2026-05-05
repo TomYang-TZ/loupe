@@ -42,39 +42,22 @@ Group these messages into broad topics. A topic is a coherent unit of work — a
 - Aim for 2-4 topics total, not one per message.
 - Verify your answer: count the messages in each topic. If any topic has fewer than 2, merge it.
 
-Identify where each topic starts (1-indexed message number) and give each a concise title (max 8 words).`;
+Identify where each topic starts (1-indexed message number) and give each a concise title (max 8 words).
+Respond with ONLY a JSON object: {"topics":[{"start":N,"title":"..."},...]}`;
 
-  const schema = JSON.stringify({
-    type: "object",
-    properties: {
-      topics: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            start: { type: "number", description: "1-indexed message number where this topic starts" },
-            title: { type: "string", description: "concise topic title, max 8 words" }
-          },
-          required: ["start", "title"]
-        }
-      }
-    },
-    required: ["topics"]
-  });
-
-  return callClaude(prompt, schema);
+  return callClaude(prompt);
 }
 
 const LOCK_FILE = require("path").join(process.env.HOME, ".claude", "logs", ".loupe-skip-hooks");
 
-function callClaude(prompt, schema) {
+function callClaude(prompt) {
   return new Promise((resolve) => {
-    const args = ["-p", prompt, "--output-format", "json", "--json-schema", schema, "--model", "haiku", "--allowedTools", ""];
+    const args = ["-p", prompt, "--output-format", "json", "--model", "haiku", "--allowedTools", ""];
 
     // Create lock file to suppress hooks, remove when done
     try { fs.writeFileSync(LOCK_FILE, String(process.pid)); } catch {}
 
-    execFile("claude", args, { timeout: 30000, maxBuffer: 1024 * 100 }, (err, stdout) => {
+    execFile("claude", args, { timeout: 120000, maxBuffer: 1024 * 200 }, (err, stdout) => {
       try { fs.unlinkSync(LOCK_FILE); } catch {}
       // Clean up the claude -p transcript file to prevent ghost sessions
       try {
@@ -95,8 +78,15 @@ function callClaude(prompt, schema) {
       }
       try {
         const parsed = JSON.parse(stdout);
-        const inner = parsed.structured_output || parsed.result || parsed;
-        const result = typeof inner === "string" ? JSON.parse(inner) : inner;
+        let text = parsed.result || "";
+        // Strip markdown code fences if present (claude -p wraps JSON in ```json ... ```)
+        text = text.replace(/^[\s\S]*?```(?:json)?\s*\n?/i, "").replace(/\n?```[\s\S]*$/i, "").trim();
+        // If no code fences, try extracting JSON object directly
+        if (!text.startsWith("{")) {
+          const match = text.match(/\{[\s\S]*\}/);
+          text = match ? match[0] : text;
+        }
+        const result = JSON.parse(text);
         resolve(result?.topics || null);
       } catch (e) {
         console.error("topic-detector: failed to parse response:", e.message);

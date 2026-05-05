@@ -487,7 +487,6 @@ function resetAll() {
   sessions.clear();
   LoupeGrouping.reset();
   colorIdx = 0;
-  if (momentumInitialized) Momentum.reset();
   rebuildTabs();
   rebuildPanes();
 }
@@ -566,7 +565,6 @@ function handleLine(msg) {
     newSession = true;
     rebuildTabs();
     if (Gravity.registerSession) Gravity.registerSession(sessionId, sLabel, sColor);
-    if (momentumInitialized) Momentum.registerSession(sessionId, sLabel, sColor);
   }
   if (sessionId && sessions.has(sessionId)) {
     const sInfo = sessions.get(sessionId);
@@ -588,7 +586,6 @@ function handleLine(msg) {
 
   // Feed to universe renderer if initialized
   if (gravityInitialized) Gravity.addEntry(entry);
-  if (momentumInitialized) Momentum.addEntry(entry);
 
   // Update Dynamic Island + status bar (skip during backlog to avoid rapid cycling)
   const wasWaiting = statusBar.sessionState === "waiting";
@@ -662,7 +659,13 @@ function matchesSession(entry) { return activeSession === "all" || entry.session
 function matchesSearch(entry) {
   if (!searchQuery) return true;
   const q = searchQuery.toLowerCase();
-  return (entry.raw || "").toLowerCase().includes(q) || (entry.title || "").toLowerCase().includes(q) || (entry.summary || "").toLowerCase().includes(q);
+  if ((entry.userQuery || "").toLowerCase().includes(q)) return true;
+  if ((entry.title || "").toLowerCase().includes(q)) return true;
+  // Skip thinking/text body content — only search tool summaries (file paths, commands)
+  if (entry.category !== "thinking" && entry.category !== "text") {
+    if ((entry.summary || "").toLowerCase().includes(q)) return true;
+  }
+  return false;
 }
 
 function applySearch(text) {
@@ -946,7 +949,6 @@ function switchSession(id) {
   if (dot) dot.classList.remove("has-activity");
   // Sync gravity map session filter with active tab
   if (Gravity.setSessionFilter) Gravity.setSessionFilter(id === "all" ? "all" : id);
-  if (momentumInitialized) Momentum.setSessionFilter(id === "all" ? "all" : id);
   rebuildTabs();
   rebuildView();
   updateGridControlsVisibility();
@@ -958,7 +960,6 @@ function removeSession(id) {
   for (let i = entries.length - 1; i >= 0; i--) { if (entries[i].sessionId === id) entries.splice(i, 1); }
   if (activeSession === id) activeSession = "all";
   if (Gravity.unregisterSession) Gravity.unregisterSession(id);
-  if (momentumInitialized) Momentum.unregisterSession(id);
   rebuildTabs();
   rebuildView();
 }
@@ -1206,7 +1207,7 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "?" && !inSearch) { toggleHelp(); return; }
   if (e.key === "m" && !inSearch) { toggleView(); return; }
-  if (e.key === "n" && e.metaKey && e.shiftKey) { e.preventDefault(); setMapMode(mapMode === "files" ? "flow" : "files"); return; }
+  if (e.key === "n" && e.metaKey && e.shiftKey) { e.preventDefault(); setMapMode(mapMode === "files" ? "history" : "files"); return; }
   if (e.key === "t" && e.metaKey) { e.preventDefault(); toggleTheme(); return; }
   if ((e.key === "=" || e.key === "+") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(1.2); return; }
   if ((e.key === "-" || e.key === "_") && e.metaKey && e.shiftKey) { e.preventDefault(); if (gravityView) Gravity.zoom(0.8); return; }
@@ -1324,53 +1325,21 @@ function onModeChange() {
 // Watch for body class changes (Swift toggles 'minimal')
 new MutationObserver(() => onModeChange()).observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
-// ===== Map Mode (Files / History / Flow) =====
-let mapMode = "files"; // "files" | "history" | "flow"
-let momentumInitialized = false;
-const momentumCanvas = document.getElementById("momentum-canvas");
+// ===== Map Mode (Files / History) =====
+let mapMode = "files"; // "files" | "history"
 
 window.setMapMode = (mode) => {
   mapMode = mode;
-  // Open the map section if not already open
-  if (!gravityView) { toggleView(); return; } // toggleView will call setMapMode(mapMode) on open
+  if (!gravityView) { toggleView(); return; }
   document.querySelectorAll(".mode-btn").forEach(b =>
     b.classList.toggle("active", b.dataset.mode === mode)
   );
-  const filterBar = document.getElementById("universe-filter-bar");
   const recencyBar = document.querySelector(".recency-filter-bar");
   const gravSliders = document.getElementById("gravity-sliders");
-  const momSliders = document.getElementById("momentum-sliders");
-
-  if (mode === "files" || mode === "history") {
-    gravityCanvas.style.display = "";
-    momentumCanvas.style.display = "none";
-    if (filterBar) filterBar.style.display = "";
-    if (recencyBar) recencyBar.style.display = mode === "history" ? "" : "";
-    if (gravSliders) gravSliders.style.display = mode === "history" ? "" : "none";
-    if (momSliders) momSliders.style.display = "none";
-    // Switch gravity layout mode
-    if (Gravity.setLayoutMode) Gravity.setLayoutMode(mode === "history" ? "history" : "files");
-  } else {
-    // Flow mode (Momentum)
-    // Initialize momentum on first use
-    if (!momentumInitialized) {
-      Momentum.init(momentumCanvas);
-      for (const [id, info] of sessions) {
-        Momentum.registerSession(id, info.label, info.color);
-      }
-      Momentum.addEntries(entries);
-      momentumInitialized = true;
-      Momentum.setOnSessionFilterChange((id) => { switchSession(id); });
-      Momentum.setOnClickSpan((entryId) => { LoupeModal.openModal(entryId); });
-    }
-    Momentum.setSessionFilter(activeSession === "all" ? "all" : activeSession);
-    gravityCanvas.style.display = "none";
-    momentumCanvas.style.display = "";
-    if (filterBar) filterBar.style.display = "none";
-    if (recencyBar) recencyBar.style.display = "none";
-    if (gravSliders) gravSliders.style.display = "none";
-    if (momSliders) momSliders.style.display = "";
-  }
+  gravityCanvas.style.display = "";
+  if (recencyBar) recencyBar.style.display = "";
+  if (gravSliders) gravSliders.style.display = mode === "history" ? "" : "none";
+  if (Gravity.setLayoutMode) Gravity.setLayoutMode(mode === "history" ? "history" : "files");
 };
 
 // ===== Universe Map View =====
@@ -1396,8 +1365,7 @@ window.toggleView = () => {
       gravityInitialized = true;
       Gravity.setOnSessionFilterChange((filter) => {
         if (filter instanceof Set) {
-          // Multi-select: sync momentum without switching app tabs
-          if (momentumInitialized) Momentum.setSessionFilter(filter);
+          // Multi-select: no-op (gravity handles its own session filter)
         } else {
           switchSession(filter);
         }

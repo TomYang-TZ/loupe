@@ -150,12 +150,12 @@ const Gravity = (() => {
     }
     if (lc) {
       const c = dark ? lc.dark : lc.light;
-      const a = solid ? 1 : (dark ? 0.6 : 0.35);
+      const a = solid ? 1 : (dark ? 0.7 : 0.45);
       return `rgba(${c.r},${c.g},${c.b},${a})`;
     }
     // Fallback for sequence/unknown
     if (solid) return dark ? "#708090" : "#808890";
-    return dark ? "rgba(100,116,132,0.4)" : "rgba(140,148,156,0.25)";
+    return dark ? "rgba(100,116,132,0.5)" : "rgba(140,148,156,0.35)";
   }
 
   // No dash patterns — all edges are solid lines in both themes
@@ -440,10 +440,18 @@ const Gravity = (() => {
     const runningEdit = new Map();
     const runningExec = new Map();
 
-    for (const entry of accessLog) {
-      const age = now - entry.ts;
-      if (age > STALE_CUTOFF) continue;
+    const MAX_HISTORY_NODES = 200;
+    // Process only recent entries, most recent first up to cap
+    const recentEntries = [];
+    for (let i = accessLog.length - 1; i >= 0; i--) {
+      const age = now - accessLog[i].ts;
+      if (age > STALE_CUTOFF) break;
+      recentEntries.push(accessLog[i]);
+      if (recentEntries.length >= MAX_HISTORY_NODES) break;
+    }
+    recentEntries.reverse();
 
+    for (const entry of recentEntries) {
       const fp = entry.filepath;
       // Increment running counters
       if (entry.action === "read") runningRead.set(fp, (runningRead.get(fp) || 0) + 1);
@@ -1556,7 +1564,7 @@ const Gravity = (() => {
       const lw = layoutMode === "history"
         ? 1 * mapScale  // fixed width for history
         : Math.min(EDGE_MAX_W, EDGE_MIN_W + totalWeight * 0.5) * mapScale;
-      let opacity = bestAge < GLOW_DURATION ? 1.0 : bestAge < WARM_DURATION ? 0.8 : 0.6;
+      let opacity = bestAge < GLOW_DURATION ? 1.0 : bestAge < WARM_DURATION ? 0.85 : 0.7;
 
       // Arrow direction from most recent edge
       const srcN = nodes.get(newest.source);
@@ -1684,7 +1692,7 @@ const Gravity = (() => {
       const isNewNode = introAge < NEW_GLOW_DURATION;
       const introGlow = isNewNode ? 1 - (introAge / NEW_GLOW_DURATION) : 0;
 
-      let alpha = isGlowing ? 1.0 : isWarm ? 0.8 : 0.65;
+      let alpha = isGlowing ? 1.0 : isWarm ? 0.85 : 0.75;
       if (isNewNode) alpha = Math.max(alpha, 0.7 + introGlow * 0.3);
       if (!activeFilters.has("all") && !filterMatchAction(node)) alpha = 0.15;
       if (dimmed) alpha *= 0.2;
@@ -1692,7 +1700,7 @@ const Gravity = (() => {
 
       // History mode: dim non-latest nodes, boost latest based on access count
       if (historyDimmed) {
-        alpha = 0.12;
+        alpha = 0.35;
       } else if (layoutMode === "history" && node._isLatest && node._totalFileAccesses > 1) {
         const boost = Math.min(1, Math.log2(node._totalFileAccesses) / 4);
         alpha = Math.min(1, alpha + boost * 0.4);
@@ -1752,8 +1760,8 @@ const Gravity = (() => {
           ctx.fill();
         } else {
           // Light mode: filled circle with stroke
-          const fillA = dimmed ? 0.15 : 0.35 + impNorm * 0.35;
-          const strokeA = dimmed ? 0.3 : 0.6 + impNorm * 0.35;
+          const fillA = dimmed ? 0.2 : 0.45 + impNorm * 0.35;
+          const strokeA = dimmed ? 0.35 : 0.65 + impNorm * 0.3;
           ctx.fillStyle = `rgba(${lc.r},${lc.g},${lc.b},${fillA})`;
           ctx.fill();
           ctx.strokeStyle = `rgba(${lc.r},${lc.g},${lc.b},${strokeA})`;
@@ -1858,28 +1866,28 @@ const Gravity = (() => {
       const effectiveR = layoutMode === "files" ? nodeRadius(node) / mapScale : NODE_FIXED_R;
       if (shouldShowLabel(node, effectiveR, isGlowing, isWarm, isHovered, isSelected)) {
         let dl = disambiguatedLabel(node);
-        if (!(isHovered || isSelected) && dl.length > 20) dl = dl.slice(0, 18) + "\u2026";
+        if (!(isSelected) && dl.length > 20) dl = dl.slice(0, 18) + "\u2026";
         let fsz;
         if (layoutMode === "files") {
-          const baseFsz = isHovered || isSelected ? 11 : Math.max(5, 4 + effectiveR * 0.3);
+          const baseFsz = isSelected ? 11 : Math.max(5, 4 + effectiveR * 0.3);
           fsz = Math.min(14, Math.max(3, baseFsz / Math.max(0.3, camZoom)));
         } else {
-          const screenFsz = isHovered || isSelected ? 11 : 7;
+          const screenFsz = isSelected ? 11 : 7;
           fsz = Math.min(14, Math.max(4, screenFsz / Math.max(0.3, camZoom)));
         }
-        ctx.font = `${isHovered || isSelected ? "600" : "400"} ${fsz}px "SF Mono","JetBrains Mono",Menlo,monospace`;
+        ctx.font = `${isSelected ? "600" : "400"} ${fsz}px "SF Mono","JetBrains Mono",Menlo,monospace`;
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
 
         let la;
         if (dark) {
-          la = isGlowing ? 0.85 : isWarm ? 0.6 : (0.3 + impNorm * 0.2);
-          if (dimmed) la *= 0.2;
+          la = isGlowing ? 0.9 : isWarm ? 0.7 : (0.45 + impNorm * 0.2);
+          if (dimmed) la *= 0.25;
           if (isHovered || isSelected) la = 1;
           ctx.fillStyle = `rgba(220,230,245,${la})`;
         } else {
-          la = isGlowing ? 0.85 : isWarm ? 0.65 : (0.35 + impNorm * 0.2);
-          if (dimmed) la *= 0.2;
+          la = isGlowing ? 0.9 : isWarm ? 0.75 : (0.5 + impNorm * 0.2);
+          if (dimmed) la *= 0.25;
           if (isHovered || isSelected) la = 1;
           ctx.fillStyle = `rgba(20,30,40,${la})`;
         }
@@ -1903,12 +1911,7 @@ const Gravity = (() => {
           placedLabels.push({ x: labelX, y: labelY, w: labelW, h: labelH });
           ctx.fillText(dl, labelX, labelY);
 
-          // Dir path on hover/select
-          if (isHovered || isSelected) {
-            ctx.font = `400 ${sf(8)}px "SF Mono",Menlo,monospace`;
-            ctx.fillStyle = dark ? "rgba(220,230,245,0.5)" : "rgba(30,40,50,0.5)";
-            ctx.fillText(node.dir, labelX, labelY + fsz + 2);
-          }
+          // Dir path shown in mini card / detail popover — not duplicated here
         }
       }
       node._laneKey = _savedLaneKey;
@@ -2226,10 +2229,14 @@ const Gravity = (() => {
         // Only start moving if past click threshold (avoid jitter on click)
         if (mouseDownPos && Math.abs(e.clientX - mouseDownPos.x) < CLICK_THRESHOLD &&
             Math.abs(e.clientY - mouseDownPos.y) < CLICK_THRESHOLD) return;
-        // Convert screen to world coordinates and set node position directly
         const wx = mx / camZoom + camX, wy = my / camZoom + camY;
-        draggingNode.x = wx;
-        draggingNode.y = wy;
+        // In history mode, lock X axis (time) — only allow vertical movement
+        if (layoutMode === "history") {
+          draggingNode.y = wy;
+        } else {
+          draggingNode.x = wx;
+          draggingNode.y = wy;
+        }
         draggingNode.vx = 0;
         draggingNode.vy = 0;
         return;
@@ -2383,9 +2390,11 @@ const Gravity = (() => {
     try {
       const resp = await fetch("/api/file-accesses");
       const lines = await resp.json();
+      // Only process the most recent entries to avoid freezing
+      const recent = lines.slice(-500);
       batchMode = true;
       batchStartTs = Date.now();
-      for (const line of lines) {
+      for (const line of recent) {
         try {
           const json = JSON.parse(line);
           const ts = json._ts ? new Date(json._ts).getTime() : 0;

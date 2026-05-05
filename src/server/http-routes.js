@@ -94,17 +94,30 @@ function createRouter(filePath, uiDir, wss, opts) {
       return;
     }
 
-    // API: return all PreToolUse entries with file paths (for gravity map)
+    // API: return recent PreToolUse entries with file paths (for gravity map)
     if (url === "/api/file-accesses") {
       try {
-        const content = fs.readFileSync(filePath, "utf-8");
+        const stat = fs.statSync(filePath);
+        // Read only the tail of the file (last 5MB max) to avoid OOM on large logs
+        const MAX_READ = 5 * 1024 * 1024;
+        const readStart = Math.max(0, stat.size - MAX_READ);
+        const fd = fs.openSync(filePath, "r");
+        const buf = Buffer.alloc(Math.min(MAX_READ, stat.size));
+        fs.readSync(fd, buf, 0, buf.length, readStart);
+        fs.closeSync(fd);
+        const content = buf.toString("utf-8");
         const lines = content.split("\n");
+        // Skip first partial line if we started mid-file
+        if (readStart > 0) lines.shift();
+        const cutoff = Date.now() - 60 * 60 * 1000; // 1 hour
         const results = [];
         for (const line of lines) {
           if (!line.trim()) continue;
           try {
             const obj = JSON.parse(line);
             if (obj._logstream_type !== "PreToolUse") continue;
+            const ts = obj._ts ? new Date(obj._ts).getTime() : 0;
+            if (ts > 0 && ts < cutoff) continue;
             results.push(line);
           } catch {}
         }

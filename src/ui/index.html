@@ -107,16 +107,13 @@
   <div class="gravity-container" id="gravity-container" style="display:none">
     <button class="gravity-enlarge-btn" id="gravity-enlarge-btn" onclick="toggleMapPopover()" title="Enlarge map">⤢</button>
     <canvas id="gravity-canvas"></canvas>
-    <canvas id="momentum-canvas" style="display:none"></canvas>
     <div class="gravity-tooltip" id="gravity-tooltip"></div>
-    <div class="momentum-tooltip" id="momentum-tooltip"></div>
     <div class="gravity-card" id="gravity-card" style="display:none"></div>
     <div class="gravity-filter-row">
       <div class="gravity-filter-main">
         <div class="mode-filter-bar" id="mode-filter-bar">
           <button class="mode-btn active" data-mode="files" onclick="setMapMode('files')">Files</button>
           <button class="mode-btn" data-mode="history" onclick="setMapMode('history')">History</button>
-          <button class="mode-btn" data-mode="flow" onclick="setMapMode('flow')">Flow</button>
         </div>
         <span class="filter-divider"></span>
         <div class="recency-filter-bar">
@@ -130,9 +127,6 @@
     </div>
     <div class="gravity-sliders" id="gravity-sliders">
       <label><span>Y spread</span><input type="range" min="10" max="300" value="155" oninput="Gravity.setYSpread && Gravity.setYSpread(0.3+(this.value-10)/290*4.7)"></label>
-    </div>
-    <div class="gravity-sliders" id="momentum-sliders" style="display:none">
-      <label><span>Spread</span><input type="range" min="10" max="300" value="155" oninput="Momentum.setEdgeLengthScale(0.2+(this.value-10)/290*2.8)"></label>
     </div>
     <div class="universe-vignette"></div>
   </div>
@@ -207,7 +201,6 @@
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="loupe-utils.js"></script>
 <script src="gravity.js"></script>
-<script src="momentum.js"></script>
 <script src="tiling.js"></script>
 <script src="app-parse.js"></script>
 <script src="app-grouping.js"></script>

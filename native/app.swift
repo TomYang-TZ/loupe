@@ -91,6 +91,10 @@ class IslandView: NSView {
     var activeFileCount: Int = 0
     var sessionCount: Int = 0
     var tokenCount: Int = 0
+    var tokIn: Int = 0
+    var tokOut: Int = 0
+    var tokCacheRead: Int = 0
+    var tokCacheCreate: Int = 0
     var errorCount: Int = 0
     var thinkingActive: Bool = false
     var waitingForConfirmation: Bool = false
@@ -109,6 +113,13 @@ class IslandView: NSView {
     var recentTools: [String] = []
     var activeFile: String? = nil
     var elapsedSeconds: Int = 0
+    var pinnedSessionId: String? = nil
+
+    // Callback to send WebSocket messages (set by AppDelegate)
+    var onSendWS: (([String: Any]) -> Void)?
+
+    // Hit regions for session tabs in expanded view
+    private var sessionTabRects: [(rect: NSRect, sessionId: String)] = []
 
     let geo: NotchGeometry
 
@@ -134,7 +145,7 @@ class IslandView: NSView {
     private var pillTargetWidth: CGFloat = 160
     private var pillCurrentWidth: CGFloat = 160
     let expandedWidth: CGFloat = 380
-    let expandedHeight: CGFloat = 250
+    let expandedHeight: CGFloat = 300
 
     // Colors
     static let phaseColors: [String: NSColor] = [
@@ -353,9 +364,25 @@ class IslandView: NSView {
 
     // --- Hit testing ---
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         if pillRect().contains(point) { return super.hitTest(point) }
         return nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard status == .expanded else { return }
+        for tab in sessionTabRects {
+            if tab.rect.contains(point) {
+                let newPin = (tab.sessionId == pinnedSessionId) ? nil : tab.sessionId
+                pinnedSessionId = newPin
+                onSendWS?(["type": "pin_session", "sessionId": newPin ?? NSNull()])
+                needsDisplay = true
+                return
+            }
+        }
     }
 
     private func pillRect() -> NSRect {
@@ -701,35 +728,71 @@ class IslandView: NSView {
             y -= 28
         }
 
+        y -= 4
+
+        // --- Session tabs (clickable) ---
+        if sessionDots.count > 1 {
+            sessionTabRects = []
+            // Section header
+            let tabHeaderAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold),
+                .foregroundColor: faintColor
+            ]
+            NSAttributedString(string: "SESSIONS", attributes: tabHeaderAttrs)
+                .draw(at: NSPoint(x: rect.minX + pad, y: y))
+            y -= 18
+            let tabFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+            var tabX = rect.minX + pad
+            for dot in sessionDots {
+                let isPinned = dot.id == pinnedSessionId
+                let isActive = dot.id == (activeSessionId ?? "")
+                let dotColor = dot.color.isEmpty ? NSColor.gray : NSColor.fromHex(dot.color)
+                let tabLabel = dot.label.isEmpty ? String(dot.id.prefix(6)) : dot.label
+                let labelColor = isPinned ? dotColor : (isActive ? textColor : NSColor(white: 0.65, alpha: 1))
+                let tabAttrs: [NSAttributedString.Key: Any] = [
+                    .font: tabFont,
+                    .foregroundColor: labelColor.withAlphaComponent(Double(alpha))
+                ]
+                let tabSize = (tabLabel as NSString).size(withAttributes: tabAttrs)
+                let dotR: CGFloat = 3.5
+                let fullW = dotR * 2 + 4 + tabSize.width + 8
+                let tabRect = NSRect(x: tabX - 4, y: y - 3, width: fullW, height: tabSize.height + 6)
+                sessionTabRects.append((rect: tabRect, sessionId: dot.id))
+
+                // Background pill for all tabs (subtle), brighter for pinned
+                let bgPath = CGPath(roundedRect: tabRect, cornerWidth: 5, cornerHeight: 5, transform: nil)
+                let bgAlpha = isPinned ? 0.2 : 0.08
+                let bgColor = isPinned ? dotColor : NSColor.white
+                ctx.setFillColor(bgColor.withAlphaComponent(Double(alpha) * bgAlpha).cgColor)
+                ctx.addPath(bgPath)
+                ctx.fillPath()
+
+                // Dot indicator
+                let dotStatusColor = IslandView.dotStatusColors[dot.status] ?? NSColor.gray
+                ctx.setFillColor(dotStatusColor.withAlphaComponent(Double(alpha)).cgColor)
+                ctx.fillEllipse(in: CGRect(x: tabX, y: y + tabSize.height / 2 - dotR + 1, width: dotR * 2, height: dotR * 2))
+
+                NSAttributedString(string: tabLabel, attributes: tabAttrs)
+                    .draw(at: NSPoint(x: tabX + dotR * 2 + 4, y: y))
+                tabX += fullW + 8
+            }
+            y -= 26
+        } else {
+            sessionTabRects = []
+        }
+
         // --- User query (what the agent is working on) ---
         if let query = userQuery, !query.isEmpty {
             let qAttrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
                 .foregroundColor: NSColor(white: 0.65, alpha: Double(alpha))
             ]
-            let truncated = query.count > 60 ? String(query.prefix(57)) + "..." : query
+            let firstLine = query.components(separatedBy: .newlines).first ?? query
+            let truncated = firstLine.count > 55 ? String(firstLine.prefix(52)) + "..." : firstLine
             NSAttributedString(string: "❯ \(truncated)", attributes: qAttrs)
                 .draw(at: NSPoint(x: rect.minX + pad, y: y))
             y -= 18
         }
-
-        y -= 4
-
-        // --- Stats row ---
-        let statsAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-            .foregroundColor: dimColor
-        ]
-        var stats: [String] = []
-        if activeFileCount > 0 { stats.append("\(activeFileCount) files") }
-        if tokenCount > 0 { stats.append("\(formatTokens(tokenCount)) tokens") }
-        if sessionCount > 1 { stats.append("\(sessionCount) sessions") }
-        if errorCount > 0 { stats.append("\(errorCount) errors") }
-        if !stats.isEmpty {
-            NSAttributedString(string: stats.joined(separator: "  ·  "), attributes: statsAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad, y: y))
-        }
-        y -= 20
 
         // --- Separator ---
         ctx.setStrokeColor(NSColor(white: 0.2, alpha: Double(alpha)).cgColor)
@@ -793,7 +856,7 @@ class IslandView: NSView {
 
     // --- Public signal update ---
 
-    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, approved: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String, color: String, id: String)], activeSessionColor: String?, activeSessionId: String?) {
+    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, tokIn: Int, tokOut: Int, tokCacheRead: Int, tokCacheCreate: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, approved: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String, color: String, id: String)], activeSessionColor: String?, activeSessionId: String?) {
         currentPhase = phase
         progressSignal = progress
         activeToolName = tool
@@ -801,6 +864,7 @@ class IslandView: NSView {
         activeFileCount = files
         sessionCount = sessions
         tokenCount = tokens
+        self.tokIn = tokIn; self.tokOut = tokOut; self.tokCacheRead = tokCacheRead; self.tokCacheCreate = tokCacheCreate
         errorCount = errors
         thinkingActive = thinking
         waitingForConfirmation = waiting
@@ -826,9 +890,12 @@ class IslandView: NSView {
 class IslandController {
     var panel: IslandPanel?
     var islandView: IslandView?
+    var onSendWS: (([String: Any]) -> Void)? {
+        didSet { islandView?.onSendWS = onSendWS }
+    }
 
     // Cached signals so we can restore state after toggle
-    private var lastSignals: (phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, approved: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String, color: String, id: String)], activeSessionColor: String?, activeSessionId: String?)?
+    private var lastSignals: (phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, tokIn: Int, tokOut: Int, tokCacheRead: Int, tokCacheCreate: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, approved: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String, color: String, id: String)], activeSessionColor: String?, activeSessionId: String?)?
 
     func setup(screen: NSScreen) {
         teardown()
@@ -843,10 +910,11 @@ class IslandController {
 
         self.panel = panel
         self.islandView = view
+        view.onSendWS = onSendWS
 
         // Restore last known state
         if let s = lastSignals {
-            view.updateSignals(phase: s.phase, progress: s.progress, tool: s.tool, toolDetail: s.toolDetail, files: s.files, sessions: s.sessions, tokens: s.tokens, errors: s.errors, thinking: s.thinking, waiting: s.waiting, waitingTool: s.waitingTool, approved: s.approved, idleSeconds: s.idleSeconds, userQuery: s.userQuery, recentTools: s.recentTools, activeFile: s.activeFile, elapsed: s.elapsed, sessionDots: s.sessionDots, activeSessionColor: s.activeSessionColor, activeSessionId: s.activeSessionId)
+            view.updateSignals(phase: s.phase, progress: s.progress, tool: s.tool, toolDetail: s.toolDetail, files: s.files, sessions: s.sessions, tokens: s.tokens, tokIn: s.tokIn, tokOut: s.tokOut, tokCacheRead: s.tokCacheRead, tokCacheCreate: s.tokCacheCreate, errors: s.errors, thinking: s.thinking, waiting: s.waiting, waitingTool: s.waitingTool, approved: s.approved, idleSeconds: s.idleSeconds, userQuery: s.userQuery, recentTools: s.recentTools, activeFile: s.activeFile, elapsed: s.elapsed, sessionDots: s.sessionDots, activeSessionColor: s.activeSessionColor, activeSessionId: s.activeSessionId)
         }
     }
 
@@ -859,9 +927,9 @@ class IslandController {
         islandView = nil
     }
 
-    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, approved: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String, color: String, id: String)], activeSessionColor: String?, activeSessionId: String?) {
-        lastSignals = (phase, progress, tool, toolDetail, files, sessions, tokens, errors, thinking, waiting, waitingTool, approved, idleSeconds, userQuery, recentTools, activeFile, elapsed, sessionDots, activeSessionColor, activeSessionId)
-        islandView?.updateSignals(phase: phase, progress: progress, tool: tool, toolDetail: toolDetail, files: files, sessions: sessions, tokens: tokens, errors: errors, thinking: thinking, waiting: waiting, waitingTool: waitingTool, approved: approved, idleSeconds: idleSeconds, userQuery: userQuery, recentTools: recentTools, activeFile: activeFile, elapsed: elapsed, sessionDots: sessionDots, activeSessionColor: activeSessionColor, activeSessionId: activeSessionId)
+    func updateSignals(phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, tokIn: Int, tokOut: Int, tokCacheRead: Int, tokCacheCreate: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, approved: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String, color: String, id: String)], activeSessionColor: String?, activeSessionId: String?) {
+        lastSignals = (phase, progress, tool, toolDetail, files, sessions, tokens, tokIn, tokOut, tokCacheRead, tokCacheCreate, errors, thinking, waiting, waitingTool, approved, idleSeconds, userQuery, recentTools, activeFile, elapsed, sessionDots, activeSessionColor, activeSessionId)
+        islandView?.updateSignals(phase: phase, progress: progress, tool: tool, toolDetail: toolDetail, files: files, sessions: sessions, tokens: tokens, tokIn: tokIn, tokOut: tokOut, tokCacheRead: tokCacheRead, tokCacheCreate: tokCacheCreate, errors: errors, thinking: thinking, waiting: waiting, waitingTool: waitingTool, approved: approved, idleSeconds: idleSeconds, userQuery: userQuery, recentTools: recentTools, activeFile: activeFile, elapsed: elapsed, sessionDots: sessionDots, activeSessionColor: activeSessionColor, activeSessionId: activeSessionId)
     }
 }
 
@@ -945,6 +1013,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
                 files: data["files"] as? Int ?? 0,
                 sessions: data["sessions"] as? Int ?? 0,
                 tokens: data["tokens"] as? Int ?? 0,
+                tokIn: data["tokIn"] as? Int ?? 0,
+                tokOut: data["tokOut"] as? Int ?? 0,
+                tokCacheRead: data["tokCacheRead"] as? Int ?? 0,
+                tokCacheCreate: data["tokCacheCreate"] as? Int ?? 0,
                 errors: data["errors"] as? Int ?? 0,
                 thinking: data["thinking"] as? Bool ?? false,
                 waiting: data["waiting"] as? Bool ?? false,
@@ -1083,6 +1155,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         if islandEnabled, let screen = NSScreen.main {
             island.setup(screen: screen)
             island.show()
+        }
+
+        // Wire island → WebSocket callback
+        island.onSendWS = { [weak self] msg in
+            guard let self = self, let task = self.wsTask else { return }
+            if let data = try? JSONSerialization.data(withJSONObject: msg),
+               let str = String(data: data, encoding: .utf8) {
+                task.send(.string(str)) { _ in }
+            }
         }
 
         // Connect to server WebSocket for island state updates
@@ -1308,6 +1389,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
             files: data["files"] as? Int ?? 0,
             sessions: data["sessions"] as? Int ?? 0,
             tokens: data["tokens"] as? Int ?? 0,
+            tokIn: data["tokIn"] as? Int ?? 0,
+            tokOut: data["tokOut"] as? Int ?? 0,
+            tokCacheRead: data["tokCacheRead"] as? Int ?? 0,
+            tokCacheCreate: data["tokCacheCreate"] as? Int ?? 0,
             errors: data["errors"] as? Int ?? 0,
             thinking: data["thinking"] as? Bool ?? false,
             waiting: data["waiting"] as? Bool ?? false,
@@ -1330,6 +1415,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         island.islandView?.pulsing = data["pulsing"] as? Bool ?? false
         island.islandView?.rejectedTool = data["rejected"] as? String
         island.islandView?.planningStrike = data["planningStrike"] as? Bool ?? false
+        island.islandView?.pinnedSessionId = data["pinnedSessionId"] as? String
     }
 
     func applicationWillTerminate(_ notification: Notification) {

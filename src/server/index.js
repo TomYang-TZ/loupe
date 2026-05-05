@@ -208,6 +208,9 @@ wss.on("connection", (ws) => {
           }
         }
       }
+      if (msg.type === "pin_session") {
+        islandState.pinSession(msg.sessionId || null);
+      }
       if (msg.type === "classify_topics") {
         // On-demand topic classification for a session
         const topicDetector = require("./topic-detector");

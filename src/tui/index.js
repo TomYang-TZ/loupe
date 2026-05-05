@@ -42,6 +42,10 @@ let thinkingActive = false;
 let eventCount = 0;
 let errorCount = 0;
 let tokenTotal = 0;
+let tokenIn = 0;
+let tokenOut = 0;
+let tokenCacheRead = 0;
+let tokenCacheCreate = 0;
 const fileSet = new Set();
 const erroredFiles = new Set();
 let activeFile = null;
@@ -62,10 +66,15 @@ let focusIdx = -1;
 let autoFollow = true;
 let hasNewQueries = false;
 let scrollOffset = 0;
-let earliestTs = Infinity;   // track oldest event ts for "load more"
+const earliestTsBySid = new Map(); // per-session oldest event ts for "load more"
 let loadingHistory = false;  // true while waiting for history_done
 let historyStatus = null;    // brief status message after load
 let historyBuffer = [];      // buffer history events before merging
+let historyTargetSid = null; // session ID that was requested for history load
+
+// Search state
+let searchMode = false;
+let searchQuery = "";
 
 // Session picker state
 let sessionPickerVisible = false;
@@ -332,10 +341,10 @@ function handleMessage(data) {
       render();
     }
     if (msg.type === "reset") {
-      eventCount = 0; errorCount = 0; tokenTotal = 0;
+      eventCount = 0; errorCount = 0; tokenTotal = 0; tokenIn = 0; tokenOut = 0; tokenCacheRead = 0; tokenCacheCreate = 0;
       fileSet.clear(); erroredFiles.clear(); activeFile = null;
       sessionQueries.clear(); queries = []; queryIdCounter = 0; sessionAgentStacks.clear(); tuiAgentSessionMap.clear(); tuiChildSessionMap.clear(); tuiPendingAgentSpawns.clear(); eventAutoFollow = true;
-      focusIdx = -1; autoFollow = true; hasNewQueries = false;
+      focusIdx = -1; autoFollow = true; hasNewQueries = false; earliestTsBySid.clear();
       sessions.clear(); sessionFilter = "all";
       phase = "idle"; currentTool = null;
       Object.assign(statusLine, { sessionState: "idle", waitingTool: null, errors: 0, apiError: null, agentsRunning: 0, agentsTotal: 0, tasksCreated: 0, tasksCompleted: 0, sessionStartTs: null });
@@ -358,12 +367,10 @@ function handleMessage(data) {
     loadingHistory = false;
     const count = historyBuffer.length;
     if (count > 0) {
-      // Stash existing queries, process history into a clean slate, then merge
-      const stashedQueries = new Map();
-      for (const [sid, sq] of sessionQueries) {
-        stashedQueries.set(sid, [...sq]);
-      }
-      sessionQueries.clear();
+      // Use the session ID captured at request time (not current sessionFilter which may have changed)
+      const targetSid = historyTargetSid;
+      const stashedTarget = targetSid ? [...(sessionQueries.get(targetSid) || [])] : [];
+      if (targetSid) sessionQueries.delete(targetSid);
 
       // Process history events chronologically as backlog
       const saved = isBacklog; isBacklog = true;
@@ -373,22 +380,20 @@ function handleMessage(data) {
       }
       isBacklog = saved;
 
-      // Merge: prepend history queries before stashed queries, dedup by startTs
-      for (const [sid, stashed] of stashedQueries) {
-        const historyQs = sessionQueries.get(sid) || [];
-        // Remove history queries that overlap with existing (same startTs within 5s)
+      // Merge: prepend history queries before stashed, dedup by startTs
+      if (targetSid) {
+        const historyQs = sessionQueries.get(targetSid) || [];
         const merged = [...historyQs];
-        for (const sq of stashed) {
+        for (const sq of stashedTarget) {
           const isDup = merged.some(hq => hq.userQuery === sq.userQuery && Math.abs(hq.startTs - sq.startTs) < 5000);
           if (!isDup) merged.push(sq);
         }
         merged.sort((a, b) => a.startTs - b.startTs);
-        sessionQueries.set(sid, merged);
+        sessionQueries.set(targetSid, merged);
       }
-      // Keep any sessions from history that weren't in stashed
-      // (already in sessionQueries from handleMessage processing)
     }
     historyBuffer = [];
+    historyTargetSid = null;
     historyStatus = count > 0 ? `Loaded ${count} events` : "No more events";
     setTimeout(() => { historyStatus = null; render(); }, 2000);
     render(); return;
@@ -434,8 +439,12 @@ function handleMessage(data) {
   if (msg.type !== "line") return;
 
   eventCount++;
-  if (msg.ts && msg.ts < earliestTs) earliestTs = msg.ts;
   const json = msg.json;
+  const evtSid = extractSessionId(json);
+  if (msg.ts && evtSid) {
+    const prev = earliestTsBySid.get(evtSid) || Infinity;
+    if (msg.ts < prev) earliestTsBySid.set(evtSid, msg.ts);
+  }
   const cat = categorize(json);
   if (cat === null) return;
 
@@ -490,9 +499,6 @@ function handleMessage(data) {
       if (activeFile) erroredFiles.add(activeFile);
     }
 
-    const usage = json?.data?.message?.usage || json?.message?.usage;
-    if (usage) tokenTotal += (usage.input_tokens || 0) + (usage.output_tokens || 0);
-
     if (cat === "session_start") { statusLine.sessionState = "active"; statusLine.sessionStartTs = Date.now(); }
     if (cat === "session_end") { statusLine.sessionState = "idle"; statusLine.sessionStartTs = null; }
     if (cat === "compact") { statusLine.sessionState = json?._logstream_type === "PreCompact" ? "compacting" : "active"; }
@@ -542,6 +548,18 @@ function handleMessage(data) {
         setTimeout(() => { if (agentTree.every(a => a.status === "done")) { agentTreeVisible = false; agentTree.length = 0; agentFocus = false; agentFocusIdx = -1; render(); } }, 5000);
       }
     }
+  }
+
+  // Token accumulation — runs for both backlog and live events
+  const usage = json?.data?.meta || json?.data?.message?.usage || json?.message?.usage;
+  if (usage) {
+    const inT = usage.input_tokens || 0;
+    const outT = usage.output_tokens || 0;
+    const cacheR = usage.cache_read || usage.cache_read_input_tokens || 0;
+    const cacheC = usage.cache_create || usage.cache_creation_input_tokens || 0;
+    tokenTotal += inT + outT;
+    tokenIn += inT; tokenOut += outT;
+    tokenCacheRead += cacheR; tokenCacheCreate += cacheC;
   }
 
   // Skip hidden categories from rendering (state tracking above still runs)
@@ -622,11 +640,11 @@ function handleMessage(data) {
   } else if (cat === "tool_rejected") {
     line += `${FG.red}Tool rejected by user${RESET}`;
   } else if (cat === "sub_agent") {
-    // Attach stashed prompt from PreToolUse
+    // Attach stashed prompt from PreToolUse (live hook events)
     if (pendingAgentPrompts.length > 0) {
       json.data._agentPrompt = pendingAgentPrompts.shift();
     }
-    const agentPrompt = json?.data?._agentPrompt || "";
+    const agentPrompt = json?.data?._agentPrompt || json?.data?.description || json?.data?.prompt || "";
     const promptPreview = agentPrompt ? `${DIM}${agentPrompt.slice(0, 50)}${RESET}` : "";
     line += `${FG.cyan}${BOLD}▶ ${json?.data?.agent_type || "Agent"}${RESET} ${promptPreview}`;
   } else if (cat === "sub_agent_result") {
@@ -703,26 +721,23 @@ function handleMessage(data) {
   if (tuiChildSessionMap.has(sessionId)) {
     sessionId = tuiChildSessionMap.get(sessionId);
   } else if (!sessionQueries.has(sessionId) && sessionId !== "_default") {
-    // Only remap sessions that look like agent sub-sessions
-    const sid = (sessionId || "").toLowerCase();
-    const sInfo = sessions.get(sessionId);
-    const slbl = sInfo ? (sInfo.label || "").toLowerCase() : "";
-    const looksLikeAgent = sid.startsWith("agent-") || sid.startsWith("agent_") ||
-                           slbl.startsWith("agent-") || slbl.startsWith("agent_");
-
-    if (looksLikeAgent) {
-      // Heuristic 1: match pending agent spawns (within 60s)
-      let remapped = false;
-      for (const [parentSid, info] of tuiPendingAgentSpawns) {
-        if (parentSid !== sessionId && msg.ts - info.ts < 60000) {
-          tuiChildSessionMap.set(sessionId, parentSid);
-          sessionId = parentSid;
-          remapped = true;
-          break;
-        }
+    // Remap child sessions: first try pending agent spawns, then name heuristic
+    let remapped = false;
+    for (const [parentSid, info] of tuiPendingAgentSpawns) {
+      if (parentSid !== sessionId && info.count > 0 && msg.ts - info.ts < 60000) {
+        tuiChildSessionMap.set(sessionId, parentSid);
+        sessionId = parentSid;
+        remapped = true;
+        break;
       }
-      // Heuristic 2: map to most recent parent
-      if (!remapped) {
+    }
+    if (!remapped) {
+      const sid = (sessionId || "").toLowerCase();
+      const sInfo = sessions.get(sessionId);
+      const slbl = sInfo ? (sInfo.label || "").toLowerCase() : "";
+      const looksLikeAgent = sid.startsWith("agent-") || sid.startsWith("agent_") ||
+                             slbl.startsWith("agent-") || slbl.startsWith("agent_");
+      if (looksLikeAgent) {
         let bestParent = null, bestTs = 0;
         for (const [parentSid, pInfo] of sessions) {
           if (parentSid !== sessionId && (pInfo.lastEventTs || 0) > bestTs) { bestTs = pInfo.lastEventTs || 0; bestParent = parentSid; }
@@ -748,7 +763,7 @@ function handleMessage(data) {
     }
     // Auto-collapse previous query/preamble in this session
     if (sq.length > 0) sq[sq.length - 1].collapsed = true;
-    const q = { id: ++queryIdCounter, userQuery, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: !autoFollow };
+    const q = { id: ++queryIdCounter, userQuery, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: !autoFollow, tokens: 0, tokIn: 0, tokOut: 0, tokCacheRead: 0 };
     sq.push(q);
     if (sq.length > MAX_QUERIES_PER_SESSION) sq.shift();
     hasNewQueries = true;
@@ -774,7 +789,7 @@ function handleMessage(data) {
   } else {
     // Append to last query in this session, or create preamble
     if (sq.length === 0) {
-      sq.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _preamble: true });
+      sq.push({ id: ++queryIdCounter, userQuery: null, sessionId, startTs: msg.ts, endTs: msg.ts, events: [], collapsed: true, _preamble: true, tokens: 0, tokIn: 0, tokOut: 0, tokCacheRead: 0 });
     }
     const target = sq[sq.length - 1];
 
@@ -839,6 +854,21 @@ function handleMessage(data) {
     target.endTs = msg.ts;
   }
 
+  // Accumulate tokens on the current query regardless of branch
+  const currentQ = sq.length > 0 ? sq[sq.length - 1] : null;
+  const qUsage = json?.data?.meta || json?.data?.message?.usage;
+  if (currentQ && qUsage) {
+    const qIn = qUsage.input_tokens || 0;
+    const qOut = qUsage.output_tokens || 0;
+    const qCR = qUsage.cache_read || qUsage.cache_read_input_tokens || 0;
+    const qCC = qUsage.cache_create || qUsage.cache_creation_input_tokens || 0;
+    currentQ.tokens = (currentQ.tokens || 0) + qIn + qOut;
+    currentQ.tokIn = (currentQ.tokIn || 0) + qIn;
+    currentQ.tokOut = (currentQ.tokOut || 0) + qOut;
+    currentQ.tokCacheRead = (currentQ.tokCacheRead || 0) + qCR;
+    currentQ.tokCacheCreate = (currentQ.tokCacheCreate || 0) + qCC;
+  }
+
   render();
 }
 
@@ -848,6 +878,13 @@ function renderStatusLine(cols) {
   const k = (key, label) => `${FG.cyan}${BOLD}${key}${RESET}${DIM}${label}${RESET}`;
   const parts = [];
   const sep = `${DIM} · ${RESET}`;
+
+  // Search
+  if (searchQuery) {
+    parts.push(`${FG.cyan}/${RESET}${DIM}${searchQuery.slice(0, 12)}${RESET}`);
+  } else {
+    parts.push(k("/", "search"));
+  }
 
   // Collapse/expand
   parts.push(k("c", allCollapsed ? "expand" : "ollapse"));
@@ -1017,6 +1054,31 @@ function wrapText(text, width) {
 }
 
 function render() {
+  const cols = process.stdout.columns || 80;
+  const rows = process.stdout.rows || 24;
+
+  // Full-screen loading page during backlog or disconnected state
+  if (isBacklog || !connected) {
+    const mid = Math.floor(rows / 2);
+    const midCol = Math.floor(cols / 2);
+    let output = `${ESC}[2J${ESC}[H`; // clear screen + cursor home
+    if (!connected) {
+      const dots = ".".repeat(Math.floor(Date.now() / 500) % 4);
+      const msg = `● Connecting${dots}`;
+      const sub = `Waiting for loupe server on port ${PORT}`;
+      output += `${ESC}[${mid};${midCol - Math.floor(msg.length / 2)}H${FG.red}${msg}${RESET}`;
+      output += `${ESC}[${mid + 1};${midCol - Math.floor(sub.length / 2)}H${DIM}${sub}${RESET}`;
+    } else {
+      const frame = Math.floor(Date.now() / 150) % 4;
+      const spinner = ["◐", "◓", "◑", "◒"][frame];
+      const evtStr = eventCount > 0 ? `  ${eventCount} events` : "";
+      const msg = `${spinner} Loading sessions...${evtStr}`;
+      output += `${ESC}[${mid};${midCol - Math.floor(msg.length / 2)}H${FG.cyan}${msg}${RESET}`;
+    }
+    process.stdout.write(output);
+    return;
+  }
+
   // Rebuild flat queries list from per-session data
   queries = [];
   for (const [, sq] of sessionQueries) {
@@ -1039,9 +1101,6 @@ function render() {
     if (total > 0) eventFocusIdx = total - 1;
   }
 
-  const cols = process.stdout.columns || 80;
-  const rows = process.stdout.rows || 24;
-
   // Header
   const connStr = connected ? `${FG.green}●${RESET}` : `${FG.red}●${RESET}`;
   const phaseColor = { active: FG.green, exploring: FG.magenta, implementing: FG.blue, debugging: FG.red, testing: FG.green, thinking: FG.yellow, planning: FG.yellow, orchestrating: FG.cyan, idle: FG.gray }[phase] || FG.gray;
@@ -1056,17 +1115,22 @@ function render() {
   }
   if (currentTool) header += `  ${DIM}▸ ${currentTool.name}${RESET}`;
 
-  let stats = ` ${DIM}events:${RESET}${eventCount}  ${DIM}files:${RESET}${fileSet.size}  ${DIM}tokens:${RESET}${formatTokens(tokenTotal)}`;
+  let stats = ` ${DIM}events:${RESET}${eventCount}  ${DIM}files:${RESET}${fileSet.size}`;
   if (errorCount > 0) stats += `  ${FG.red}errors:${errorCount}${RESET}`;
   if (sessions.size > 1) stats += `  ${DIM}sessions:${RESET}${sessions.size}`;
 
   const sep = DIM + "─".repeat(cols) + RESET;
-  const showTabs = true;
-  const logRows = rows - 6;
+  const showTabs = sessions.size > 1;
+  const logRows = Math.max(1, rows - (showTabs ? 6 : 5));
 
   let output = `${ESC}[H`;
   output += padLine(header, cols) + "\n";
-  output += padLine(stats, cols) + "\n";
+  if (searchMode) {
+    const searchLine = ` ${FG.cyan}/${RESET} ${searchQuery}${FG.cyan}▎${RESET}`;
+    output += padLine(searchLine, cols) + "\n";
+  } else {
+    output += padLine(stats, cols) + "\n";
+  }
 
   // Session tabs
   if (showTabs) {
@@ -1177,8 +1241,26 @@ function render() {
     }
   }
 
+  function queryMatchesSearch(q) {
+    if (!searchQuery) return true;
+    const sq = searchQuery.toLowerCase();
+    if (q.userQuery && q.userQuery.toLowerCase().includes(sq)) return true;
+    for (const ev of q.events) {
+      if (ev.cat === "thinking") continue;
+      if (ev.line && stripAnsi(ev.line).toLowerCase().includes(sq)) return true;
+      if (ev.agentEvent && ev.agentEvent.line && stripAnsi(ev.agentEvent.line).toLowerCase().includes(sq)) return true;
+      if (ev.children) {
+        for (const c of ev.children) {
+          if (c.cat === "thinking") continue;
+          if (c.line && stripAnsi(c.line).toLowerCase().includes(sq)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   function addSessionQueries(sqList) {
-    const visible = sqList.filter(q => !q._preamble);
+    const visible = sqList.filter(q => !q._preamble && (q._separator || queryMatchesSearch(q)));
     // Group queries between topic separators
     let currentTopic = null;
     let topicQueries = [];
@@ -1269,12 +1351,12 @@ function render() {
     addSessionQueries(queries);
   }
 
-  // Empty state
+  // Empty state (connected, not loading, but no data)
   if (rowData.length === 0) {
-    const emptyMsg = connected ? `${DIM}Waiting for events...${RESET}` : `${FG.red}Disconnected${RESET}`;
     const mid = Math.floor(logRows / 2);
     for (let i = 0; i < logRows; i++) {
-      output += padLine(i === mid ? emptyMsg : "", cols) + "\n";
+      if (i === mid) output += padLine(`  ${DIM}Waiting for events...${RESET}`, cols) + "\n";
+      else output += padLine("", cols) + "\n";
     }
     output += sep + "\n";
     output += renderStatusLine(cols);
@@ -1374,6 +1456,25 @@ function handleInput(buf) {
     return; // swallow all other input
   }
 
+  // Search mode — intercept all input
+  if (searchMode) {
+    if (s === "\x1b" || s === "\r" || s === "\n") {
+      searchMode = false;
+      render(); return;
+    }
+    if (s === "\x7f" || s === "\b") { // backspace
+      if (searchQuery.length > 0) searchQuery = searchQuery.slice(0, -1);
+      else { searchMode = false; }
+      render(); return;
+    }
+    if (s === "\x15") { searchQuery = ""; render(); return; } // ctrl-u clear
+    if (s.length === 1 && s.charCodeAt(0) >= 32) {
+      searchQuery += s;
+      render(); return;
+    }
+    return; // swallow other control sequences
+  }
+
   // X10 mouse: ESC [ M <button> <col> <row>
   if (buf.length >= 6 && buf[0] === 0x1b && buf[1] === 0x5b && buf[2] === 0x4d) {
     const button = buf[3];
@@ -1383,9 +1484,10 @@ function handleInput(buf) {
     return;
   }
 
-  // Esc — exit agent panel first, then go back one nav level
+  // Esc — exit agent panel first, clear search, then go back one nav level
   if (s === "\x1b" && buf.length === 1) {
     if (agentFocus) { agentFocus = false; agentFocusIdx = -1; agentDeletePending = false; render(); return; }
+    if (searchQuery) { searchQuery = ""; render(); return; }
     if (navLevel === "detail") { navLevel = "event"; detailScroll = 0; }
     else if (navLevel === "event") { navLevel = "query"; eventFocusIdx = -1; }
     render(); return;
@@ -1421,11 +1523,14 @@ function handleInput(buf) {
     render(); return;
   }
   if (s === "w") { openWindow(); render(); return; }
+  if (s === "/") { searchMode = true; searchQuery = ""; render(); return; }
   if (s === "L" && !loadingHistory && sessionFilter !== "all") {
     // Load more history — only for a specific session
     loadingHistory = true;
+    historyTargetSid = sessionFilter; // capture before user switches tabs
     historyStatus = "Loading...";
-    const before = earliestTs < Infinity ? earliestTs : Date.now();
+    const sidTs = earliestTsBySid.get(sessionFilter) || Infinity;
+    const before = sidTs < Infinity ? sidTs : Date.now();
     const payload = { type: "fetch_history", before, count: 200, sessionId: sessionFilter };
     if (ws && ws.readyState === 1) ws.send(JSON.stringify(payload));
     render(); return;
@@ -1444,8 +1549,15 @@ function handleInput(buf) {
       // Single session — classify immediately
       const sq = sessionQueries.get(sessionFilter) || [];
       const queryData = sq.filter(q => q.userQuery && !q._preamble && !q._separator).map(q => ({ userQuery: q.userQuery, ts: q.startTs }));
-      if (ws && ws.readyState === 1) {
+      topicStatus = `classifying ${queryData.length} queries...`;
+      if (queryData.length < 3) {
+        topicStatus = `only ${queryData.length} queries — need 3+`;
+        setTimeout(() => { topicStatus = null; render(); }, 3000);
+      } else if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify({ type: "classify_topics", sessionId: sessionFilter, queries: queryData }));
+      } else {
+        topicStatus = "not connected";
+        setTimeout(() => { topicStatus = null; render(); }, 3000);
       }
     } else if (topicAllPending) {
       // Second press on "All" — classify all sessions
@@ -1470,10 +1582,10 @@ function handleInput(buf) {
       // Second press — clear all
       clearPending = false;
       if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
-      eventCount = 0; errorCount = 0; tokenTotal = 0;
+      eventCount = 0; errorCount = 0; tokenTotal = 0; tokenIn = 0; tokenOut = 0; tokenCacheRead = 0; tokenCacheCreate = 0;
       fileSet.clear(); erroredFiles.clear(); activeFile = null;
       sessionQueries.clear(); queries = []; queryIdCounter = 0; sessionAgentStacks.clear(); tuiAgentSessionMap.clear(); tuiChildSessionMap.clear(); tuiPendingAgentSpawns.clear(); eventAutoFollow = true;
-      focusIdx = -1; autoFollow = true; hasNewQueries = false; scrollOffset = 0;
+      focusIdx = -1; autoFollow = true; hasNewQueries = false; scrollOffset = 0; earliestTsBySid.clear();
       sessions.clear(); sessionFilter = "all";
       phase = "idle"; currentTool = null; thinkingActive = false;
       Object.assign(statusLine, { sessionState: "idle", waitingTool: null, errors: 0, apiError: null, agentsRunning: 0, agentsTotal: 0, tasksCreated: 0, tasksCompleted: 0, sessionStartTs: null });
@@ -1742,8 +1854,7 @@ function handleMouse(button, col, row) {
       return;
     }
 
-    const showTabs = true;
-    const contentStartRow = 5; // header(2) + tabs(1) + sep(1) + 1-indexed
+    const contentStartRow = sessions.size > 1 ? 5 : 4; // header + stats [+ tabs] + sep + 1-indexed
     const contentRow = row - contentStartRow;
     if (contentRow >= 0 && contentRow < rowMap.length) {
       const mapped = rowMap[contentRow];
