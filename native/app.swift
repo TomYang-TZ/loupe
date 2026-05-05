@@ -1,9 +1,24 @@
 import Cocoa
 import WebKit
 
-// Sanitize strings for CoreText — removes characters that cause nil font attribute crashes
+// Sanitize strings for CoreText — restrict to printable ASCII, remove null bytes
 func sanitize(_ s: String) -> String {
-    String(s.unicodeScalars.filter { $0.value >= 32 && $0.value < 0xFFF0 }.prefix(200).map { Character($0) })
+    let filtered = s.unicodeScalars.filter { $0.value > 0 && $0.value >= 32 && $0.value < 127 }
+    return String(filtered.prefix(200).map { Character($0) })
+}
+
+// Safe wrapper for sizeWithAttributes — returns 0 width if string would crash CoreText
+func safeSize(_ s: String, font: NSFont) -> CGFloat {
+    guard !s.isEmpty else { return 0 }
+    let ns = s as NSString
+    guard ns.length > 0 else { return 0 }
+    return ns.size(withAttributes: [.font: font, .foregroundColor: NSColor.white]).width
+}
+
+// Safe draw wrapper
+func safeDraw(_ s: String, at point: NSPoint, attrs: [NSAttributedString.Key: Any]) {
+    guard !s.isEmpty, (s as NSString).length > 0 else { return }
+    NSAttributedString(string: s, attributes: attrs).draw(at: point)
 }
 
 extension NSColor {
@@ -600,31 +615,30 @@ class IslandView: NSView {
 
         // Compute dynamic pill width from content
         let dotsSectionWidth: CGFloat = cursorX - rect.minX
-        let labelFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
-        let labelSize = (safeLabel as NSString).size(withAttributes: [.font: labelFont])
+        let labelFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        let labelW = safeSize(safeLabel, font: labelFont)
         var rightWidth: CGFloat = 0
         if let tool = activeToolName, !tool.isEmpty, !waitingForConfirmation, currentPhase != "idle" {
             var rt = sanitize(tool)
             if let detail = activeToolDetail, !detail.isEmpty { rt = sanitize("\(tool) \(detail)") }
             let rightFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
-            rightWidth = (rt as NSString).size(withAttributes: [.font: rightFont]).width + 16
+            rightWidth = safeSize(rt, font: rightFont) + 16
         }
-        let contentWidth = dotsSectionWidth + labelSize.width + rightWidth + 20  // 20 = padding
+        let contentWidth = dotsSectionWidth + labelW + rightWidth + 20
         pillTargetWidth = min(pillMaxWidth, max(pillMinWidth, contentWidth))
 
         // Pulse the label for approval, waiting for input, and strikethrough states
         let shouldPulseLabel = pulsing
         let labelPulse: CGFloat = shouldPulseLabel ? (0.5 + 0.5 * CGFloat(sin(Double(pulsePhase) * 2))) : 1.0
         var labelAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .medium),
+            .font: labelFont,
             .foregroundColor: labelColor.withAlphaComponent(Double(alpha * labelPulse))
         ]
         if approvedTool != nil {
             labelAttrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             labelAttrs[.strikethroughColor] = labelColor.withAlphaComponent(Double(alpha * labelPulse) * 0.8)
         }
-        let labelStr = NSAttributedString(string: safeLabel, attributes: labelAttrs)
-        labelStr.draw(at: NSPoint(x: cursorX, y: midY - 6))
+        safeDraw(safeLabel, at: NSPoint(x: cursorX, y: midY - 6), attrs: labelAttrs)
 
         // no extra decorations after label
 
@@ -636,7 +650,7 @@ class IslandView: NSView {
             }
             guard !rightText.isEmpty else { return }
 
-            let labelEndX = cursorX + labelStr.size().width + 12
+            let labelEndX = cursorX + labelW + 12
             let availW = rect.maxX - 14 - labelEndX
             guard availW > 30 else { return }
 
@@ -644,12 +658,13 @@ class IslandView: NSView {
             let toolColor = NSColor(white: 0.5, alpha: Double(alpha))
             let toolAttrs: [NSAttributedString.Key: Any] = [.font: toolFont, .foregroundColor: toolColor]
             var display = String(rightText.prefix(60))
-            while (display as NSString).size(withAttributes: toolAttrs).width > availW && display.count > 5 {
-                display = String(display.dropLast(2)) + "…"
+            var displayW = safeSize(display, font: toolFont)
+            while displayW > availW && display.count > 5 {
+                display = String(display.dropLast(2)) + "..."
+                displayW = safeSize(display, font: toolFont)
             }
-            let toolStr = NSAttributedString(string: display, attributes: toolAttrs)
-            let drawX = rect.maxX - 14 - toolStr.size().width
-            toolStr.draw(at: NSPoint(x: drawX, y: midY - 6))
+            let drawX = rect.maxX - 14 - displayW
+            safeDraw(display, at: NSPoint(x: drawX, y: midY - 6), attrs: toolAttrs)
         }
     }
 
