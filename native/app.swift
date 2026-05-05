@@ -660,35 +660,19 @@ class IslandView: NSView {
         let pad: CGFloat = 20
         var y = rect.maxY - 28
 
-        // --- ASCII art phase + elapsed time ---
-        let artLines = asciiArtForPhase()
-        let artFont = NSFont.monospacedSystemFont(ofSize: 8, weight: .medium)
-        let artColor = phaseColor().withAlphaComponent(Double(alpha))
-        let artLineH: CGFloat = 9
-        for (i, line) in artLines.enumerated() {
-            let artAttrs: [NSAttributedString.Key: Any] = [
-                .font: artFont,
-                .foregroundColor: artColor
-            ]
-            NSAttributedString(string: line, attributes: artAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad, y: y - CGFloat(i) * artLineH))
-        }
+        // --- Phase heading ---
+        let phase = thinkingActive ? "thinking" : currentPhase
+        let phaseWord = (IslandView.phaseDisplayNames[phase] ?? phase).uppercased()
+        let phaseFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .bold)
+        let pColor = phaseColor().withAlphaComponent(Double(alpha))
+        var phaseStr = phaseWord
+        if planningStrike { phaseStr += "  ̶p̶l̶a̶n̶n̶i̶n̶g̶" }
+        if let signal = progressSignal { phaseStr += " · \(signal.uppercased())" }
+        let phaseAttrs: [NSAttributedString.Key: Any] = [.font: phaseFont, .foregroundColor: pColor]
+        NSAttributedString(string: sanitize(phaseStr), attributes: phaseAttrs)
+            .draw(at: NSPoint(x: rect.minX + pad, y: y))
 
-        // Planning strikethrough — dimmed "PLANNING" with line-through after current phase art
-        if planningStrike {
-            let strikeColor = (IslandView.phaseColors["planning"] ?? NSColor.gray).withAlphaComponent(Double(alpha) * 0.4)
-            let topLineWidth = NSAttributedString(string: artLines[0], attributes: [.font: artFont]).size().width
-            let strikeAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 8, weight: .medium),
-                .foregroundColor: strikeColor,
-                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                .strikethroughColor: strikeColor,
-            ]
-            NSAttributedString(string: " PLANNING", attributes: strikeAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad + topLineWidth + 4, y: y - artLineH + 2))
-        }
-
-        // Elapsed time (right-aligned, top row)
+        // Elapsed time (right-aligned)
         if elapsedSeconds > 0 {
             let mins = elapsedSeconds / 60
             let secs = elapsedSeconds % 60
@@ -701,19 +685,7 @@ class IslandView: NSView {
             ts.draw(at: NSPoint(x: rect.maxX - pad - ts.size().width, y: y + 2))
         }
 
-        // Signal badge (after art top row)
-        if let signal = progressSignal {
-            let sigColor = IslandView.signalColors[signal] ?? textColor
-            let sigAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .bold),
-                .foregroundColor: sigColor.withAlphaComponent(Double(alpha))
-            ]
-            let topLineWidth = NSAttributedString(string: artLines[0], attributes: [.font: artFont]).size().width
-            NSAttributedString(string: " · \(signal.uppercased())", attributes: sigAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad + topLineWidth + 4, y: y))
-        }
-
-        y -= (artLineH * CGFloat(artLines.count) + 10)
+        y -= 22
 
         // --- Waiting banner ---
         if waitingForConfirmation {
