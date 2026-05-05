@@ -1,6 +1,11 @@
 import Cocoa
 import WebKit
 
+// Sanitize strings for CoreText — removes characters that cause nil font attribute crashes
+func sanitize(_ s: String) -> String {
+    String(s.unicodeScalars.filter { $0.value >= 32 && $0.value < 0xFFF0 }.prefix(200).map { Character($0) })
+}
+
 extension NSColor {
     static func fromHex(_ hex: String) -> NSColor {
         let h = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
@@ -527,7 +532,7 @@ class IslandView: NSView {
     ]
 
     private func drawCollapsed(in rect: NSRect, ctx: CGContext, alpha: CGFloat) {
-        guard alpha > 0 else { return }
+        guard alpha > 0, rect.width > 20 else { return }
         let midY = rect.midY
         let dotR: CGFloat = 4
         var cursorX = rect.minX + 12
@@ -590,16 +595,17 @@ class IslandView: NSView {
             labelColor = NSColor(white: 0.85, alpha: 1)
         }
         guard !label.isEmpty else { return }
+        let safeLabel = sanitize(label)
+        guard !safeLabel.isEmpty else { return }
 
         // Compute dynamic pill width from content
-        let dotsSectionWidth: CGFloat = cursorX - rect.minX  // dots already drawn up to cursorX
+        let dotsSectionWidth: CGFloat = cursorX - rect.minX
         let labelFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
-        let labelSize = (label as NSString).size(withAttributes: [.font: labelFont])
-        // Also account for right-side tool text
+        let labelSize = (safeLabel as NSString).size(withAttributes: [.font: labelFont])
         var rightWidth: CGFloat = 0
-        if let tool = activeToolName, !waitingForConfirmation, currentPhase != "idle" {
-            var rt = tool
-            if let detail = activeToolDetail, !detail.isEmpty { rt = "\(tool) \(detail)" }
+        if let tool = activeToolName, !tool.isEmpty, !waitingForConfirmation, currentPhase != "idle" {
+            var rt = sanitize(tool)
+            if let detail = activeToolDetail, !detail.isEmpty { rt = sanitize("\(tool) \(detail)") }
             let rightFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
             rightWidth = (rt as NSString).size(withAttributes: [.font: rightFont]).width + 16
         }
@@ -617,19 +623,17 @@ class IslandView: NSView {
             labelAttrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             labelAttrs[.strikethroughColor] = labelColor.withAlphaComponent(Double(alpha * labelPulse) * 0.8)
         }
-        let labelStr = NSAttributedString(string: label, attributes: labelAttrs)
+        let labelStr = NSAttributedString(string: safeLabel, attributes: labelAttrs)
         labelStr.draw(at: NSPoint(x: cursorX, y: midY - 6))
 
         // no extra decorations after label
 
-        // Right side: tool name + brief detail (must not overlap phase label)
+        // Right side: tool name + brief detail
         if let tool = activeToolName, !tool.isEmpty, !waitingForConfirmation, currentPhase != "idle" {
-            var rightText = tool
+            var rightText = sanitize(tool)
             if let detail = activeToolDetail, !detail.isEmpty {
-                rightText = "\(tool) \(detail)"
+                rightText = sanitize("\(tool) \(detail)")
             }
-            // Sanitize: remove control characters that crash CoreText
-            rightText = rightText.unicodeScalars.filter { $0.value >= 32 }.map { String($0) }.joined()
             guard !rightText.isEmpty else { return }
 
             let labelEndX = cursorX + labelStr.size().width + 12
@@ -639,7 +643,7 @@ class IslandView: NSView {
             let toolFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
             let toolColor = NSColor(white: 0.5, alpha: Double(alpha))
             let toolAttrs: [NSAttributedString.Key: Any] = [.font: toolFont, .foregroundColor: toolColor]
-            var display = String(rightText.prefix(80))
+            var display = String(rightText.prefix(60))
             while (display as NSString).size(withAttributes: toolAttrs).width > availW && display.count > 5 {
                 display = String(display.dropLast(2)) + "…"
             }
@@ -750,7 +754,7 @@ class IslandView: NSView {
                 let isPinned = dot.id == pinnedSessionId
                 let isActive = dot.id == (activeSessionId ?? "")
                 let dotColor = dot.color.isEmpty ? NSColor.gray : NSColor.fromHex(dot.color)
-                let tabLabel = dot.label.isEmpty ? String(dot.id.prefix(6)) : dot.label
+                let tabLabel = sanitize(dot.label.isEmpty ? String(dot.id.prefix(6)) : dot.label)
                 let labelColor = isPinned ? dotColor : (isActive ? textColor : NSColor(white: 0.65, alpha: 1))
                 let tabAttrs: [NSAttributedString.Key: Any] = [
                     .font: tabFont,
@@ -790,7 +794,7 @@ class IslandView: NSView {
                 .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
                 .foregroundColor: NSColor(white: 0.65, alpha: Double(alpha))
             ]
-            let firstLine = query.components(separatedBy: .newlines).first ?? query
+            let firstLine = sanitize(query.components(separatedBy: .newlines).first ?? query)
             let truncated = firstLine.count > 55 ? String(firstLine.prefix(52)) + "..." : firstLine
             NSAttributedString(string: "❯ \(truncated)", attributes: qAttrs)
                 .draw(at: NSPoint(x: rect.minX + pad, y: y))
@@ -823,7 +827,7 @@ class IslandView: NSView {
                 .font: NSFont.monospacedSystemFont(ofSize: 10, weight: isCurrent ? .medium : .regular),
                 .foregroundColor: (isCurrent ? textColor : dimColor).withAlphaComponent(Double(lineAlpha))
             ]
-            let truncTool = toolStr.count > 50 ? String(toolStr.prefix(47)) + "..." : toolStr
+            let truncTool = sanitize(toolStr.count > 50 ? String(toolStr.prefix(47)) + "..." : toolStr)
             NSAttributedString(string: "\(prefix)\(truncTool)", attributes: lineAttrs)
                 .draw(at: NSPoint(x: rect.minX + pad, y: y))
             y -= 15
