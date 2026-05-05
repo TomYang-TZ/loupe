@@ -527,6 +527,7 @@ class IslandView: NSView {
     ]
 
     private func drawCollapsed(in rect: NSRect, ctx: CGContext, alpha: CGFloat) {
+        guard alpha > 0 else { return }
         let midY = rect.midY
         let dotR: CGFloat = 4
         var cursorX = rect.minX + 12
@@ -569,19 +570,17 @@ class IslandView: NSView {
 
         cursorX += 4
 
-        // Status label
+        // Status label (sanitize to ASCII-safe strings for CoreText stability)
         let label: String
         let labelColor: NSColor
         if let tool = rejectedTool {
-            // Brief flash after rejection
-            label = "rejected \(tool)"
-            labelColor = NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1) // red
+            label = "rejected \(tool.prefix(20))"
+            labelColor = NSColor(red: 239/255, green: 68/255, blue: 68/255, alpha: 1)
         } else if let tool = approvedTool {
-            // Brief strikethrough after approval
-            label = tool
-            labelColor = NSColor(red: 34/255, green: 197/255, blue: 94/255, alpha: 1) // green
+            label = String(tool.prefix(20))
+            labelColor = NSColor(red: 34/255, green: 197/255, blue: 94/255, alpha: 1)
         } else if waitingForConfirmation {
-            label = waitingTool != nil ? "approve \(waitingTool!)" : "awaiting approval"
+            label = waitingTool != nil ? "approve \(waitingTool!.prefix(20))" : "awaiting approval"
             labelColor = waitingColor
         } else if currentPhase == "idle" {
             label = "idle"
@@ -590,6 +589,7 @@ class IslandView: NSView {
             label = thinkingActive ? "thinking" : currentPhase
             labelColor = NSColor(white: 0.85, alpha: 1)
         }
+        guard !label.isEmpty else { return }
 
         // Compute dynamic pill width from content
         let dotsSectionWidth: CGFloat = cursorX - rect.minX  // dots already drawn up to cursorX
@@ -623,21 +623,24 @@ class IslandView: NSView {
         // no extra decorations after label
 
         // Right side: tool name + brief detail (must not overlap phase label)
-        if let tool = activeToolName, !waitingForConfirmation, currentPhase != "idle" {
+        if let tool = activeToolName, !tool.isEmpty, !waitingForConfirmation, currentPhase != "idle" {
             var rightText = tool
             if let detail = activeToolDetail, !detail.isEmpty {
                 rightText = "\(tool) \(detail)"
             }
+            // Sanitize: remove control characters that crash CoreText
+            rightText = rightText.unicodeScalars.filter { $0.value >= 32 }.map { String($0) }.joined()
+            guard !rightText.isEmpty else { return }
+
             let labelEndX = cursorX + labelStr.size().width + 12
             let availW = rect.maxX - 14 - labelEndX
-            guard availW > 30 else { return }  // too narrow, skip
+            guard availW > 30 else { return }
 
-            let toolAttrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-                .foregroundColor: NSColor(white: 0.5, alpha: Double(alpha))
-            ]
-            var display = rightText
-            while NSAttributedString(string: display, attributes: toolAttrs).size().width > availW && display.count > 5 {
+            let toolFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+            let toolColor = NSColor(white: 0.5, alpha: Double(alpha))
+            let toolAttrs: [NSAttributedString.Key: Any] = [.font: toolFont, .foregroundColor: toolColor]
+            var display = String(rightText.prefix(80))
+            while (display as NSString).size(withAttributes: toolAttrs).width > availW && display.count > 5 {
                 display = String(display.dropLast(2)) + "…"
             }
             let toolStr = NSAttributedString(string: display, attributes: toolAttrs)
