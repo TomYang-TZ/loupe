@@ -695,8 +695,8 @@ class IslandView: NSView {
                 .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
                 .foregroundColor: dimColor
             ]
-            let ts = NSAttributedString(string: timeStr, attributes: timeAttrs)
-            ts.draw(at: NSPoint(x: rect.maxX - pad - ts.size().width, y: y + 2))
+            let tsW = monoWidth(timeStr, fontSize: 10)
+            safeDraw(timeStr, at: NSPoint(x: rect.maxX - pad - tsW, y: y + 2), attrs: timeAttrs)
         }
 
         y -= 22
@@ -746,10 +746,11 @@ class IslandView: NSView {
                     .font: tabFont,
                     .foregroundColor: labelColor.withAlphaComponent(Double(alpha))
                 ]
-                let tabSize = (tabLabel as NSString).size(withAttributes: tabAttrs)
+                let tabW = monoWidth(tabLabel, fontSize: 10)
+                let tabH: CGFloat = 14
                 let dotR: CGFloat = 3.5
-                let fullW = dotR * 2 + 4 + tabSize.width + 8
-                let tabRect = NSRect(x: tabX - 4, y: y - 3, width: fullW, height: tabSize.height + 6)
+                let fullW = dotR * 2 + 4 + tabW + 8
+                let tabRect = NSRect(x: tabX - 4, y: y - 3, width: fullW, height: tabH + 6)
                 sessionTabRects.append((rect: tabRect, sessionId: dot.id))
 
                 // Background pill for all tabs (subtle), brighter for pinned
@@ -763,7 +764,7 @@ class IslandView: NSView {
                 // Dot indicator
                 let dotStatusColor = IslandView.dotStatusColors[dot.status] ?? NSColor.gray
                 ctx.setFillColor(dotStatusColor.withAlphaComponent(Double(alpha)).cgColor)
-                ctx.fillEllipse(in: CGRect(x: tabX, y: y + tabSize.height / 2 - dotR + 1, width: dotR * 2, height: dotR * 2))
+                ctx.fillEllipse(in: CGRect(x: tabX, y: y + tabH / 2 - dotR + 1, width: dotR * 2, height: dotR * 2))
 
                 NSAttributedString(string: tabLabel, attributes: tabAttrs)
                     .draw(at: NSPoint(x: tabX + dotR * 2 + 4, y: y))
