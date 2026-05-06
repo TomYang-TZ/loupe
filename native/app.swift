@@ -7,18 +7,18 @@ func sanitize(_ s: String) -> String {
     return String(filtered.prefix(200).map { Character($0) })
 }
 
-// Safe wrapper for sizeWithAttributes — returns 0 width if string would crash CoreText
-func safeSize(_ s: String, font: NSFont) -> CGFloat {
+// Monospace width: character count × fixed char width (avoids CoreText crash on macOS 26 after sleep/wake)
+func monoWidth(_ s: String, fontSize: CGFloat) -> CGFloat {
     guard !s.isEmpty else { return 0 }
-    let ns = s as NSString
-    guard ns.length > 0 else { return 0 }
-    return ns.size(withAttributes: [.font: font, .foregroundColor: NSColor.white]).width
+    return CGFloat(s.count) * fontSize * 0.6  // monospace ratio ≈ 0.6 of font size
 }
 
-// Safe draw wrapper
+// Safe draw — wraps in autorelease to isolate CoreText state; skips if empty
 func safeDraw(_ s: String, at point: NSPoint, attrs: [NSAttributedString.Key: Any]) {
-    guard !s.isEmpty, (s as NSString).length > 0 else { return }
-    NSAttributedString(string: s, attributes: attrs).draw(at: point)
+    guard !s.isEmpty else { return }
+    autoreleasepool {
+        NSAttributedString(string: s, attributes: attrs).draw(at: point)
+    }
 }
 
 extension NSColor {
@@ -616,13 +616,12 @@ class IslandView: NSView {
         // Compute dynamic pill width from content
         let dotsSectionWidth: CGFloat = cursorX - rect.minX
         let labelFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-        let labelW = safeSize(safeLabel, font: labelFont)
+        let labelW = monoWidth(safeLabel, fontSize: 10)
         var rightWidth: CGFloat = 0
         if let tool = activeToolName, !tool.isEmpty, !waitingForConfirmation, currentPhase != "idle" {
             var rt = sanitize(tool)
             if let detail = activeToolDetail, !detail.isEmpty { rt = sanitize("\(tool) \(detail)") }
-            let rightFont = NSFont.monospacedSystemFont(ofSize: 9, weight: .regular)
-            rightWidth = safeSize(rt, font: rightFont) + 16
+            rightWidth = monoWidth(rt, fontSize: 9) + 16
         }
         let contentWidth = dotsSectionWidth + labelW + rightWidth + 20
         pillTargetWidth = min(pillMaxWidth, max(pillMinWidth, contentWidth))
@@ -658,10 +657,10 @@ class IslandView: NSView {
             let toolColor = NSColor(white: 0.5, alpha: Double(alpha))
             let toolAttrs: [NSAttributedString.Key: Any] = [.font: toolFont, .foregroundColor: toolColor]
             var display = String(rightText.prefix(60))
-            var displayW = safeSize(display, font: toolFont)
+            var displayW = monoWidth(display, fontSize: 10)
             while displayW > availW && display.count > 5 {
                 display = String(display.dropLast(2)) + "..."
-                displayW = safeSize(display, font: toolFont)
+                displayW = monoWidth(display, fontSize: 10)
             }
             let drawX = rect.maxX - 14 - displayW
             safeDraw(display, at: NSPoint(x: drawX, y: midY - 6), attrs: toolAttrs)
