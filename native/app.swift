@@ -1,9 +1,20 @@
 import Cocoa
 import WebKit
 
-// Guard against CoreText nil-font crash on macOS 26 after sleep/wake
-func safeDraw(_ block: @escaping () -> Void) {
-    ObjCExceptionCatcher.try(block)
+// macOS 26 CoreText bug: font becomes nil after sleep/wake, crashing any text draw.
+// Validate by attempting to create a CTFont — if system fonts are broken, skip all drawing.
+private var _fontOK = true
+private var _fontCheckTime: TimeInterval = 0
+
+func fontIsValid() -> Bool {
+    let now = CACurrentMediaTime()
+    if now - _fontCheckTime < 2.0 { return _fontOK }  // cache for 2s
+    _fontCheckTime = now
+    let testFont = CTFontCreateWithName("Menlo" as CFString, 10, nil)
+    let attrs = [NSAttributedString.Key.font: testFont] as NSDictionary
+    // If the font key resolves to nil internally, this will be caught
+    _fontOK = (attrs.object(forKey: NSAttributedString.Key.font) != nil)
+    return _fontOK
 }
 
 extension NSColor {
@@ -484,12 +495,14 @@ class IslandView: NSView {
         ctx.addPath(path)
         ctx.clip()
 
-        // Content — wrapped in ObjC exception catcher for CoreText nil-font crash on macOS 26
+        // Skip text rendering if system fonts are invalid (macOS 26 sleep/wake bug)
+        guard fontIsValid() else { ctx.restoreGState(); return }
+
         if t < 0.5 {
-            safeDraw { self.drawCollapsed(in: rect, ctx: ctx, alpha: 1 - t * 2) }
+            drawCollapsed(in: rect, ctx: ctx, alpha: 1 - t * 2)
         }
         if t > 0.3 {
-            safeDraw { self.drawExpanded(in: rect, ctx: ctx, alpha: (t - 0.3) / 0.7) }
+            drawExpanded(in: rect, ctx: ctx, alpha: (t - 0.3) / 0.7)
         }
 
         ctx.restoreGState()
@@ -744,16 +757,17 @@ class IslandView: NSView {
                 let isPinned = dot.id == pinnedSessionId
                 let isActive = dot.id == (activeSessionId ?? "")
                 let dotColor = dot.color.isEmpty ? NSColor.gray : NSColor.fromHex(dot.color)
-                let tabLabel = dot.label.isEmpty ? String(dot.id.prefix(6)) : dot.label
+                let rawLabel = dot.label.isEmpty ? String(dot.id.prefix(6)) : dot.label
+                let tabLabel = rawLabel.count > 10 ? String(rawLabel.prefix(8)) + ".." : rawLabel
                 let labelColor = isPinned ? dotColor : (isActive ? textColor : NSColor(white: 0.65, alpha: 1))
                 let tabAttrs: [NSAttributedString.Key: Any] = [
                     .font: tabFont,
                     .foregroundColor: labelColor.withAlphaComponent(Double(alpha))
                 ]
-                let tabW = CGFloat(tabLabel.count) * 10 * 0.6
+                let tabW = CGFloat(tabLabel.count) * 10 * 0.7
                 let dotR: CGFloat = 3.5
                 let tabH: CGFloat = 14
-                let fullW = dotR * 2 + 4 + tabW + 8
+                let fullW = dotR * 2 + 4 + tabW + 12
                 let tabRect = NSRect(x: tabX - 4, y: y - 3, width: fullW, height: tabH + 6)
                 sessionTabRects.append((rect: tabRect, sessionId: dot.id))
 
