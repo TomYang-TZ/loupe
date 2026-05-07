@@ -28,7 +28,7 @@ function getSession(sid) {
       pulsing: false, _lastActivityTs: 0,
       _fileSet: new Set(), _totalTokens: 0, _tokIn: 0, _tokOut: 0, _tokCacheRead: 0, _tokCacheCreate: 0,
       _pendingToolName: null, _pendingToolTs: null,
-      _pulseTimer: null, _idleTimer: null,
+      _pulseTimer: null, _idleTimer: null, _startingTimer: null,
       _stopFailureTs: null, _agentClearTimer: null, _color: null,
       _erroredFiles: new Set(), planningStrike: false, _planningStrikeTimer: null,
     });
@@ -103,18 +103,25 @@ function processEvent(json, ts) {
     s.idleSince = null;
     if (s._idleTimer) { clearTimeout(s._idleTimer); s._idleTimer = null; }
     s.denials = 0;
+    // Auto-advance from "starting" to "thinking" if no event arrives within 3s
+    if (s._startingTimer) clearTimeout(s._startingTimer);
+    s._startingTimer = setTimeout(() => {
+      if (s.phase === "starting") { s.phase = "thinking"; emit(); }
+    }, 3000);
   }
 
   // Thinking
   if (cat === "thinking") {
     s.thinking = true;
     s.phase = "thinking";
+    if (s._startingTimer) { clearTimeout(s._startingTimer); s._startingTimer = null; }
     if (userQuery && !s.userQuery) s.userQuery = userQuery.slice(0, 120);
   }
 
   // Tool usage
   if (cat === "pre_tool") {
     s.thinking = false;
+    if (s._startingTimer) { clearTimeout(s._startingTimer); s._startingTimer = null; }
     const toolName = data.tool_name || "";
     const input = data.tool_input || {};
     s.tool = toolName;
@@ -156,7 +163,7 @@ function processEvent(json, ts) {
       if (cat !== "thinking") s.phase = s.tool ? "implementing" : "exploring";
       else s.phase = "thinking";
       emit();
-      setTimeout(() => { s.approved = null; emit(); }, 1000);
+      setTimeout(() => { s.approved = null; emit(); }, 1500);
     }
   }
   if (cat === "pre_tool") { s._pendingToolName = s.tool; s._pendingToolTs = Date.now(); }
@@ -287,6 +294,7 @@ function processEvent(json, ts) {
     if (now - lastEvent > 5 * 60 * 1000) {
       if (ss._idleTimer) clearTimeout(ss._idleTimer);
       if (ss._pulseTimer) clearTimeout(ss._pulseTimer);
+      if (ss._startingTimer) clearTimeout(ss._startingTimer);
       if (ss._agentClearTimer) clearTimeout(ss._agentClearTimer);
       islandSessions.delete(id);
     }
@@ -322,6 +330,20 @@ function getState() {
     for (const [, s] of islandSessions) {
       const t = s._lastActivityTs || s.startTs || 0;
       if (t > latestTs) { latestTs = t; active = s; }
+    }
+    // Don't switch to a "starting" session unless it's significantly newer
+    // This prevents focus-stealing when a prompt is submitted in another session
+    if (active && active.phase === "starting" && islandSessions.size > 1) {
+      let secondBest = null, secondTs = 0;
+      for (const [, s] of islandSessions) {
+        if (s === active) continue;
+        const t = s._lastActivityTs || s.startTs || 0;
+        if (t > secondTs && s.phase !== "idle" && s.phase !== "done") { secondTs = t; secondBest = s; }
+      }
+      // If another session was active within 3s, prefer it over the "starting" one
+      if (secondBest && (latestTs - secondTs) < 3000) {
+        active = secondBest;
+      }
     }
   }
   if (!active) {

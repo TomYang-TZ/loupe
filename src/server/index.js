@@ -103,12 +103,13 @@ function buildMessage(line) {
 // Clients in backlog send are buffered — live events queued until backlog completes
 const pendingBacklog = new Set(); // clients currently receiving backlog
 const pendingQueue = new Map();   // client → [queued messages]
+const islandClients = new Set();  // clients that only want island_state
 
 function broadcast(data) {
   for (const client of wss.clients) {
     if (client.readyState !== 1) continue;
+    if (islandClients.has(client)) continue; // island clients only get island_state
     if (pendingBacklog.has(client)) {
-      // Queue live events until backlog is done
       if (!pendingQueue.has(client)) pendingQueue.set(client, []);
       pendingQueue.get(client).push(data);
     } else {
@@ -178,25 +179,39 @@ const router = createRouter(filePath, uiDir, wss, {
 });
 server.on("request", router);
 
-wss.on("connection", (ws) => {
-  console.log(`Client connected (total: ${wss.clients.size})`);
-  pendingBacklog.add(ws);
-  sendBacklog(ws, filePath, {
-    buildMessage,
-    isReplayAnalysisLine,
-    trackSession: sessionTracker.trackSession,
-    getSessionsList: sessionTracker.getSessionsList,
-  }).then(() => {
-    pendingBacklog.delete(ws);
-    // Flush live events that arrived during backlog send
-    const queued = pendingQueue.get(ws);
-    if (queued) {
-      for (const data of queued) {
-        if (ws.readyState === 1) ws.send(data);
-      }
-      pendingQueue.delete(ws);
+wss.on("connection", (ws, req) => {
+  const isIslandClient = req.url && req.url.includes("client=island");
+  console.log(`Client connected (total: ${wss.clients.size})${isIslandClient ? " [island]" : ""}`);
+
+  if (isIslandClient) {
+    // Island only needs state updates — skip backlog and line events
+    islandClients.add(ws);
+    if (!islandBacklogReading) {
+      ws.send(JSON.stringify({ type: "island_state", data: islandState.getState() }));
     }
-  });
+  } else {
+    pendingBacklog.add(ws);
+    sendBacklog(ws, filePath, {
+      buildMessage,
+      isReplayAnalysisLine,
+      trackSession: sessionTracker.trackSession,
+      getSessionsList: sessionTracker.getSessionsList,
+    }).then(() => {
+      pendingBacklog.delete(ws);
+      // Flush live events that arrived during backlog send
+      const queued = pendingQueue.get(ws);
+      if (queued) {
+        for (const data of queued) {
+          if (ws.readyState === 1) ws.send(data);
+        }
+        pendingQueue.delete(ws);
+      }
+      // Send current island state to newly connected client
+      if (!islandBacklogReading && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: "island_state", data: islandState.getState() }));
+      }
+    });
+  }
 
   ws.on("message", (data) => {
     try {
@@ -366,10 +381,12 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    islandClients.delete(ws);
     console.log(`Client disconnected (total: ${wss.clients.size})`);
   });
 
   ws.on("error", (err) => {
+    islandClients.delete(ws);
     console.error("WebSocket error:", err.message);
   });
 });
@@ -402,11 +419,9 @@ if (fs.existsSync(watcherScript)) {
 
 // --- Island state ---
 let islandBacklogReading = true;
-// Normalize after initial backlog read (first readNewBytes completes within ~1s)
-setTimeout(() => { islandBacklogReading = false; }, 2000);
 
 islandState.init((state) => {
-  // Send island state only to non-backlog clients (don't queue during backlog)
+  if (islandBacklogReading) return; // suppress during startup replay
   const msg = JSON.stringify({ type: "island_state", data: state });
   for (const client of wss.clients) {
     if (client.readyState === 1 && !pendingBacklog.has(client)) {
@@ -414,6 +429,35 @@ islandState.init((state) => {
     }
   }
 });
+
+// After startup, replay recent log into island state to seed it
+setTimeout(() => {
+  try {
+    const stat = fs.statSync(filePath);
+    const TAIL = 512 * 1024; // 512KB tail
+    const start = Math.max(0, stat.size - TAIL);
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(Math.min(TAIL, stat.size));
+    fs.readSync(fd, buf, 0, buf.length, start);
+    fs.closeSync(fd);
+    let content = buf.toString("utf-8");
+    if (start > 0) { const nl = content.indexOf("\n"); if (nl >= 0) content = content.slice(nl + 1); }
+    const lines = content.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const json = JSON.parse(line);
+        if (isReplayAnalysisLine(json)) continue;
+        const ts = json._ts ? new Date(json._ts).getTime() : Date.now();
+        islandState.processEvent(json, ts);
+      } catch {}
+    }
+    islandState.normalizeAfterBacklog();
+  } catch (e) {
+    console.error("Island backlog seed error:", e.message);
+  }
+  islandBacklogReading = false;
+}, 500);
 
 // --- Start ---
 server.listen(port, () => {
