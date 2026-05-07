@@ -1,20 +1,9 @@
 import Cocoa
 import WebKit
 
-// macOS 26 CoreText bug: font becomes nil after sleep/wake, crashing any text draw.
-// Validate by attempting to create a CTFont — if system fonts are broken, skip all drawing.
-private var _fontOK = true
-private var _fontCheckTime: TimeInterval = 0
-
-func fontIsValid() -> Bool {
-    let now = CACurrentMediaTime()
-    if now - _fontCheckTime < 2.0 { return _fontOK }  // cache for 2s
-    _fontCheckTime = now
-    let testFont = CTFontCreateWithName("Menlo" as CFString, 10, nil)
-    let attrs = [NSAttributedString.Key.font: testFont] as NSDictionary
-    // If the font key resolves to nil internally, this will be caught
-    _fontOK = (attrs.object(forKey: NSAttributedString.Key.font) != nil)
-    return _fontOK
+// Safe draw: uses pure ObjC @try/@catch to survive CoreText nil-font crash on macOS 26
+func safeDraw(_ str: NSAttributedString, at point: NSPoint) {
+    ObjCExceptionCatcher.draw(str, at: point)
 }
 
 extension NSColor {
@@ -495,9 +484,6 @@ class IslandView: NSView {
         ctx.addPath(path)
         ctx.clip()
 
-        // Skip text rendering if system fonts are invalid (macOS 26 sleep/wake bug)
-        guard fontIsValid() else { ctx.restoreGState(); return }
-
         if t < 0.5 {
             drawCollapsed(in: rect, ctx: ctx, alpha: 1 - t * 2)
         }
@@ -629,7 +615,7 @@ class IslandView: NSView {
             labelAttrs[.strikethroughColor] = labelColor.withAlphaComponent(Double(alpha * labelPulse) * 0.8)
         }
         let labelStr = NSAttributedString(string: label, attributes: labelAttrs)
-        labelStr.draw(at: NSPoint(x: cursorX, y: midY - 6))
+        safeDraw(labelStr, at: NSPoint(x: cursorX, y: midY - 6))
 
         // no extra decorations after label
 
@@ -639,21 +625,23 @@ class IslandView: NSView {
             if let detail = activeToolDetail, !detail.isEmpty {
                 rightText = "\(tool) \(detail)"
             }
-            let labelEndX = cursorX + labelStr.size().width + 12
+            let labelEndX = cursorX + CGFloat(label.count) * 10 * 0.6 + 12
             let availW = rect.maxX - 14 - labelEndX
-            guard availW > 30 else { return }  // too narrow, skip
+            guard availW > 30 else { return }
 
             let toolAttrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
                 .foregroundColor: NSColor(white: 0.5, alpha: Double(alpha))
             ]
             var display = rightText
-            while NSAttributedString(string: display, attributes: toolAttrs).size().width > availW && display.count > 5 {
+            var displayW = CGFloat(display.count) * 10 * 0.6
+            while displayW > availW && display.count > 5 {
                 display = String(display.dropLast(2)) + "…"
+                displayW = CGFloat(display.count) * 10 * 0.6
             }
             let toolStr = NSAttributedString(string: display, attributes: toolAttrs)
-            let drawX = rect.maxX - 14 - toolStr.size().width
-            toolStr.draw(at: NSPoint(x: drawX, y: midY - 6))
+            let drawX = rect.maxX - 14 - displayW
+            safeDraw(toolStr, at: NSPoint(x: drawX, y: midY - 6))
         }
     }
 
@@ -674,22 +662,20 @@ class IslandView: NSView {
                 .font: artFont,
                 .foregroundColor: artColor
             ]
-            NSAttributedString(string: line, attributes: artAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad, y: y - CGFloat(i) * artLineH))
+            safeDraw(NSAttributedString(string: line, attributes: artAttrs), at: NSPoint(x: rect.minX + pad, y: y - CGFloat(i) * artLineH))
         }
 
         // Planning strikethrough — dimmed "PLANNING" with line-through after current phase art
         if planningStrike {
             let strikeColor = (IslandView.phaseColors["planning"] ?? NSColor.gray).withAlphaComponent(Double(alpha) * 0.4)
-            let topLineWidth = NSAttributedString(string: artLines[0], attributes: [.font: artFont]).size().width
+            let topLineWidth = CGFloat(artLines[0].count) * 9 * 0.6
             let strikeAttrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 8, weight: .medium),
                 .foregroundColor: strikeColor,
                 .strikethroughStyle: NSUnderlineStyle.single.rawValue,
                 .strikethroughColor: strikeColor,
             ]
-            NSAttributedString(string: " PLANNING", attributes: strikeAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad + topLineWidth + 4, y: y - artLineH + 2))
+            safeDraw(NSAttributedString(string: " PLANNING", attributes: strikeAttrs), at: NSPoint(x: rect.minX + pad + topLineWidth + 4, y: y - artLineH + 2))
         }
 
         // Elapsed time (right-aligned, top row)
@@ -702,7 +688,8 @@ class IslandView: NSView {
                 .foregroundColor: dimColor
             ]
             let ts = NSAttributedString(string: timeStr, attributes: timeAttrs)
-            ts.draw(at: NSPoint(x: rect.maxX - pad - ts.size().width, y: y + 2))
+            let tsW = CGFloat(timeStr.count) * 10 * 0.6
+            safeDraw(ts, at: NSPoint(x: rect.maxX - pad - tsW, y: y + 2))
         }
 
         // Signal badge (after art top row)
@@ -712,9 +699,8 @@ class IslandView: NSView {
                 .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .bold),
                 .foregroundColor: sigColor.withAlphaComponent(Double(alpha))
             ]
-            let topLineWidth = NSAttributedString(string: artLines[0], attributes: [.font: artFont]).size().width
-            NSAttributedString(string: " · \(signal.uppercased())", attributes: sigAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad + topLineWidth + 4, y: y))
+            let topLineWidth = CGFloat(artLines[0].count) * 9 * 0.6
+            safeDraw(NSAttributedString(string: " · \(signal.uppercased())", attributes: sigAttrs), at: NSPoint(x: rect.minX + pad + topLineWidth + 4, y: y))
         }
 
         y -= (artLineH * CGFloat(artLines.count) + 10)
@@ -734,8 +720,7 @@ class IslandView: NSView {
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold),
                 .foregroundColor: waitingColor.withAlphaComponent(Double(alpha))
             ]
-            NSAttributedString(string: waitText, attributes: waitAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad + 4, y: y))
+            safeDraw(NSAttributedString(string: waitText, attributes: waitAttrs), at: NSPoint(x: rect.minX + pad + 4, y: y))
             y -= 28
         }
 
@@ -748,8 +733,7 @@ class IslandView: NSView {
                 .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold),
                 .foregroundColor: faintColor
             ]
-            NSAttributedString(string: "SESSIONS", attributes: tabHeaderAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad, y: y))
+            safeDraw(NSAttributedString(string: "SESSIONS", attributes: tabHeaderAttrs), at: NSPoint(x: rect.minX + pad, y: y))
             y -= 18
             let tabFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
             var tabX = rect.minX + pad
@@ -782,8 +766,7 @@ class IslandView: NSView {
                 ctx.setFillColor(dotStatusColor.withAlphaComponent(Double(alpha)).cgColor)
                 ctx.fillEllipse(in: CGRect(x: tabX, y: y + tabH / 2 - dotR + 1, width: dotR * 2, height: dotR * 2))
 
-                NSAttributedString(string: tabLabel, attributes: tabAttrs)
-                    .draw(at: NSPoint(x: tabX + dotR * 2 + 4, y: y))
+                safeDraw(NSAttributedString(string: tabLabel, attributes: tabAttrs), at: NSPoint(x: tabX + dotR * 2 + 4, y: y))
                 tabX += fullW + 8
             }
             y -= 26
@@ -798,8 +781,7 @@ class IslandView: NSView {
                 .foregroundColor: NSColor(white: 0.65, alpha: Double(alpha))
             ]
             let truncated = query.count > 60 ? String(query.prefix(57)) + "..." : query
-            NSAttributedString(string: "❯ \(truncated)", attributes: qAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad, y: y))
+            safeDraw(NSAttributedString(string: "❯ \(truncated)", attributes: qAttrs), at: NSPoint(x: rect.minX + pad, y: y))
             y -= 18
         }
 
@@ -816,8 +798,7 @@ class IslandView: NSView {
         if sessionCount > 1 { stats.append("\(sessionCount) sessions") }
         if errorCount > 0 { stats.append("\(errorCount) errors") }
         if !stats.isEmpty {
-            NSAttributedString(string: stats.joined(separator: "  ·  "), attributes: statsAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad, y: y))
+            safeDraw(NSAttributedString(string: stats.joined(separator: "  ·  "), attributes: statsAttrs), at: NSPoint(x: rect.minX + pad, y: y))
         }
         y -= 20
 
@@ -834,8 +815,7 @@ class IslandView: NSView {
             .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold),
             .foregroundColor: faintColor
         ]
-        NSAttributedString(string: "RECENT", attributes: toolHeaderAttrs)
-            .draw(at: NSPoint(x: rect.minX + pad, y: y))
+        safeDraw(NSAttributedString(string: "RECENT", attributes: toolHeaderAttrs), at: NSPoint(x: rect.minX + pad, y: y))
         y -= 16
 
         let toolsToShow = recentTools.suffix(4)
@@ -848,8 +828,7 @@ class IslandView: NSView {
                 .foregroundColor: (isCurrent ? textColor : dimColor).withAlphaComponent(Double(lineAlpha))
             ]
             let truncTool = toolStr.count > 50 ? String(toolStr.prefix(47)) + "..." : toolStr
-            NSAttributedString(string: "\(prefix)\(truncTool)", attributes: lineAttrs)
-                .draw(at: NSPoint(x: rect.minX + pad, y: y))
+            safeDraw(NSAttributedString(string: "\(prefix)\(truncTool)", attributes: lineAttrs), at: NSPoint(x: rect.minX + pad, y: y))
             y -= 15
             if y < rect.minY + 35 { break }
         }
@@ -860,8 +839,7 @@ class IslandView: NSView {
             .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .regular),
             .foregroundColor: NSColor(white: 0.25, alpha: Double(alpha))
         ]
-        NSAttributedString(string: "i:toggle  ·  w:window", attributes: hintAttrs)
-            .draw(at: NSPoint(x: rect.minX + pad, y: hintY))
+        safeDraw(NSAttributedString(string: "i:toggle  ·  w:window", attributes: hintAttrs), at: NSPoint(x: rect.minX + pad, y: hintY))
     }
 
     private func phaseFill() -> CGFloat {
