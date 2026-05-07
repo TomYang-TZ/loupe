@@ -1,6 +1,11 @@
 import Cocoa
 import WebKit
 
+// Guard against CoreText nil-font crash on macOS 26 after sleep/wake
+func safeDraw(_ block: @escaping () -> Void) {
+    ObjCExceptionCatcher.try(block)
+}
+
 extension NSColor {
     static func fromHex(_ hex: String) -> NSColor {
         let h = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
@@ -479,12 +484,12 @@ class IslandView: NSView {
         ctx.addPath(path)
         ctx.clip()
 
-        // Content
+        // Content — wrapped in ObjC exception catcher for CoreText nil-font crash on macOS 26
         if t < 0.5 {
-            drawCollapsed(in: rect, ctx: ctx, alpha: 1 - t * 2)
+            safeDraw { self.drawCollapsed(in: rect, ctx: ctx, alpha: 1 - t * 2) }
         }
         if t > 0.3 {
-            drawExpanded(in: rect, ctx: ctx, alpha: (t - 0.3) / 0.7)
+            safeDraw { self.drawExpanded(in: rect, ctx: ctx, alpha: (t - 0.3) / 0.7) }
         }
 
         ctx.restoreGState()
