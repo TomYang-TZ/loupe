@@ -109,6 +109,13 @@ class IslandView: NSView {
     var recentTools: [String] = []
     var activeFile: String? = nil
     var elapsedSeconds: Int = 0
+    var pinnedSessionId: String? = nil
+
+    // Callback to send WebSocket messages (set by AppDelegate)
+    var onSendWS: (([String: Any]) -> Void)?
+
+    // Hit regions for session tabs in expanded view
+    private var sessionTabRects: [(rect: NSRect, sessionId: String)] = []
 
     let geo: NotchGeometry
 
@@ -134,7 +141,7 @@ class IslandView: NSView {
     private var pillTargetWidth: CGFloat = 160
     private var pillCurrentWidth: CGFloat = 160
     let expandedWidth: CGFloat = 380
-    let expandedHeight: CGFloat = 250
+    let expandedHeight: CGFloat = 300
 
     // Colors
     static let phaseColors: [String: NSColor] = [
@@ -353,9 +360,25 @@ class IslandView: NSView {
 
     // --- Hit testing ---
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         if pillRect().contains(point) { return super.hitTest(point) }
         return nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard status == .expanded else { return }
+        for tab in sessionTabRects {
+            if tab.rect.contains(point) {
+                let newPin = (tab.sessionId == pinnedSessionId) ? nil : tab.sessionId
+                pinnedSessionId = newPin
+                onSendWS?(["type": "pin_session", "sessionId": newPin ?? NSNull()])
+                needsDisplay = true
+                return
+            }
+        }
     }
 
     private func pillRect() -> NSRect {
@@ -698,6 +721,57 @@ class IslandView: NSView {
             y -= 28
         }
 
+        y -= 4
+
+        // --- Session tabs (clickable) ---
+        if sessionDots.count > 1 {
+            sessionTabRects = []
+            let tabHeaderAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 9, weight: .semibold),
+                .foregroundColor: faintColor
+            ]
+            NSAttributedString(string: "SESSIONS", attributes: tabHeaderAttrs)
+                .draw(at: NSPoint(x: rect.minX + pad, y: y))
+            y -= 18
+            let tabFont = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+            var tabX = rect.minX + pad
+            for dot in sessionDots {
+                let isPinned = dot.id == pinnedSessionId
+                let isActive = dot.id == (activeSessionId ?? "")
+                let dotColor = dot.color.isEmpty ? NSColor.gray : NSColor.fromHex(dot.color)
+                let tabLabel = dot.label.isEmpty ? String(dot.id.prefix(6)) : dot.label
+                let labelColor = isPinned ? dotColor : (isActive ? textColor : NSColor(white: 0.65, alpha: 1))
+                let tabAttrs: [NSAttributedString.Key: Any] = [
+                    .font: tabFont,
+                    .foregroundColor: labelColor.withAlphaComponent(Double(alpha))
+                ]
+                let tabW = CGFloat(tabLabel.count) * 10 * 0.6
+                let dotR: CGFloat = 3.5
+                let tabH: CGFloat = 14
+                let fullW = dotR * 2 + 4 + tabW + 8
+                let tabRect = NSRect(x: tabX - 4, y: y - 3, width: fullW, height: tabH + 6)
+                sessionTabRects.append((rect: tabRect, sessionId: dot.id))
+
+                let bgPath = CGPath(roundedRect: tabRect, cornerWidth: 5, cornerHeight: 5, transform: nil)
+                let bgAlpha = isPinned ? 0.2 : 0.08
+                let bgC = isPinned ? dotColor : NSColor.white
+                ctx.setFillColor(bgC.withAlphaComponent(Double(alpha) * bgAlpha).cgColor)
+                ctx.addPath(bgPath)
+                ctx.fillPath()
+
+                let dotStatusColor = IslandView.dotStatusColors[dot.status] ?? NSColor.gray
+                ctx.setFillColor(dotStatusColor.withAlphaComponent(Double(alpha)).cgColor)
+                ctx.fillEllipse(in: CGRect(x: tabX, y: y + tabH / 2 - dotR + 1, width: dotR * 2, height: dotR * 2))
+
+                NSAttributedString(string: tabLabel, attributes: tabAttrs)
+                    .draw(at: NSPoint(x: tabX + dotR * 2 + 4, y: y))
+                tabX += fullW + 8
+            }
+            y -= 26
+        } else {
+            sessionTabRects = []
+        }
+
         // --- User query (what the agent is working on) ---
         if let query = userQuery, !query.isEmpty {
             let qAttrs: [NSAttributedString.Key: Any] = [
@@ -823,6 +897,9 @@ class IslandView: NSView {
 class IslandController {
     var panel: IslandPanel?
     var islandView: IslandView?
+    var onSendWS: (([String: Any]) -> Void)? {
+        didSet { islandView?.onSendWS = onSendWS }
+    }
 
     // Cached signals so we can restore state after toggle
     private var lastSignals: (phase: String, progress: String?, tool: String?, toolDetail: String?, files: Int, sessions: Int, tokens: Int, errors: Int, thinking: Bool, waiting: Bool, waitingTool: String?, approved: String?, idleSeconds: Int, userQuery: String?, recentTools: [String], activeFile: String?, elapsed: Int, sessionDots: [(status: String, label: String, color: String, id: String)], activeSessionColor: String?, activeSessionId: String?)?
@@ -840,6 +917,7 @@ class IslandController {
 
         self.panel = panel
         self.islandView = view
+        view.onSendWS = onSendWS
 
         // Restore last known state
         if let s = lastSignals {
@@ -1080,6 +1158,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         if islandEnabled, let screen = NSScreen.main {
             island.setup(screen: screen)
             island.show()
+        }
+
+        // Wire island → WebSocket callback for pin_session
+        island.onSendWS = { [weak self] msg in
+            guard let self = self, let task = self.wsTask else { return }
+            if let data = try? JSONSerialization.data(withJSONObject: msg),
+               let str = String(data: data, encoding: .utf8) {
+                task.send(.string(str)) { _ in }
+            }
         }
 
         // Connect to server WebSocket for island state updates
@@ -1327,6 +1414,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScri
         island.islandView?.pulsing = data["pulsing"] as? Bool ?? false
         island.islandView?.rejectedTool = data["rejected"] as? String
         island.islandView?.planningStrike = data["planningStrike"] as? Bool ?? false
+        island.islandView?.pinnedSessionId = data["pinnedSessionId"] as? String
     }
 
     func applicationWillTerminate(_ notification: Notification) {
